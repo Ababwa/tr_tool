@@ -37,9 +37,9 @@ Tool for viewing and modifying Tomb Raider level files. Currently only renders T
 TR Tool is broken into 4 Rust crates: one binary crate, and three library crates. This repository only contains the tr_tool binary crate.
 
 * tr_tool: Binary crate that produces the final executable that loads and renders TR level files.
-* tr_reader: Library crate that provides data structures for handling TR level file data.
-* tr_readable: Library crate that provides a trait and functions for reading TR level file data.
-* tr_derive: Procedural macro crate that provides a derive macro that can be used to generate implementations for the tr_readable trait.
+* [tr_reader](https://github.com/Ababwa/tr_reader): Library crate that provides data structures for handling TR level file data.
+* [tr_readable](https://github.com/Ababwa/tr_readable): Library crate that provides a trait and functions for reading TR level file data.
+* [tr_derive](https://github.com/Ababwa/tr_derive): Procedural macro crate that provides a derive macro that can be used to generate implementations for the tr_readable trait.
 
 The dependency graph, where "->" means "depends on":
 
