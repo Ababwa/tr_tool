@@ -1,0 +1,12 @@
+[package]
+name = "tr_tool"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+anyhow = "1.0.70"
+image = { version = "0.24.6", default-features = false, features = ["png"] }
+bevy = "0.10.1"
+smooth-bevy-cameras = "0.8.0"
+leafwing-input-manager = "0.9.2"
+tr_reader = { path = "../tr_reader" }
