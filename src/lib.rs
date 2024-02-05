@@ -1,21 +1,18 @@
-use bevy::{prelude::Vec3, math::vec3};
+use std::ptr;
 
-pub mod save_image;
+pub mod packing;
+pub mod geom;
+pub mod ortho;
+pub mod vtx_attr;
+pub mod vec_convert;
 
-pub trait Rotatable {
-	fn rotate_xy(&self) -> Self;
-	fn rotate_yx(&self) -> Self;
-	fn rotate_xz(&self) -> Self;
-	fn rotate_zx(&self) -> Self;
-	fn rotate_yz(&self) -> Self;
-	fn rotate_zy(&self) -> Self;
-}
+pub const IMG_DIM_U32: u32 = tr_reader::tr4::IMG_DIM as u32;
 
-impl Rotatable for Vec3 {
-	fn rotate_xy(&self) -> Self { vec3(-self.y, self.x, self.z) }
-	fn rotate_yx(&self) -> Self { vec3(self.y, -self.x, self.z) }
-	fn rotate_xz(&self) -> Self { vec3(-self.z, self.y, self.x) }
-	fn rotate_zx(&self) -> Self { vec3(self.z, self.y, -self.x) }
-	fn rotate_zy(&self) -> Self { vec3(self.x, self.z, -self.y) }
-	fn rotate_yz(&self) -> Self { vec3(self.x, -self.z, self.y) }
+pub fn flatten<const N: usize>(data: Box<[[u8; N]]>) -> Box<[u8]> {
+	let len = data.len();
+	let data = Box::into_raw(data) as *mut u8;
+	unsafe {
+		let data = ptr::slice_from_raw_parts_mut(data, len * N);
+		Box::from_raw(data)
+	}
 }
