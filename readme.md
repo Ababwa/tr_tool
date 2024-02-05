@@ -32,4 +32,4 @@ Tool for viewing Tomb Raider level files. Currently only renders TR4 level geome
 
 ## Structure
 
-In addition to the `tr_tool` binary, this repository also contains `tr_reader`, a library used for deserializing tomb raider level files, and `tr_derive`, which provides a procedural macro for `tr_reader`.
+In addition to the `tr_tool` binary, this repository also contains `tr_reader`, a library used for deserializing Tomb Raider level files, and `tr_derive`, which provides a procedural macro for `tr_reader`.
