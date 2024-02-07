@@ -1,6 +1,7 @@
 use std::{io::{Read, Result, Cursor}, slice};
 use bitfield::bitfield;
 use byteorder::{ReadBytesExt, LE};
+use glam_traits::glam::{I16Vec3, IVec3, U16Vec2, Vec3};
 use crate::{Readable, read_boxed_slice, read_list, get_zlib};
 
 pub const IMG_DIM: usize = 256;
@@ -47,15 +48,8 @@ impl Readable for Images {
 }
 
 #[derive(Readable, Clone, Copy)]
-pub struct Vertex<T: Readable> {
-	pub x: T,
-	pub y: T,
-	pub z: T,
-}
-
-#[derive(Readable, Clone, Copy)]
 pub struct RoomVertex {
-	pub vertex: Vertex<i16>,//relative to Room
+	pub vertex: I16Vec3,//relative to Room
 	#[skip_2]
 	pub flags: u16,
 	pub color: u16,
@@ -83,8 +77,8 @@ pub struct Sprite {
 #[derive(Readable, Clone, Copy)]
 pub struct Portal {
 	pub adjoining_room_id: u16,//id into LevelData.rooms
-	pub normal: Vertex<i16>,
-	pub vertices: [Vertex<i16>; 4],//relative to Room
+	pub normal: I16Vec3,
+	pub vertices: [I16Vec3; 4],//relative to Room
 }
 
 bitfield! {
@@ -106,7 +100,7 @@ pub struct Sector {
 
 #[derive(Readable, Clone, Copy)]
 pub struct Light {
-	pub pos: Vertex<i32>,//world coords
+	pub pos: IVec3,//world coords
 	pub r: u8,//color
 	pub g: u8,
 	pub b: u8,
@@ -117,12 +111,12 @@ pub struct Light {
 	pub falloff: f32,
 	pub length: f32,
 	pub cutoff: f32,
-	pub direction: Vertex<f32>,//direction
+	pub direction: Vec3,//direction
 }
 
 #[derive(Readable, Clone, Copy)]
 pub struct RoomStaticMesh {
-	pub pos: Vertex<i32>,//world coords
+	pub pos: IVec3,//world coords
 	pub rotation: u16,//units are 1/65536th of a rotation
 	pub color: u16,
 	#[skip_2]
@@ -130,17 +124,15 @@ pub struct RoomStaticMesh {
 }
 
 pub struct Sectors {
-	pub sectors_x: u16,
-	pub sectors_y: u16,
+	pub sectors_dim: U16Vec2,
 	pub sectors: Box<[Sector]>,
 }
 
 impl Readable for Sectors {
     fn read<R: Read>(reader: &mut R) -> Result<Self> {
-        let sectors_x = reader.read_u16::<LE>()?;
-		let sectors_y = reader.read_u16::<LE>()?;
-		let sectors = read_boxed_slice(reader, (sectors_x * sectors_y) as usize)?;
-		Ok(Sectors { sectors_x, sectors_y, sectors })
+        let sectors_dim = U16Vec2::read(reader)?;
+		let sectors = read_boxed_slice(reader, sectors_dim.element_product() as usize)?;
+		Ok(Sectors { sectors_dim, sectors })
     }
 }
 
@@ -197,7 +189,7 @@ impl Readable for Meshes {
 }
 
 pub enum MeshComponent {
-	Normals(Box<[Vertex<i16>]>),
+	Normals(Box<[I16Vec3]>),
 	Lights(Box<[u16]>),
 }
 
@@ -221,10 +213,10 @@ pub struct MeshFace<const N: usize> {
 
 #[derive(Readable)]
 pub struct Mesh {
-	pub center: Vertex<i16>,
+	pub center: I16Vec3,
 	pub radius: i32,
 	#[list_u16]
-	pub vertices: Box<[Vertex<i16>]>,
+	pub vertices: Box<[I16Vec3]>,
 	pub component: MeshComponent,
 	#[list_u16]
 	pub quads: Box<[MeshFace<4>]>,
@@ -325,15 +317,15 @@ pub struct SpriteSequence {
 
 #[derive(Readable, Clone, Copy)]
 pub struct Camera {
-	pub pos: Vertex<i32>,//world coords
+	pub pos: IVec3,//world coords
 	pub room_id: u16,//id into LevelData.rooms
 	pub flags: u16,
 }
 
 #[derive(Readable, Clone, Copy)]
 pub struct FlybyCamera {
-	pub pos: Vertex<i32>,//world coords
-	pub direction: Vertex<i32>,
+	pub pos: IVec3,//world coords
+	pub direction: IVec3,
 	pub chain: u8,
 	pub index: u8,
 	pub fov: u16,
@@ -346,7 +338,7 @@ pub struct FlybyCamera {
 
 #[derive(Readable, Clone, Copy)]
 pub struct SoundSource {
-	pub pos: Vertex<i32>,//world coords
+	pub pos: IVec3,//world coords
 	pub sound_id: u16,
 	pub flags: u16,
 }
@@ -378,12 +370,6 @@ impl Readable for BoxData {
 	}
 }
 
-#[derive(Readable, Clone, Copy)]
-pub struct ObjectTextureVertex {
-	pub x: u16,//fixed-point
-	pub y: u16,
-}
-
 bitfield! {
 	#[derive(Readable, Clone, Copy)]
 	pub struct ObjectTextureAtlasAndTriangle(u16);
@@ -404,7 +390,7 @@ pub struct ObjectTexture {
 	pub blend_mode: u16,
 	pub atlas_and_triangle: ObjectTextureAtlasAndTriangle,
 	pub details: ObjectTextureDetails,
-	pub vertices: [ObjectTextureVertex; 4],
+	pub vertices: [U16Vec2; 4],//units are 256ths of a pixel
 	#[skip_8]
 	pub width: u32,
 	pub height: u32,
@@ -414,7 +400,7 @@ pub struct ObjectTexture {
 pub struct Entity {
 	pub model_id: u16,//matched to Model.id
 	pub room_id: u16,//id into LevelData.rooms
-	pub pos: Vertex<i32>,//world coords
+	pub pos: IVec3,//world coords
 	pub angle: i16,
 	pub light_intensity: u16,//65535 = use mesh light
 	pub ocb: u16,
@@ -425,7 +411,7 @@ pub struct Entity {
 pub struct Ai {
 	pub model_id: u16,//matched to Model.id
 	pub room_id: u16,//id into LevelData.rooms
-	pub pos: Vertex<i32>,//world coords
+	pub pos: IVec3,//world coords
 	pub ocb: u16,
 	pub flags: u16,
 	pub angle: i32,

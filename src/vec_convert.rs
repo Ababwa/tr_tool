@@ -7,18 +7,12 @@ pub trait ToBevy {
 
 impl ToBevy for Vec2 {
 	type BevyType = bevy::math::Vec2;
-	
-	fn to_bevy(self) -> Self::BevyType {
-		Self::BevyType::new(self.x, self.y)
-	}
+	fn to_bevy(self) -> Self::BevyType { Self::BevyType::new(self.x, self.y) }
 }
 
 impl ToBevy for Vec3 {
 	type BevyType = bevy::math::Vec3;
-	
-	fn to_bevy(self) -> Self::BevyType {
-		Self::BevyType::new(self.x, self.y, self.z)
-	}
+	fn to_bevy(self) -> Self::BevyType { Self::BevyType::new(self.x, self.y, self.z) }
 }
 
 pub trait ToGlam {
@@ -28,16 +22,10 @@ pub trait ToGlam {
 
 impl ToGlam for bevy::math::Vec2 {
 	type GlamType = Vec2;
-	
-	fn to_glam(self) -> Self::GlamType {
-		Self::GlamType::new(self.x, self.y)
-	}
+	fn to_glam(self) -> Self::GlamType { Self::GlamType::new(self.x, self.y) }
 }
 
 impl ToGlam for bevy::math::Vec3 {
 	type GlamType = Vec3;
-	
-	fn to_glam(self) -> Self::GlamType {
-		Self::GlamType::new(self.x, self.y, self.z)
-	}
+	fn to_glam(self) -> Self::GlamType { Self::GlamType::new(self.x, self.y, self.z) }
 }

@@ -1,23 +1,15 @@
-use std::{env::args, fs::File, io::BufReader};
+use std::env::args;
 use bevy::{
-	app::{App, AppExit, PluginGroup, Startup, Update},
-	asset::{Assets, Handle, Asset},
-	core_pipeline::{
+	app::{App, AppExit, PluginGroup, Startup, Update}, asset::{Asset, Assets, Handle}, core_pipeline::{
 		clear_color::ClearColorConfig,
 		core_3d::{Camera3d, Camera3dBundle},
-	},
-	ecs::{
+	}, ecs::{
 		component::Component,
 		entity::Entity,
 		event::EventWriter,
 		query::With,
 		system::{Commands, Query, Res, ResMut, Resource},
-	},
-	hierarchy::DespawnRecursiveExt,
-	input::{keyboard::KeyCode, mouse::MouseButton, Input},
-	pbr::{Material, MaterialMeshBundle, MaterialPlugin},
-	reflect::{TypeUuid, TypePath, Reflect},
-	render::{
+	}, hierarchy::DespawnRecursiveExt, input::{keyboard::KeyCode, mouse::MouseButton, Input}, pbr::{Material, MaterialMeshBundle, MaterialPlugin}, reflect::{Reflect, TypePath, TypeUuid}, render::{
 		color::Color,
 		mesh::Mesh,
 		render_resource::{
@@ -25,13 +17,9 @@ use bevy::{
 			TextureDimension, TextureFormat, TextureUsages,
 		},
 		texture::{Image, ImageSampler},
-	},
-	time::Time,
-	window::{CursorGrabMode, Window, WindowPlugin, WindowResolution},
-	DefaultPlugins,
+	}, time::Time, window::{CursorGrabMode, Window, WindowPlugin, WindowResolution}, DefaultPlugins
 };
-use glam_traits::glam::{uvec2, vec3, I16Vec2, Mat3, U16Vec2, UVec2, Vec2, Vec3, Vec3Swizzles};
-use image::{ImageBuffer, Rgba, GenericImage, GenericImageView, SubImage};
+use glam_traits::glam::{vec3, I16Vec3, Mat3, Vec2, Vec3, Vec3Swizzles};
 use leafwing_input_manager::{
 	prelude::{ActionState, DualAxis, InputManagerPlugin, InputMap},
 	Actionlike,
@@ -39,8 +27,8 @@ use leafwing_input_manager::{
 use smooth_bevy_cameras::{
 	LookAngles, LookTransform, LookTransformBundle, LookTransformPlugin, Smoother,
 };
-use tr_reader::{tr4, Readable};
-use tr_tool::{flatten, geom::{MinMax, PosSize}, packing, vec_convert::{ToBevy, ToGlam}, vtx_attr::VtxAttr, IMG_DIM_U32};
+use tr_reader::tr4;
+use tr_tool::{geom::{MinMax, VecMinMax}, load::{self, LevelRenderData}, vec_convert::{ToBevy, ToGlam}, vtx_attr::VtxAttr};
 
 #[derive(Actionlike, Clone, Reflect, Hash, PartialEq, Eq)]
 enum CameraAction {
@@ -109,7 +97,7 @@ fn build_scene(
 	let mut bounds = MinMax { min: Vec3::INFINITY, max: Vec3::NEG_INFINITY };
 	for room in rooms {
 		let mut room_verts = Vec::with_capacity(room.vertices.len());
-		for &tr4::RoomVertex { vertex: tr4::Vertex { x, y, z }, .. } in room.vertices.iter() {
+		for &tr4::RoomVertex { vertex: I16Vec3 { x, y, z }, .. } in room.vertices.iter() {
 			let v = vec3((x as i32 + room.x) as f32, y as f32, (z as i32 + room.z) as f32) / 1024.0;
 			bounds.update(v);
 			room_verts.push(v);
@@ -122,7 +110,6 @@ fn build_scene(
 		let mut mesh = Mesh::new(PrimitiveTopology::TriangleList);
 		mesh.insert_attribute(Mesh::ATTRIBUTE_POSITION, VtxAttr(mesh_verts));
 		mesh.insert_attribute(Mesh::ATTRIBUTE_UV_0, VtxAttr(mesh_tex_coords));
-		//mesh.set_indices(Some(Indices::U16((0..num_verts as u16).collect())));
 		commands
 			.spawn(MaterialMeshBundle {
 				mesh: meshes.add(mesh),
@@ -206,148 +193,6 @@ fn camera_control(
 #[derive(Resource)]
 struct LevelPath(String);
 
-const PADDING: u32 = 4;
-
-//tr texture coord units are 256ths of a pixel
-//transform to whole pixel, rounding to nearest
-fn coord_transform(a: u16) -> u16 {
-	(a >> 8) + (((a & 255) + 128) >> 8)
-}
-
-//wouldn't take generic versions
-fn get_pixel(image: &SubImage<&ImageBuffer<Rgba<u8>, &[u8]>>, UVec2 { x, y }: UVec2) -> Rgba<u8> {
-	image.get_pixel(x, y)
-}
-
-fn put_pixel(
-	image: &mut SubImage<&mut ImageBuffer<Rgba<u8>, Vec<u8>>>,
-	UVec2 { x, y }: UVec2,
-	pixel: Rgba<u8>,
-) {
-	image.put_pixel(x, y, pixel);
-}
-
-fn pad_textures(
-	object_textures: Box<[tr4::ObjectTexture]>,
-	image_data: &[u8],
-	num_images: u32,
-) -> (UVec2, Vec<u8>, Vec<[Vec2; 4]>) {
-	let image_data = ImageBuffer::<Rgba<u8>, _>::from_raw(
-		IMG_DIM_U32,
-		IMG_DIM_U32 * num_images,
-		image_data,
-	).expect("failed to wrap image data");
-	let mut blocks = Vec::<(MinMax<U16Vec2>, Vec<usize>, u16)>::new();
-	let mut obj_texs = object_textures
-		.into_iter()
-		.enumerate()
-		.map(|(index, tr4::ObjectTexture { atlas_and_triangle, vertices, .. })| {
-			let vertices = vertices.map(|tr4::ObjectTextureVertex { x, y }|
-				U16Vec2::from_array([x, y].map(coord_transform))
-			);
-			let mut rect = MinMax::new(vertices[0]);
-			let num = if atlas_and_triangle.triangle() { 3 } else { 4 };
-			for &v in &vertices[1..num] {
-				rect.update(v);
-			}
-			let atlas = atlas_and_triangle.atlas_id();
-			let mut added = false;
-			for (block_rect, block_tex_ids, block_atlas) in &mut blocks {
-				if atlas == *block_atlas {
-					if block_rect.contains(&rect) {
-						block_tex_ids.push(index);
-						added = true;
-						break;
-					} else if rect.contains(block_rect) {
-						*block_rect = rect;
-						block_tex_ids.push(index);
-						added = true;
-						break;
-					}
-				}
-			}
-			if !added {
-				blocks.push((rect, vec![index], atlas));
-			}
-			vertices
-		})
-		.collect::<Vec<_>>();
-	let blocks = blocks
-		.into_iter()
-		.map(|(rect, tex_ids, atlas)| (PosSize::from(rect), tex_ids, atlas))
-		.collect::<Vec<_>>();
-	let (new_pos, atlas_size) = packing::pack(
-		blocks
-		.iter()
-		.map(|&(PosSize { size, .. }, ..)| (size + U16Vec2::splat(PADDING as u16 * 2)))
-	);
-	let new_pos = new_pos.into_iter().map(|r| r.as_i16vec2()).collect::<Vec<_>>();
-	let atlas_size = atlas_size.as_uvec2();
-	let mut new_atlas = ImageBuffer::<Rgba<u8>, _>::new(atlas_size.x, atlas_size.y);
-	for ((PosSize { pos, size }, tex_ids, atlas), new_pos) in blocks
-		.into_iter()
-		.zip(new_pos) {
-		let delta = new_pos + I16Vec2::splat(PADDING as i16) - pos.as_i16vec2();
-		for tex_id in tex_ids {
-			for v in &mut obj_texs[tex_id] {
-				*v = v.wrapping_add_signed(delta);
-			}
-		}
-		let size = size.as_uvec2();
-		let src = image_data.view(
-			pos.x as u32,
-			pos.y as u32 + atlas as u32 * IMG_DIM_U32,
-			size.x,
-			size.y,
-		);
-		let mut dest = new_atlas.sub_image(
-			new_pos.x as u32,
-			new_pos.y as u32,
-			size.x + PADDING * 2,
-			size.y + PADDING * 2,
-		);
-		for x in 0..size.x {//copy texture
-			for y in 0..size.y {
-				dest.put_pixel(PADDING + x, PADDING + y, src.get_pixel(x, y));
-			}
-		}
-		for i in 0..2 {//edges
-			let inv = UVec2::ONE - UVec2::AXES[i];
-			for j in 0..size[i] {
-				let p = UVec2::AXES[i] * UVec2::splat(j);
-				let min_pixel = get_pixel(&src, p);
-				let max_pixel = get_pixel(&src, p + inv * (size - UVec2::ONE));
-				for k in 0..PADDING {
-					put_pixel(&mut dest, p + UVec2::AXES[i] * UVec2::splat(PADDING) + inv * UVec2::splat(k), min_pixel);
-					put_pixel(&mut dest, p + UVec2::splat(PADDING) + inv * (UVec2::splat(k) + size), max_pixel);
-				}
-			}
-		}
-		for i in 0..2 {//corners
-			for j in 0..2 {
-				let pixel = get_pixel(&src, uvec2(i, j) * (size - UVec2::ONE));
-				for x in 0..PADDING {
-					for y in 0..PADDING {
-						put_pixel(&mut dest, uvec2(i, j) * (UVec2::splat(PADDING) + size) + uvec2(x, y), pixel);
-					}
-				}
-			}
-		}
-	}
-	new_atlas.save("packed.png").unwrap();
-	let atlas_size_f = atlas_size.as_vec2();
-	let obj_texs = obj_texs.into_iter().map(|verts| verts.map(|v| v.as_vec2() / atlas_size_f)).collect::<Vec<_>>();
-	(atlas_size, new_atlas.into_vec(), obj_texs)
-}
-
-fn swap_br(buf: &mut [u8]) {
-	for i in 0..buf.len() / 4 {
-		let a = buf[i * 4];
-		buf[i * 4] = buf[i * 4 + 2];
-		buf[i * 4 + 2] = a;
-	}
-}
-
 fn setup(
 	mut commands: Commands,
 	meshes: ResMut<Assets<Mesh>>,
@@ -359,29 +204,23 @@ fn setup(
 	let meshes = meshes.into_inner();
 	let materials = materials.into_inner();
 	let LevelPath(level_path) = level_path.into_inner();
-	let tr4::Level { images: tr4::Images { images32, .. }, level_data: tr4::LevelData { object_textures, rooms, .. }, .. } = 
-		tr4::Level::read(&mut BufReader::new(File::open(level_path).expect("failed to open file")))
-		.expect("failed to read level");
-	let num_images = images32.len() as u32;
-	let mut image = flatten(images32);
-	swap_br(&mut image);
-	let (image_size, image, object_textures) = pad_textures(object_textures, &image, num_images);
+	let LevelRenderData { atlas_size, atlas_data, texture_coords, rooms } = load::load_level(level_path);
 	let image = Image {
 		texture_descriptor: TextureDescriptor {
 			size: Extent3d {
-				width: image_size.x,
-				height: image_size.y,
+				width: atlas_size.x as u32,
+				height: atlas_size.y as u32,
 				depth_or_array_layers: 1,
 			},
 			dimension: TextureDimension::D2,
-			format: TextureFormat::Rgba8UnormSrgb,
+			format: TextureFormat::Bgra8UnormSrgb,
 			label: None,
 			mip_level_count: 1,
 			sample_count: 1,
 			usage: TextureUsages::TEXTURE_BINDING | TextureUsages::COPY_DST,
 			view_formats: &[],
 		},
-		data: image,
+		data: atlas_data,
 		sampler: ImageSampler::nearest(),
 		..Default::default()
 	};
@@ -391,7 +230,7 @@ fn setup(
 		meshes,
 		materials,
 		&image,
-		&object_textures,
+		&texture_coords,
 		&rooms,
 		None,
 	);
@@ -409,7 +248,7 @@ fn setup(
 }
 
 fn escape_quit(keyboard: Res<Input<KeyCode>>, mut exit: EventWriter<AppExit>) {
-	if keyboard.pressed(KeyCode::Escape) {
+	if keyboard.pressed(KeyCode::Key1) {//escape key is broken, using 1 until new hardware
 		exit.send(AppExit);
 	}
 }

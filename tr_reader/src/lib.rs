@@ -1,5 +1,6 @@
 extern crate self as tr_reader;
 
+pub mod glam_impls;
 pub mod tr4;
 
 use std::io::{Read, Cursor, Result};
@@ -46,7 +47,7 @@ impl<T: Readable, const N: usize> Readable for [T; N] {
 		for _ in 0..N {
 			array.push(T::read(reader)?);
 		}
-		Ok(array.into_inner().ok().unwrap())//reads exactly N items
+		Ok(unsafe { array.into_inner().ok().unwrap_unchecked() })//reads exactly N items
 	}
 }
 
@@ -60,7 +61,7 @@ pub fn read_boxed_slice<R: Read, T: Readable>(reader: &mut R, len: usize) -> Res
 
 impl<T: Readable, const N: usize> Readable for Box<[T; N]> {
 	fn read<R: Read>(reader: &mut R) -> Result<Self> {
-		Ok(read_boxed_slice(reader, N)?.try_into().ok().unwrap())//reads exactly N items
+		Ok(unsafe { read_boxed_slice(reader, N)?.try_into().ok().unwrap_unchecked() })//reads exactly N items
 	}
 }
 
