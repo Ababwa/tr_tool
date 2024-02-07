@@ -1,15 +1,22 @@
-use std::env::args;
 use bevy::{
-	app::{App, AppExit, PluginGroup, Startup, Update}, asset::{Asset, Assets, Handle}, core_pipeline::{
+	app::{App, AppExit, PluginGroup, Startup, Update},
+	asset::{Asset, Assets, Handle},
+	core_pipeline::{
 		clear_color::ClearColorConfig,
 		core_3d::{Camera3d, Camera3dBundle},
-	}, ecs::{
+	},
+	ecs::{
 		component::Component,
 		entity::Entity,
 		event::EventWriter,
 		query::With,
 		system::{Commands, Query, Res, ResMut, Resource},
-	}, hierarchy::DespawnRecursiveExt, input::{keyboard::KeyCode, mouse::MouseButton, Input}, pbr::{Material, MaterialMeshBundle, MaterialPlugin}, reflect::{Reflect, TypePath, TypeUuid}, render::{
+	},
+	hierarchy::DespawnRecursiveExt,
+	input::{keyboard::KeyCode, mouse::MouseButton, Input},
+	pbr::{Material, MaterialMeshBundle, MaterialPlugin},
+	reflect::{Reflect, TypePath, TypeUuid},
+	render::{
 		color::Color,
 		mesh::Mesh,
 		render_resource::{
@@ -17,7 +24,10 @@ use bevy::{
 			TextureDimension, TextureFormat, TextureUsages,
 		},
 		texture::{Image, ImageSampler},
-	}, time::Time, window::{CursorGrabMode, Window, WindowPlugin, WindowResolution}, DefaultPlugins
+	},
+	time::Time,
+	window::{CursorGrabMode, Window, WindowPlugin, WindowResolution},
+	DefaultPlugins,
 };
 use glam_traits::glam::{vec3, I16Vec3, Mat3, Vec2, Vec3, Vec3Swizzles};
 use leafwing_input_manager::{
@@ -27,8 +37,14 @@ use leafwing_input_manager::{
 use smooth_bevy_cameras::{
 	LookAngles, LookTransform, LookTransformBundle, LookTransformPlugin, Smoother,
 };
+use std::env::args;
 use tr_reader::tr4;
-use tr_tool::{geom::{MinMax, VecMinMax}, load::{self, LevelRenderData}, vec_convert::{ToBevy, ToGlam}, vtx_attr::VtxAttr};
+use tr_tool::{
+	geom::{MinMax, VecMinMax},
+	load::{self, LevelRenderData},
+	vec_convert::{ToBevy, ToGlam},
+	vtx_attr::VtxAttr,
+};
 
 #[derive(Actionlike, Clone, Reflect, Hash, PartialEq, Eq)]
 enum CameraAction {
