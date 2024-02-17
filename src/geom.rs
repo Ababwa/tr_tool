@@ -16,19 +16,15 @@ impl<T: Copy> MinMax<T> {
 
 pub trait VecMinMax<V> {
 	fn update(&mut self, v: V);
-	fn extend(self, v: V) -> Self;
 	fn contains(&self, other: &Self) -> bool;
 	fn intersects(&self, other: &Self) -> bool;
+	fn from_iter<I: IntoIterator<Item = V>>(iter: I) -> Option<Self> where Self: Sized;
 }
 
 impl<V: GVec> VecMinMax<V> for MinMax<V> {
 	fn update(&mut self, v: V) {
 		self.min = self.min.min(v);
 		self.max = self.max.max(v);
-	}
-	
-	fn extend(self, v: V) -> Self {
-		Self { min: self.min.min(v), max: self.max.max(v) }
 	}
 	
 	fn contains(&self, other: &Self) -> bool {
@@ -38,13 +34,22 @@ impl<V: GVec> VecMinMax<V> for MinMax<V> {
 	fn intersects(&self, other: &Self) -> bool {
 		self.min.cmplt(other.max).all() && self.max.cmpgt(other.min).all()
 	}
+	
+	fn from_iter<I: IntoIterator<Item = V>>(iter: I) -> Option<Self> {
+		let mut iter = iter.into_iter();
+		let mut minmax = Self::new(iter.next()?);
+		while let Some(v) = iter.next() {
+			minmax.update(v);
+		}
+		Some(minmax)
+	}
 }
 
 pub trait ScalarMinMax<S> {
 	fn update(&mut self, s: S);
-	fn extend(self, s: S) -> Self;
 	fn contains(&self, other: &Self) -> bool;
 	fn intersects(&self, other: &Self) -> bool;
+	fn from_iter<I: IntoIterator<Item = S>>(iter: I) -> Option<Self> where Self: Sized;
 }
 
 impl<S: Copy + Ord> ScalarMinMax<S> for MinMax<S> {
@@ -53,16 +58,21 @@ impl<S: Copy + Ord> ScalarMinMax<S> for MinMax<S> {
 		self.max = self.max.max(s);
 	}
 	
-	fn extend(self, s: S) -> Self {
-		Self { min: self.min.min(s), max: self.max.max(s) }
-	}
-	
 	fn contains(&self, other: &Self) -> bool {
 		self.min <= other.min && self.max >= other.max
 	}
 	
 	fn intersects(&self, other: &Self) -> bool {
 		self.min < other.max && self.max > other.min
+	}
+	
+	fn from_iter<I: IntoIterator<Item = S>>(iter: I) -> Option<Self> where Self: Sized {
+		let mut iter = iter.into_iter();
+		let mut minmax = Self::new(iter.next()?);
+		while let Some(v) = iter.next() {
+			minmax.update(v);
+		}
+		Some(minmax)
 	}
 }
 

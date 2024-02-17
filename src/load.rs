@@ -1,153 +1,160 @@
-use std::{fs::File, io::BufReader};
-use glam_traits::glam::{u16vec2, U16Vec2, Vec2};
-use tr_reader::{tr4::{self, IMG_DIM}, Readable};
-use crate::{geom::{MinMax, PosSize, VecMinMax}, packer};
-
-const PADDING: u16 = 4;
+use std::{borrow::Cow, collections::HashMap, fs::File, io::BufReader, ops::Range};
+use glam_traits::glam::{ivec3, u16vec2, uvec2, IVec3, UVec2, Vec2, Vec3};
+use tr_reader::tr4::{self, IMAGE_SIZE};
+use crate::reinterpret;
 
 /// TR texture coord units are 1/256 of a pixel.
 /// Transform to whole pixel units by rounding to nearest.
-fn coord_transform(a: u16) -> u16 {
+fn transform_coord(a: u16) -> u16 {
 	(a >> 8) + (((a & 255) + 128) >> 8)
 }
 
-fn pixel_offset(width: usize, pos: U16Vec2) -> usize {
-	(pos.y as usize * width + pos.x as usize) * 4
+struct ObjTex {
+	vertices: [Vec2; 4],
+	blend_mode: tr4::BlendMode,
 }
 
-struct ImgView<T> {
-	data: T,
-	width: usize,
-	offset: U16Vec2,
-}
-
-impl<T> ImgView<T> {
-	fn new(data: T, width: usize, offset: U16Vec2) -> Self {
-		Self { data, width, offset }
-	}
-}
-
-impl<'a> ImgView<&'a [u8]> {
-	fn get_pixel(&self, pos: U16Vec2) -> [u8; 4] {
-		let offset = pixel_offset(self.width, self.offset + pos);
-		let p = self.data[offset..offset + 4].as_ptr();
-		unsafe { *(p as *const _) }
-	}
-}
-
-impl<'a> ImgView<&'a mut [u8]> {
-	fn put_pixel(&mut self, pos: U16Vec2, pixel: [u8; 4]) {
-		let offset = pixel_offset(self.width, self.offset + pos);
-		let p = self.data[offset..offset + 4].as_mut_ptr();
-		unsafe { *(p as *mut _) = pixel }
-	}
-}
-
-struct Block<T> {
-	atlas: u16,
-	rect: T,
-	indices: Vec<usize>,
-}
-
-fn insert_index(blocks: &mut Vec<Block<MinMax<U16Vec2>>>, atlas: u16, rect: MinMax<U16Vec2>, index: usize) {
-	for block in blocks.iter_mut() {
-		if atlas == block.atlas {
-			if block.rect.contains(&rect) {
-				return block.indices.push(index);
-			} else if rect.contains(&block.rect) {
-				block.rect = rect;
-				return block.indices.push(index);
-			}
-		}
-	}
-	blocks.push(Block { atlas, rect, indices: vec![index] });
-}
-
-/// Pack blocks with padding to create a new atlas.
-/// Copy image data from old atlas to new.
-/// Transform texture coords to normalized.
-fn build_new_atlas(old_atlas: &[u8], blocks: Vec<Block<PosSize<U16Vec2>>>, mut texture_coords: Vec<[U16Vec2; 4]>) -> (U16Vec2, Vec<u8>, Vec<[Vec2; 4]>) {
-	let (new_pos, new_atlas_size) = packer::pack(
-		blocks
+fn transform_object_textures(object_textures: &[tr4::ObjectTexture]) -> Vec<ObjTex> {
+	object_textures
 		.iter()
-		.map(|block| block.rect.size + PADDING * 2)
-	);
-	let mut new_atlas = vec![0u8; new_atlas_size.as_uvec2().element_product() as usize * 4];
-	for (Block { atlas, rect: PosSize { pos, size }, indices }, new_pos) in blocks.into_iter().zip(new_pos) {
-		let delta = (new_pos + PADDING).as_i16vec2() - pos.as_i16vec2();
-		for index in indices {
-			for v in &mut texture_coords[index] {
-				*v = v.wrapping_add_signed(delta);
-			}
-		}
-		let src = ImgView::new(old_atlas, IMG_DIM, pos + atlas * IMG_DIM as u16 * U16Vec2::Y);
-		let mut dest = ImgView::new(new_atlas.as_mut_slice(), new_atlas_size.x as usize, new_pos);
-		for x in 0..size.x {//copy texture
-			for y in 0..size.y {
-				dest.put_pixel(PADDING + u16vec2(x, y), src.get_pixel(u16vec2(x, y)));
-			}
-		}
-		for i in 0..2 {//edges
-			let inv = 1 - U16Vec2::AXES[i];
-			for j in 0..size[i] {
-				let p = j * U16Vec2::AXES[i];
-				let min_pixel = src.get_pixel(p);
-				let max_pixel = src.get_pixel(p + inv * (size - 1));
-				for k in 0..PADDING {
-					dest.put_pixel(p + PADDING * U16Vec2::AXES[i] + k * inv, min_pixel);
-					dest.put_pixel(p + PADDING + inv * (k + size), max_pixel);
-				}
-			}
-		}
-		for i in 0..2 {//corners
-			for j in 0..2 {
-				let pixel = src.get_pixel(u16vec2(i, j) * (size - 1));
-				for x in 0..PADDING {
-					for y in 0..PADDING {
-						dest.put_pixel(u16vec2(i, j) * (PADDING + size) + u16vec2(x, y), pixel);
-					}
-				}
-			}
-		}
-	}
-	let atlas_size_f = new_atlas_size.as_vec2();
-	let texture_coords = texture_coords.into_iter().map(|verts| verts.map(|v| v.as_vec2() / atlas_size_f)).collect();
-	(new_atlas_size, new_atlas, texture_coords)
+		.map(|tr4::ObjectTexture { blend_mode, atlas_and_triangle, vertices, .. }| ObjTex {
+			vertices: vertices
+				.map(|v| v.to_array().map(transform_coord))
+				.map(|[x, y]| u16vec2(x, y + atlas_and_triangle.atlas_id() * IMAGE_SIZE as u16))
+				.map(|v| v.as_vec2()),
+			blend_mode: *blend_mode,
+		})
+		.collect()
 }
 
-/// Extract texture coords from object textures.
-/// Transform texture coord units to whole pixels.
-/// Generate "blocks", rects in the old atlas that contain one or more textures.
-fn get_blocks(object_textures: Box<[tr4::ObjectTexture]>) -> (Vec<Block<PosSize<U16Vec2>>>, Vec<[U16Vec2; 4]>) {
-	let mut blocks = vec![];
-	let texture_coords = object_textures
-		.to_vec()//to get values
-		.into_iter()
-		.enumerate()
-		.map(|(index, tr4::ObjectTexture { atlas_and_triangle, vertices, .. })| {
-			let vertices = vertices.map(|v| U16Vec2::from(v.to_array().map(coord_transform)));
-			let num = if atlas_and_triangle.triangle() { 3 } else { 4 };
-			let rect = vertices[1..num].iter().copied().fold(MinMax::new(vertices[0]), MinMax::extend);
-			insert_index(&mut blocks, atlas_and_triangle.atlas_id(), rect, index);
-			vertices
+#[repr(C)]
+pub struct Vertex {
+	pub pos: Vec3,
+	pub tex: Vec2,
+}
+
+fn add_vertices<const N: usize>(
+	opaque: &mut Vec<Vertex>,
+	additive: &mut Vec<Vertex>,
+	room_verts: &[Vec3],
+	obj_texs: &[ObjTex],
+	faces: &[tr4::RoomFace<N>],
+	indices: &[usize],
+) {
+	for &tr4::RoomFace { texture_details, vertex_ids } in faces {
+		let tex_id = texture_details.texture_id() as usize;
+		let obj_tex = &obj_texs[tex_id];
+		let vertex_list = if let tr4::BlendMode::Add = obj_tex.blend_mode {
+			&mut *additive
+		} else {
+			&mut *opaque
+		};
+		let indices = if texture_details.double_sided() {
+			Cow::Owned(indices.iter().chain(indices.iter().rev()).copied().collect())
+		} else {
+			Cow::Borrowed(indices)
+		};
+		for &i in indices.iter() {
+			vertex_list.push(Vertex {
+				pos: room_verts[vertex_ids[i] as usize],
+				tex: obj_tex.vertices[i],
+			})
+		}
+	}
+}
+
+pub struct RoomVertexIndices {
+	pub opaque: Range<u32>,
+	pub additive: Range<u32>,
+}
+
+pub struct FlipRoom {
+	pub original: usize,
+	pub flipped: usize,
+}
+
+impl FlipRoom {
+	pub fn get_room_index(&self, flipped: bool) -> usize {
+		match flipped {
+			true => self.flipped,
+			false => self.original,
+		}
+	}
+}
+
+pub struct FlipGroup {
+	pub label: u8,
+	pub flip_rooms: Vec<FlipRoom>,
+	pub flipped: bool,
+}
+
+impl FlipGroup {
+	pub fn get_room_indices<'a>(&'a self) -> impl Iterator<Item = usize> + 'a {
+		self.flip_rooms.iter().map(|flip_room| flip_room.get_room_index(self.flipped))
+	}
+}
+
+struct BuildGeomOutput {
+	vertices: Vec<Vertex>,
+	room_vertex_indices: Vec<RoomVertexIndices>,
+	static_room_indices: Vec<usize>,
+	flip_groups: Vec<FlipGroup>,
+}
+
+fn build_geom(rooms: &[tr4::Room], obj_texs: &[ObjTex]) -> BuildGeomOutput {
+	let mut vertices = vec![];
+	let room_vertex_indices = rooms.iter().map(|room| {
+			let room_verts = room.vertices
+				.iter()
+				.map(|tr4::RoomVertex { vertex, .. }| vertex.as_ivec3())
+				.map(|IVec3 { x, y, z }| ivec3(x + room.x, y, z + room.z).as_vec3() / 1024.0)
+				.collect::<Vec<_>>();
+			let mut opaque = vec![];
+			let mut additive = vec![];
+			add_vertices(&mut opaque, &mut additive, &room_verts, obj_texs, &room.triangles, &[0, 1, 2]);
+			add_vertices(&mut opaque, &mut additive, &room_verts, obj_texs, &room.quads, &[0, 1, 2, 0, 2, 3]);
+			let opaque_start = vertices.len();
+			let opaque_end = opaque_start + opaque.len();
+			let additive_start = opaque_end;
+			let additive_end = additive_start + additive.len();
+			vertices.extend(opaque);
+			vertices.extend(additive);
+			RoomVertexIndices {
+				opaque: opaque_start as u32..opaque_end as u32,
+				additive: additive_start as u32..additive_end as u32,
+			}
 		})
 		.collect::<Vec<_>>();
-	let blocks = blocks
+	let mut static_room_indices = (0..rooms.len()).collect::<Vec<_>>();
+	let mut flip_groups = HashMap::<u8, Vec<FlipRoom>>::new();
+	for (index, room) in rooms.iter().enumerate() {
+		if let Some(flip_index) = room.flip_room_id {
+			let flip_index = flip_index.get() as usize;
+			static_room_indices.remove(static_room_indices.binary_search(&index).expect("no_flips missing index"));
+			static_room_indices.remove(static_room_indices.binary_search(&flip_index).expect("no_flips missing flip index"));
+			flip_groups.entry(room.flip_group).or_default().push(FlipRoom { original: index, flipped: flip_index });
+		}
+	}
+	let mut flip_groups = flip_groups
 		.into_iter()
-		.map(|Block { atlas, rect, indices }| Block { atlas, rect: PosSize::from(rect), indices })
+		.map(|(label, flip_rooms)| FlipGroup { label, flip_rooms, flipped: false })
 		.collect::<Vec<_>>();
-	(blocks, texture_coords)
-}
-
-fn flatten<T, const N: usize>(data: &[[T; N]]) -> &[T] {
-	unsafe { std::slice::from_raw_parts(data.as_ptr() as *const T, data.len() * N) }
+	flip_groups.sort_by_key(|flip_group| flip_group.label);
+	BuildGeomOutput {
+		vertices,
+		room_vertex_indices,
+		static_room_indices,
+		flip_groups,
+	}
 }
 
 pub struct LevelRenderData {
-	pub atlas_size: U16Vec2,
-	pub atlas_data: Vec<u8>,
-	pub texture_coords: Vec<[Vec2; 4]>,
-	pub rooms: Box<[tr4::Room]>,
+	pub atlas_size: UVec2,
+	pub atlas_data: Box<[u8]>,
+	pub vertices: Vec<Vertex>,
+	pub room_vertex_indices: Vec<RoomVertexIndices>,
+	pub static_room_indices: Vec<usize>,
+	pub flip_groups: Vec<FlipGroup>,
 }
 
 pub fn load_level(level_path: &str) -> LevelRenderData {
@@ -155,9 +162,16 @@ pub fn load_level(level_path: &str) -> LevelRenderData {
 		images: tr4::Images { images32, .. },
 		level_data: tr4::LevelData { object_textures, rooms, .. },
 		..
-	} = tr4::Level::read(&mut BufReader::new(File::open(level_path).expect("failed to open file")))
+	} = tr4::read_level(&mut BufReader::new(File::open(level_path).expect("failed to open file")))
 		.expect("failed to read level");
-	let (blocks, texture_coords) = get_blocks(object_textures);
-	let (atlas_size, atlas_data, texture_coords) = build_new_atlas(flatten(&images32), blocks, texture_coords);
-	LevelRenderData { atlas_size, atlas_data, texture_coords, rooms }
+	let object_textures = transform_object_textures(&object_textures);
+	let BuildGeomOutput { vertices, room_vertex_indices, static_room_indices, flip_groups } = build_geom(&rooms, &object_textures);
+	LevelRenderData {
+		atlas_size: uvec2(IMAGE_SIZE as u32, (images32.len() * IMAGE_SIZE) as u32),
+		atlas_data: unsafe { reinterpret::box_slice(images32) },//byte arrays to byte arrays
+		vertices,
+		room_vertex_indices,
+		static_room_indices,
+		flip_groups,
+	}
 }

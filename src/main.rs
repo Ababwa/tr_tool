@@ -1,308 +1,416 @@
-use bevy::{
-	app::{App, AppExit, PluginGroup, Startup, Update},
-	asset::{Asset, Assets, Handle},
-	core_pipeline::{
-		clear_color::ClearColorConfig,
-		core_3d::{Camera3d, Camera3dBundle},
-	},
-	ecs::{
-		component::Component,
-		entity::Entity,
-		event::EventWriter,
-		query::With,
-		system::{Commands, Query, Res, ResMut, Resource},
-	},
-	hierarchy::DespawnRecursiveExt,
-	input::{keyboard::KeyCode, mouse::MouseButton, Input},
-	pbr::{Material, MaterialMeshBundle, MaterialPlugin},
-	reflect::{Reflect, TypePath, TypeUuid},
-	render::{
-		color::Color,
-		mesh::Mesh,
-		render_resource::{
-			AsBindGroup, Extent3d, PrimitiveTopology, ShaderRef, TextureDescriptor,
-			TextureDimension, TextureFormat, TextureUsages,
-		},
-		texture::{Image, ImageSampler},
-	},
-	time::Time,
-	window::{CursorGrabMode, Window, WindowPlugin, WindowResolution},
-	DefaultPlugins,
+use ext::Wait;
+use geom::{MinMax, VecMinMax};
+use glam_traits::glam::{vec3, EulerRot, Mat4, Vec3, Vec3Swizzles};
+use load::{load_level, FlipGroup, LevelRenderData, Vertex};
+use std::{
+	borrow::Cow,
+	env::args,
+	f32::consts::{FRAC_PI_2, FRAC_PI_4},
+	mem::size_of,
+	num::NonZeroU32,
+	time::Instant,
 };
-use glam_traits::glam::{vec3, I16Vec3, Mat3, Vec2, Vec3, Vec3Swizzles};
-use leafwing_input_manager::{
-	prelude::{ActionState, DualAxis, InputManagerPlugin, InputMap},
-	Actionlike,
+use wgpu::{
+	util::{BufferInitDescriptor, DeviceExt, TextureDataOrder},
+	BindGroupDescriptor, BindGroupEntry, BindGroupLayoutDescriptor, BindGroupLayoutEntry,
+	BindingResource, BindingType, BlendComponent, BlendFactor, BlendOperation, BlendState, Buffer,
+	BufferBindingType, BufferSize, BufferUsages, Color, ColorTargetState, ColorWrites,
+	CommandEncoderDescriptor, CompareFunction, DepthBiasState, DepthStencilState, Device,
+	DeviceDescriptor, Extent3d, Face, Features, FragmentState, Instance, Limits, LoadOp,
+	MultisampleState, Operations, PipelineLayoutDescriptor, PowerPreference, PrimitiveState, Queue,
+	RenderPassColorAttachment, RenderPassDepthStencilAttachment, RenderPassDescriptor,
+	RenderPipelineDescriptor, RequestAdapterOptions, ShaderModuleDescriptor, ShaderSource,
+	ShaderStages, StencilState, StoreOp, TextureDescriptor, TextureDimension, TextureFormat,
+	TextureSampleType, TextureUsages, TextureView, TextureViewDescriptor, TextureViewDimension,
+	VertexAttribute, VertexBufferLayout, VertexFormat, VertexState, VertexStepMode,
 };
-use smooth_bevy_cameras::{
-	LookAngles, LookTransform, LookTransformBundle, LookTransformPlugin, Smoother,
-};
-use std::env::args;
-use tr_reader::tr4;
-use tr_tool::{
-	geom::{MinMax, VecMinMax},
-	load::{self, LevelRenderData},
-	vec_convert::{ToBevy, ToGlam},
-	vtx_attr::VtxAttr,
+use winit::{
+	dpi::PhysicalSize,
+	event::{DeviceEvent, ElementState, Event, MouseButton, RawKeyEvent, WindowEvent},
+	event_loop::EventLoop,
+	keyboard::{KeyCode, PhysicalKey},
+	window::{CursorGrabMode, Window},
 };
 
-#[derive(Actionlike, Clone, Reflect, Hash, PartialEq, Eq)]
-enum CameraAction {
-	Look,
-	Toggle,
-	Forward,
-	Backward,
-	Left,
-	Right,
-	Up,
-	Down,
-	Shift,
+mod ext;
+mod geom;
+mod load;
+mod reinterpret;
+
+const DEPTH_FORMAT: TextureFormat = TextureFormat::Depth32Float;
+
+fn fill_dark(window: &Window) -> Result<(), softbuffer::SoftBufferError> {
+	let size = window.inner_size();
+	let mut surface = softbuffer::Surface::new(&softbuffer::Context::new(window)?, window)?;
+	surface.resize(NonZeroU32::new(size.width).unwrap(), NonZeroU32::new(size.height).unwrap())?;
+	let mut buffer = surface.buffer_mut()?;
+	buffer.fill(0);
+	Ok(buffer.present()?)
 }
 
-#[derive(Resource)]
-struct CameraControl(bool);
-
-#[derive(Component)]
-struct Scene;
-
-#[derive(TypeUuid, AsBindGroup, Clone, Asset, TypePath)]
-#[uuid = "310f88a1-f66a-4bed-8960-18554ec3da95"]
-struct FaceMaterial {
-	#[texture(0)]
-	#[sampler(1)]
-	texture: Handle<Image>,
+fn create_look_matrix(window_size: PhysicalSize<u32>, cam_pos: Vec3, yaw: f32, pitch: f32) -> Mat4 {
+	Mat4::perspective_rh(FRAC_PI_4, window_size.width as f32 / window_size.height as f32, 0.1, 200.0) *
+	Mat4::from_euler(EulerRot::XYZ, pitch, yaw, 0.0) *
+	Mat4::from_translation(cam_pos) *
+	Mat4::from_scale(vec3(1.0, -1.0, -1.0))
 }
 
-impl Material for FaceMaterial {
-	fn fragment_shader() -> ShaderRef {
-		"shaders/face.wgsl".into()
-	}
+fn get_yaw_pitch(v: Vec3) -> (f32, f32) {
+	(v.z.atan2(v.x), v.y.atan2(v.xz().length()))
 }
 
-fn add_vertices<const N: usize>(
-	pos: &mut Vec<Vec3>,
-	tex: &mut Vec<Vec2>,
-	room_verts: &[Vec3],
-	object_textures: &[[Vec2; 4]],
-	faces: &[tr4::RoomFace<N>],
-	indices: &[usize],
-) {
-	for &tr4::RoomFace { texture_details, vertex_ids } in faces {
-		let tex_id = texture_details.texture_id() as usize;
-		for &i in indices {
-			pos.push(room_verts[vertex_ids[i] as usize]);
-			tex.push(object_textures[tex_id][i]);
-		}
-	}
+fn write_look_matrix(queue: &Queue, look_matrix_uniform: &Buffer, look_matrix: &Mat4) {
+	queue.write_buffer(&look_matrix_uniform, 0, unsafe { reinterpret::ref_to_slice(look_matrix) });//floats to bytes
 }
 
-fn build_scene(
-	commands: &mut Commands,
-	meshes: &mut Assets<Mesh>,
-	materials: &mut Assets<FaceMaterial>,
-	image: &Handle<Image>,
-	object_textures: &[[Vec2; 4]],
-	rooms: &[tr4::Room],
-	old_scene: Option<Query<Entity, With<Scene>>>,
-) -> MinMax<Vec3> {
-	if let Some(old_scene) = old_scene {
-		for entity in &old_scene {
-			commands.entity(entity).despawn_recursive();
-		}
-	}
-	let mut bounds = MinMax { min: Vec3::INFINITY, max: Vec3::NEG_INFINITY };
-	for room in rooms {
-		let mut room_verts = Vec::with_capacity(room.vertices.len());
-		for &tr4::RoomVertex { vertex: I16Vec3 { x, y, z }, .. } in room.vertices.iter() {
-			let v = vec3((x as i32 + room.x) as f32, y as f32, (z as i32 + room.z) as f32) / 1024.0;
-			bounds.update(v);
-			room_verts.push(v);
-		}
-		let num_verts = (room.triangles.len() * 3) + (room.quads.len() * 6);
-		let mut mesh_verts = Vec::with_capacity(num_verts);
-		let mut mesh_tex_coords = Vec::with_capacity(num_verts);
-		add_vertices(&mut mesh_verts, &mut mesh_tex_coords, &room_verts, object_textures, &room.triangles, &[2, 1, 0]);
-		add_vertices(&mut mesh_verts, &mut mesh_tex_coords, &room_verts, object_textures, &room.quads, &[2, 1, 0, 0, 3, 2]);
-		let mut mesh = Mesh::new(PrimitiveTopology::TriangleList);
-		mesh.insert_attribute(Mesh::ATTRIBUTE_POSITION, VtxAttr(mesh_verts));
-		mesh.insert_attribute(Mesh::ATTRIBUTE_UV_0, VtxAttr(mesh_tex_coords));
-		commands
-			.spawn(MaterialMeshBundle {
-				mesh: meshes.add(mesh),
-				material: materials.add(FaceMaterial { texture: image.clone() }),
-				..Default::default()
-			})
-			.insert(Scene);
-	}
-	bounds
+fn create_depth_texture(device: &Device, window_size: PhysicalSize<u32>) -> TextureView {
+	device.create_texture(&TextureDescriptor {
+		label: None,
+		size: Extent3d { width: window_size.width, height: window_size.height, depth_or_array_layers: 1 },
+		mip_level_count: 1,
+		sample_count: 1,
+		dimension: TextureDimension::D2,
+		format: DEPTH_FORMAT,
+		usage: TextureUsages::RENDER_ATTACHMENT,
+		view_formats: &[],
+	}).create_view(&TextureViewDescriptor::default())
 }
 
-const CAM_ROT_DIVISOR: f32 = 200.0;
-
-fn update_look_target(look_transform: &mut LookTransform, action_state: &ActionState<CameraAction>) {
-	let [x, y] = action_state.axis_pair(CameraAction::Look).unwrap().xy().to_array();
-	let mut look_angles = LookAngles::from_vector(look_transform.look_direction().unwrap());
-	look_angles.add_yaw(x / CAM_ROT_DIVISOR);
-	look_angles.add_pitch(y / CAM_ROT_DIVISOR);
-	look_transform.target = look_transform.eye + look_angles.unit_vector();
-}
-
-const CAM_SPEED_SLOW: f32 = 10.0;
-const CAM_SPEED_FAST: f32 = 30.0;
-
-const ACTION_DIRECTION: [(CameraAction, Vec3); 6] = [
-	(CameraAction::Forward, Vec3::X),
-	(CameraAction::Backward, Vec3::NEG_X),
-	(CameraAction::Left, Vec3::Z),
-	(CameraAction::Right, Vec3::NEG_Z),
-	(CameraAction::Up, Vec3::NEG_Y),
-	(CameraAction::Down, Vec3::Y),
-];
-
-fn move_delta(Vec2 { x, y }: Vec2, action_state: &ActionState<CameraAction>, time: &Time) -> Vec3 {
-	let speed = if action_state.pressed(CameraAction::Shift) {
-		CAM_SPEED_FAST
-	} else {
-		CAM_SPEED_SLOW
+macro_rules! key_event {
+	($code:ident, $state:pat) => {
+		Event::DeviceEvent { event: DeviceEvent::Key(RawKeyEvent { physical_key: PhysicalKey::Code(KeyCode::$code), state: $state }), .. }
 	};
-	let look_rotation = Mat3::from_cols(Vec3::new(x, 0.0, y), Vec3::Y, Vec3::new(-y, 0.0, x));
-	let movement = ACTION_DIRECTION
-		.into_iter()
-		.filter_map(|(action, dir)| action_state.pressed(action).then_some(dir))
-		.sum::<Vec3>();
-	(time.delta_seconds() * speed) * (look_rotation * movement)
 }
 
-fn toggle_camera_control(window: &mut Window, camera_control: &mut bool) {
-	window.cursor.visible = *camera_control;
-	window.cursor.grab_mode = if *camera_control {
-		CursorGrabMode::None
-	} else {
-		CursorGrabMode::Confined
-	};
-	*camera_control ^= true;
+fn room_indices<'a>(static_room_indices: &'a [usize], flip_groups: &'a [FlipGroup]) -> impl Iterator<Item = usize> + 'a {
+	static_room_indices.iter().copied().chain(flip_groups.iter().flat_map(|flip_group| flip_group.get_room_indices()))
 }
-
-fn camera_control(
-	action_state: Res<ActionState<CameraAction>>,
-	mut windows: Query<&mut Window>,
-	mut look_transform: Query<&mut LookTransform>,
-	camera_control: ResMut<CameraControl>,
-	time: Res<Time>,
-) {
-	let action_state = action_state.as_ref();
-	let CameraControl(camera_control) = camera_control.into_inner();
-	if action_state.just_pressed(CameraAction::Toggle) {
-		toggle_camera_control(windows.single_mut().into_inner(), camera_control);
-	}
-	if *camera_control {
-		let look_transform = look_transform.single_mut().into_inner();
-		update_look_target(look_transform, action_state);
-		if let Some(look_dir) = look_transform.look_direction().unwrap().to_glam().xz().try_normalize() {
-			let delta = move_delta(look_dir, action_state, time.as_ref());
-			look_transform.eye += delta.to_bevy();
-			look_transform.target += delta.to_bevy();
-		}
-	}
-}
-
-#[derive(Resource)]
-struct LevelPath(String);
-
-fn setup(
-	mut commands: Commands,
-	meshes: ResMut<Assets<Mesh>>,
-	materials: ResMut<Assets<FaceMaterial>>,
-	images: ResMut<Assets<Image>>,
-	level_path: Res<LevelPath>,
-) {
-	let images = images.into_inner();
-	let meshes = meshes.into_inner();
-	let materials = materials.into_inner();
-	let LevelPath(level_path) = level_path.into_inner();
-	let LevelRenderData { atlas_size, atlas_data, texture_coords, rooms } = load::load_level(level_path);
-	let image = Image {
-		texture_descriptor: TextureDescriptor {
-			size: Extent3d {
-				width: atlas_size.x as u32,
-				height: atlas_size.y as u32,
-				depth_or_array_layers: 1,
-			},
-			dimension: TextureDimension::D2,
-			format: TextureFormat::Bgra8UnormSrgb,
-			label: None,
-			mip_level_count: 1,
-			sample_count: 1,
-			usage: TextureUsages::TEXTURE_BINDING | TextureUsages::COPY_DST,
-			view_formats: &[],
-		},
-		data: atlas_data,
-		sampler: ImageSampler::nearest(),
-		..Default::default()
-	};
-	let image = images.add(image);
-	let MinMax { min, max } = build_scene(
-		&mut commands,
-		meshes,
-		materials,
-		&image,
-		&texture_coords,
-		&rooms,
-		None,
-	);
-	commands.spawn(Camera3dBundle {
-		camera_3d: Camera3d {
-			clear_color: ClearColorConfig::Custom(Color::rgb(0.1, 0.3, 0.2)),
-			..Default::default()
-		},
-		..Default::default()
-	}).insert(LookTransformBundle {
-		transform: LookTransform::new(min.to_bevy(), max.to_bevy(), Vec3::NEG_Y.to_bevy()),
-		smoother: Smoother::new(0.5),
-	});
-	commands.remove_resource::<LevelPath>();
-}
-
-fn escape_quit(keyboard: Res<Input<KeyCode>>, mut exit: EventWriter<AppExit>) {
-	if keyboard.pressed(KeyCode::Key1) {//escape key is broken, using 1 until new hardware
-		exit.send(AppExit);
-	}
-}
-
-const WINDOW_WIDTH: f32 = 1024.0;
-const WINDOW_HEIGHT: f32 = 768.0;
 
 fn main() {
-	let level_path = args().skip(1).next().expect("Path to .tr4 file must be provided");
-	App::new()
-		.add_plugins(DefaultPlugins.set(WindowPlugin {
-			primary_window: Some(Window {
-				title: "TR Reader".to_owned(),
-				resolution: WindowResolution::new(WINDOW_WIDTH, WINDOW_HEIGHT),
-				..Default::default()
-			}),
-			..Default::default()
-		}))
-		.add_plugins(LookTransformPlugin)
-		.add_plugins(InputManagerPlugin::<CameraAction>::default())
-		.add_plugins(MaterialPlugin::<FaceMaterial>::default())
-		.insert_resource(CameraControl(false))
-		.insert_resource(ActionState::<CameraAction>::default())
-		.insert_resource(
-			InputMap::<CameraAction>::default()
-				.insert(DualAxis::mouse_motion(), CameraAction::Look)
-				.insert(MouseButton::Right, CameraAction::Toggle)
-				.insert(KeyCode::W, CameraAction::Forward)
-				.insert(KeyCode::A, CameraAction::Left)
-				.insert(KeyCode::S, CameraAction::Backward)
-				.insert(KeyCode::D, CameraAction::Right)
-				.insert(KeyCode::Q, CameraAction::Up)
-				.insert(KeyCode::E, CameraAction::Down)
-				.insert(KeyCode::ShiftLeft, CameraAction::Shift)
-				.build(),
-		)
-		.insert_resource(LevelPath(level_path))
-		.add_systems(Startup, setup)
-		.add_systems(Update, (camera_control, escape_quit))
-		.run();
+	let level_path = args().skip(1).next().expect(".tr4 file must be provided");
+	
+	env_logger::init();
+	let event_loop = EventLoop::new().expect("new event loop");
+	let window = &winit::window::WindowBuilder::new()
+		.with_title("TR Tool")
+		.with_min_inner_size(PhysicalSize::new(1, 1))
+		.build(&event_loop)
+		.expect("build window");
+	fill_dark(window).expect("fill window");
+	
+	let LevelRenderData { atlas_size, atlas_data, vertices, room_vertex_indices, static_room_indices, mut flip_groups } = load_level(&level_path);
+	let bounds = MinMax::from_iter(vertices.iter().map(|v| v.pos)).unwrap();
+	
+	//state
+	let mut window_size = window.inner_size();
+	let mut camera_control = false;
+	let (mut yaw, mut pitch) = get_yaw_pitch(bounds.max - bounds.min);
+	let mut cam_pos = bounds.min;
+	let mut forward = false;
+	let mut left = false;
+	let mut right = false;
+	let mut back = false;
+	let mut up = false;
+	let mut down = false;
+	let mut shift = false;
+	
+	let instance = Instance::default();
+	let surface = instance.create_surface(window).expect("create surface");
+	let adapter = instance.request_adapter(&RequestAdapterOptions {
+		power_preference: PowerPreference::HighPerformance,
+		force_fallback_adapter: false,
+		compatible_surface: Some(&surface),
+	}).wait().expect("request adapter");
+	let (device, queue) = adapter.request_device(&DeviceDescriptor {
+		label: None,
+		required_features: Features::empty(),
+		required_limits: Limits::downlevel_webgl2_defaults().using_resolution(adapter.limits()),
+	}, None).wait().expect("request device");
+	let mut config = surface.get_default_config(&adapter, window_size.width, window_size.height).expect("get default config");
+	surface.configure(&device, &config);
+	let vertex_buf = device.create_buffer_init(&BufferInitDescriptor {
+		label: None,
+		usage: BufferUsages::VERTEX,
+		contents: unsafe { reinterpret::slice(&vertices) },//contiguous primitives to bytes
+	});
+	let look_matrix_uniform = device.create_buffer_init(&BufferInitDescriptor {
+		label: None,
+		usage: BufferUsages::UNIFORM | BufferUsages::COPY_DST,
+		contents: unsafe { reinterpret::ref_to_slice(&create_look_matrix(window_size, cam_pos, yaw, pitch)) },//floats to bytes
+	});
+	let bind_group_layout = device.create_bind_group_layout(&BindGroupLayoutDescriptor {
+		label: None,
+		entries: &[
+			BindGroupLayoutEntry {
+				binding: 0,
+				visibility: ShaderStages::VERTEX,
+				count: None,
+				ty: BindingType::Buffer {
+					ty: BufferBindingType::Uniform,
+					has_dynamic_offset: false,
+					min_binding_size: BufferSize::new(size_of::<Mat4>() as u64),
+				},
+			},
+			BindGroupLayoutEntry {
+				binding: 1,
+				visibility: ShaderStages::FRAGMENT,
+				count: None,
+				ty: BindingType::Texture {
+					sample_type: TextureSampleType::Float { filterable: false },
+					view_dimension: TextureViewDimension::D2,
+					multisampled: false,
+				},
+			},
+		],
+	});
+	let bind_group = device.create_bind_group(&BindGroupDescriptor {
+		label: None,
+		layout: &bind_group_layout,
+		entries: &[
+			BindGroupEntry {
+				binding: 0,
+				resource: look_matrix_uniform.as_entire_binding(),
+			},
+			BindGroupEntry {
+				binding: 1,
+				resource: BindingResource::TextureView(&device.create_texture_with_data(
+					&queue,
+					&TextureDescriptor {
+						label: None,
+						size: Extent3d { width: atlas_size.x, height: atlas_size.y, depth_or_array_layers: 1 },
+						mip_level_count: 1,
+						sample_count: 1,
+						dimension: TextureDimension::D2,
+						format: TextureFormat::Bgra8UnormSrgb,
+						usage: TextureUsages::COPY_DST | TextureUsages::TEXTURE_BINDING,
+						view_formats: &[],
+					},
+					TextureDataOrder::default(),
+					&atlas_data,
+				).create_view(&TextureViewDescriptor::default()))
+			},
+		],
+	});
+	let shader = device.create_shader_module(ShaderModuleDescriptor {
+		label: None,
+		source: ShaderSource::Wgsl(Cow::Borrowed(include_str!("shader.wgsl"))),
+	});
+	let pipeline_layout_descriptor = PipelineLayoutDescriptor {
+		label: None,
+		bind_group_layouts: &[&bind_group_layout],
+		push_constant_ranges: &[],
+	};
+	let vertex_state = VertexState {
+		module: &shader,
+		entry_point: "vs_main",
+		buffers: &[VertexBufferLayout {
+			array_stride: size_of::<Vertex>() as u64,
+			step_mode: VertexStepMode::Vertex,
+			attributes: &[
+				VertexAttribute {
+					offset: 0,
+					format: VertexFormat::Float32x3,
+					shader_location: 0,
+				},
+				VertexAttribute {
+					offset: VertexFormat::Float32x3.size(),
+					format: VertexFormat::Float32x2,
+					shader_location: 1,
+				},
+			],
+		}],
+	};
+	let primitive_state = PrimitiveState { cull_mode: Some(Face::Front), ..PrimitiveState::default() };
+	let depth_stencil_state = Some(DepthStencilState {
+		bias: DepthBiasState::default(),
+		depth_compare: CompareFunction::Less,
+		depth_write_enabled: true,
+		format: DEPTH_FORMAT,
+		stencil: StencilState::default(),
+	});
+	let opaque_pipeline = device.create_render_pipeline(&RenderPipelineDescriptor {
+		label: None,
+		layout: Some(&device.create_pipeline_layout(&pipeline_layout_descriptor)),
+		vertex: vertex_state.clone(),
+		fragment: Some(FragmentState {
+			module: &shader,
+			entry_point: "fs_main",
+			targets:
+			&[Some(ColorTargetState {
+				blend: None,
+				format: TextureFormat::Bgra8UnormSrgb,
+				write_mask: ColorWrites::all(),
+			})],
+		}),
+		primitive: primitive_state,
+		depth_stencil: depth_stencil_state.clone(),
+		multisample: MultisampleState::default(),
+		multiview: None,
+	});
+	let additive_pipeline = device.create_render_pipeline(&RenderPipelineDescriptor {
+		label: None,
+		layout: Some(&device.create_pipeline_layout(&pipeline_layout_descriptor)),
+		vertex: vertex_state,
+		fragment: Some(FragmentState {
+			module: &shader,
+			entry_point: "fs_main",
+			targets: &[Some(ColorTargetState {
+				blend: Some(BlendState {
+					alpha: BlendComponent {
+						src_factor: BlendFactor::One,
+						dst_factor: BlendFactor::One,
+						operation: BlendOperation::Add,
+					},
+					color: BlendComponent {
+						src_factor: BlendFactor::One,
+						dst_factor: BlendFactor::One,
+						operation: BlendOperation::Add,
+					},
+				}),
+				format: TextureFormat::Bgra8UnormSrgb,
+				write_mask: ColorWrites::all(),
+			})],
+		}),
+		primitive: primitive_state,
+		depth_stencil: depth_stencil_state,
+		multisample: MultisampleState::default(),
+		multiview: None,
+	});
+	
+	let egui_ctx = egui::Context::default();
+	let mut egui_input_state = egui_winit::State::new(egui_ctx.clone(), egui_ctx.viewport_id(), window, None, None);
+	let mut egui_renderer = egui_wgpu::Renderer::new(&device, TextureFormat::Bgra8UnormSrgb, None, 1);
+	
+	let mut depth_texture = create_depth_texture(&device, window_size);
+	let mut last_frame = Instant::now();
+	event_loop.run(move |event, target| match event {
+		Event::WindowEvent { event, .. } => if camera_control || !egui_input_state.on_window_event(window, &event).consumed {
+			match event {
+				WindowEvent::Resized(new_size) => {
+					window_size = new_size;
+					config.width = window_size.width;
+					config.height = window_size.height;
+					surface.configure(&device, &config);
+					depth_texture = create_depth_texture(&device, window_size);
+					write_look_matrix(&queue, &look_matrix_uniform, &create_look_matrix(window_size, cam_pos, yaw, pitch));
+				},
+				WindowEvent::RedrawRequested => {
+					let now = Instant::now();
+					let delta_time = now - last_frame;
+					
+					let movement = [
+						(forward, Vec3::Z),
+						(back, Vec3::NEG_Z),
+						(left, Vec3::X),
+						(right, Vec3::NEG_X),
+						(down, Vec3::Y),
+						(up, Vec3::NEG_Y),
+					].into_iter().filter_map(|(dir, vec)| dir.then_some(vec)).reduce(|a, b| a + b);
+					if let Some(movement) = movement {
+						cam_pos += if shift { 30.0 } else { 5.0 } * delta_time.as_secs_f32() * Mat4::from_euler(EulerRot::XYZ, pitch, yaw, 0.0).inverse().transform_point3(movement);
+						write_look_matrix(&queue, &look_matrix_uniform, &create_look_matrix(window_size, cam_pos, yaw, pitch));
+					}
+					
+					let frame = surface.get_current_texture().expect("Failed to acquire next swap chain texture");
+					let view = &frame.texture.create_view(&TextureViewDescriptor::default());
+					let mut encoder = device.create_command_encoder(&CommandEncoderDescriptor::default());
+					let mut rpass = encoder.begin_render_pass(&RenderPassDescriptor {
+						label: None,
+						color_attachments: &[Some(RenderPassColorAttachment {
+							view,
+							resolve_target: None,
+							ops: Operations { load: LoadOp::Clear(Color::BLACK), store: StoreOp::Store },
+						})],
+						depth_stencil_attachment: Some(RenderPassDepthStencilAttachment {
+							depth_ops: Some(Operations { load: LoadOp::Clear(1.0), store: StoreOp::Store }),
+							stencil_ops: None,
+							view: &depth_texture,
+						}),
+						timestamp_writes: None,
+						occlusion_query_set: None,
+					});
+					rpass.set_bind_group(0, &bind_group, &[]);
+					rpass.set_pipeline(&opaque_pipeline);
+					rpass.set_vertex_buffer(0, vertex_buf.slice(..));
+					for room_index in room_indices(&static_room_indices, &flip_groups) {
+						rpass.draw(room_vertex_indices[room_index].opaque.clone(), 0..1);
+					}
+					rpass.set_pipeline(&additive_pipeline);
+					for room_index in room_indices(&static_room_indices, &flip_groups) {
+						rpass.draw(room_vertex_indices[room_index].additive.clone(), 0..1);
+					}
+					drop(rpass);
+					
+					let egui_input = egui_input_state.take_egui_input(window);
+					let egui::FullOutput {
+						platform_output,
+						shapes,
+						pixels_per_point,
+						textures_delta: egui::TexturesDelta { set: tex_set, free: tex_free },
+						..
+					} = egui_ctx.run(egui_input, |ui| {
+						egui::Window::new("Flip Groups").show(ui, |ui| {
+							for flip_group in &mut flip_groups {
+								ui.checkbox(&mut flip_group.flipped, format!("Flip Group {}", flip_group.label));
+							}
+						});
+					});
+					let screen_descriptor = egui_wgpu::ScreenDescriptor { size_in_pixels: window_size.into(), pixels_per_point };
+					egui_input_state.handle_platform_output(window, platform_output);
+					for (id, delta) in &tex_set {
+						egui_renderer.update_texture(&device, &queue, *id, delta)
+					}
+					let egui_tris = egui_ctx.tessellate(shapes, pixels_per_point);
+					egui_renderer.update_buffers(&device, &queue, &mut encoder, &egui_tris, &screen_descriptor);
+					let mut rpass = encoder.begin_render_pass(&RenderPassDescriptor {
+						label: None,
+						color_attachments: &[Some(RenderPassColorAttachment {
+							view,
+							resolve_target: None,
+							ops: Operations { load: LoadOp::Load, store: StoreOp::Store },
+						})],
+						depth_stencil_attachment: None,
+						timestamp_writes: None,
+						occlusion_query_set: None,
+					});
+					egui_renderer.render(&mut rpass, &egui_tris, &screen_descriptor);
+					drop(rpass);
+					for id in &tex_free {
+						egui_renderer.free_texture(id);
+					}
+					
+					queue.submit([encoder.finish()]);
+					frame.present();
+					
+					last_frame = now;
+					window.request_redraw();
+				},
+				WindowEvent::MouseInput { state: ElementState::Pressed, button: MouseButton::Right, .. } => {
+					window.set_cursor_visible(camera_control);
+					if camera_control {
+						window.set_cursor_grab(CursorGrabMode::None).unwrap();
+					} else {
+						window.set_cursor_grab(CursorGrabMode::Confined).or_else(|_| window.set_cursor_grab(CursorGrabMode::Locked)).expect("cursor grab");
+					}
+					camera_control ^= true;
+				},
+				WindowEvent::CloseRequested => target.exit(),
+				_ => {},
+			}
+		},
+		Event::DeviceEvent { event: DeviceEvent::MouseMotion { delta: (delta_x, delta_y) }, .. } if camera_control => {
+			yaw = yaw + delta_x as f32 / 150.0;
+			pitch = (pitch + delta_y as f32 / 150.0).clamp(-FRAC_PI_2, FRAC_PI_2);
+			write_look_matrix(&queue, &look_matrix_uniform, &create_look_matrix(window_size, cam_pos, yaw, pitch));
+		},
+		key_event!(KeyF, ElementState::Pressed) => target.exit(),
+		key_event!(KeyW, state) => forward = state == ElementState::Pressed,
+		key_event!(KeyA, state) => left = state == ElementState::Pressed,
+		key_event!(KeyS, state) => back = state == ElementState::Pressed,
+		key_event!(KeyD, state) => right = state == ElementState::Pressed,
+		key_event!(KeyQ, state) => up = state == ElementState::Pressed,
+		key_event!(KeyE, state) => down = state == ElementState::Pressed,
+		key_event!(ShiftLeft, state) => shift = state == ElementState::Pressed,
+		_ => {},
+	}).expect("run event loop");
 }
