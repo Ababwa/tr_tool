@@ -1,0 +1,14 @@
+[package]
+name = "tr_reader"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+arrayvec = "0.7.4"
+bitfield = "0.14.0"
+byteorder = "1.4.3"
+compress = "0.2.1"
+glam = { workspace = true }
+nonmax = "0.5.5"
+shared = { path = "../shared" }
+tr_derive = { path = "../tr_derive" }

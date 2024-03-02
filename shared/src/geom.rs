@@ -14,11 +14,11 @@ impl<T: Copy> MinMax<T> {
 	}
 }
 
-pub trait VecMinMax<V> {
+pub trait VecMinMax<V>: Sized {
 	fn update(&mut self, v: V);
 	fn contains(&self, other: &Self) -> bool;
 	fn intersects(&self, other: &Self) -> bool;
-	fn from_iter<I: IntoIterator<Item = V>>(iter: I) -> Option<Self> where Self: Sized;
+	fn from_iter<I: IntoIterator<Item = V>>(iter: I) -> Option<Self>;
 }
 
 impl<V: GVec> VecMinMax<V> for MinMax<V> {

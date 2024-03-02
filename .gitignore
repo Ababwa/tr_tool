@@ -2,3 +2,4 @@ Cargo.lock
 target
 *.png
 *.bat
+dir

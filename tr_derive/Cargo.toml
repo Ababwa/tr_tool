@@ -1,0 +1,12 @@
+[package]
+name = "tr_derive"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+proc-macro2 = "1.0.56"
+quote = "1.0.26"
+syn = "2.0.13"
+
+[lib]
+proc-macro = true

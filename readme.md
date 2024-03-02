@@ -1,24 +1,27 @@
 # TR Tool
 
-Tool for viewing Tomb Raider level files. Currently only renders TR4 level geometry.
+Tool for viewing Tomb Raider level files. Currently only reads TR4 level files.
 
 ## Usage
 
-`tr_tool <path_to_level_file.tr4>`
+`tr_tool [level_file]`
+
+Create adjacent file `dir` to specify default directory for file selection interface.
 
 ## Controls
 
+* Ctrl+O to open file.
 * Right-click to toggle fly-mode
 * When in fly-mode:
 	* Move mouse to look around
-	* WASD to move around
-	* Q/E to raise/lower
-	* Hold shift to move faster
+* WASD or arrow keys to move around
+* Q/E or Page Up/Page Down to raise/lower
+* Shift to move faster
+* Control to move slower
+* Escape to exit
 
 ## Todo
 
-* GUI level file chooser
 * Export to .prj2 ([Tomb Editor project file](https://github.com/MontyTRC89/Tomb-Editor))
-* Support other TR level files (TR1-3, 5)
-* Render objects
-* Render lights
+* Support other classic TR level files (TR1-3, 5)
+* Render lighting

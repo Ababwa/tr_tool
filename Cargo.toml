@@ -1,3 +1,10 @@
+[workspace]
+members = ["tr_reader", "tr_derive", "shared"]
+
+[workspace.dependencies]
+glam = { git = "https://github.com/bitshifter/glam-rs.git" }
+glam-traits = { git = "https://github.com/Ababwa/glam-traits.git", branch = "latest_glam" }
+
 [package]
 name = "tr_tool"
 version = "0.1.0"
@@ -5,15 +12,17 @@ edition = "2021"
 
 [dependencies]
 egui = "0.26.2"
+egui-file-dialog = "0.4.0"
 egui-wgpu = "0.26.2"
 egui-winit = "0.26.2"
 env_logger = "0.11.1"
-glam-traits = { git = "https://github.com/Ababwa/glam-traits.git", branch = "latest_glam" }
+glam = { workspace = true }
 itertools = "0.12.1"
 nonmax = "0.5.5"
 num-traits = "0.2.17"
 pollster = "0.3.0"
+shared = { path = "shared" }
 softbuffer = "0.4.1"
-tr_reader = { git = "https://github.com/Ababwa/tr_reader.git" }
+tr_reader = { path = "tr_reader" }
 wgpu = "0.19.1"
 winit = "0.29.10"
