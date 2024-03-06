@@ -1,9 +1,9 @@
 extern crate self as tr_reader;
 
-pub mod tr4;
+pub mod model;
 pub(crate) mod impls;
 
-use std::io::{Read, Cursor, Result};
+use std::{io::{Cursor, Read, Result}, mem::size_of, slice};
 use byteorder::{ReadBytesExt, LE};
 use compress::zlib::Decoder;
 pub(crate) use tr_derive::Readable;
@@ -17,6 +17,14 @@ pub(crate) fn read_boxed_slice<R: Read, T: Readable>(reader: &mut R, len: usize)
 	for _ in 0..len {
 		vec.push(T::read(reader)?);
 	}
+	Ok(vec.into_boxed_slice())
+}
+
+pub(crate) unsafe fn read_boxed_slice_raw<R: Read, T>(reader: &mut R, len: usize) -> Result<Box<[T]>> {
+	let mut vec = Vec::with_capacity(len);
+	vec.set_len(len);
+	let buf = slice::from_raw_parts_mut(vec.as_mut_ptr() as *mut u8, len * size_of::<T>());
+	reader.read_exact(buf)?;
 	Ok(vec.into_boxed_slice())
 }
 

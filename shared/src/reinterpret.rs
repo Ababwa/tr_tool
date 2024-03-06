@@ -1,5 +1,11 @@
 use std::{mem::{align_of, size_of}, ptr, slice};
 
+pub unsafe fn boxx<A, B>(data: Box<A>) -> Box<B> {
+	assert!(data.as_ref() as *const A as usize % align_of::<B>() == 0, "input not aligned with output type");
+	assert!(size_of::<A>() == size_of::<B>(), "input and output sizes do not match");
+	Box::from_raw(Box::into_raw(data) as *mut B)
+}
+
 pub unsafe fn box_slice<A, B>(data: Box<[A]>) -> Box<[B]> {
 	let len = data.len();
 	assert!(data.as_ptr() as usize % align_of::<B>() == 0, "input not aligned with output type");

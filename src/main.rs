@@ -1,31 +1,20 @@
 mod ext;
 mod load;
+mod make;
 
 use std::{
-	borrow::Cow,
-	collections::HashMap,
-	env::args,
-	f32::consts::{FRAC_PI_2, FRAC_PI_4},
-	mem::size_of,
-	num::NonZeroU32,
+	collections::HashMap, env::args, f32::consts::FRAC_PI_2, mem::size_of, num::NonZeroU32, slice,
 	time::Instant,
 };
 use egui_file_dialog::{DialogState, FileDialog, FileDialogConfig};
-use glam::{vec3, EulerRot, Mat4, Vec3, Vec3Swizzles};
+use glam::{Mat4, Vec3};
 use wgpu::{
-	util::{BufferInitDescriptor, DeviceExt, TextureDataOrder},
-	BindGroup, BindGroupDescriptor, BindGroupEntry, BindGroupLayout, BindGroupLayoutDescriptor,
-	BindGroupLayoutEntry, BindingResource, BindingType, BlendComponent, BlendFactor,
-	BlendOperation, BlendState, Buffer, BufferBindingType, BufferSize, BufferUsages, Color,
-	ColorTargetState, ColorWrites, CommandEncoderDescriptor, CompareFunction, DepthBiasState,
-	DepthStencilState, Device, DeviceDescriptor, Extent3d, Face, Features, FragmentState, Instance,
-	Limits, LoadOp, MultisampleState, Operations, PipelineLayoutDescriptor, PowerPreference,
-	PrimitiveState, Queue, RenderPassColorAttachment, RenderPassDepthStencilAttachment,
-	RenderPassDescriptor, RenderPipelineDescriptor, RequestAdapterOptions, ShaderModuleDescriptor,
-	ShaderSource, ShaderStages, StencilState, StoreOp, TextureDescriptor, TextureDimension,
-	TextureFormat, TextureSampleType, TextureUsages, TextureView, TextureViewDescriptor,
-	TextureViewDimension, VertexAttribute, VertexBufferLayout, VertexFormat, VertexState,
-	VertexStepMode,
+	util::{BufferInitDescriptor, DeviceExt},
+	BindGroup, BindGroupLayout, BlendComponent, BlendFactor, BlendOperation, BlendState, Buffer,
+	BufferUsages, Color, CommandEncoderDescriptor, Device, DeviceDescriptor, Extent3d, Features,
+	Instance, Limits, LoadOp, Operations, PowerPreference, Queue, RenderPassColorAttachment,
+	RenderPassDepthStencilAttachment, RenderPassDescriptor, RequestAdapterOptions, StoreOp,
+	TextureDimension, TextureFormat, TextureViewDescriptor, TextureViewDimension, VertexFormat,
 };
 use winit::{
 	dpi::PhysicalSize,
@@ -39,9 +28,9 @@ use shared::{
 	reinterpret,
 };
 use ext::Wait;
-use load::{load_level_render_data, FlipGroup, LevelRenderData, RoomVertexIndices, Vertex};
-
-const DEPTH_FORMAT: TextureFormat = TextureFormat::Depth32Float;
+use load::{
+	load_level_render_data, ColoredData, ColoredVertex, FlipGroup, LevelRenderData, RoomVertexIndices, TexturedVertex
+};
 
 fn fill_dark(window: &Window) -> Result<(), softbuffer::SoftBufferError> {
 	let size = window.inner_size();
@@ -52,48 +41,25 @@ fn fill_dark(window: &Window) -> Result<(), softbuffer::SoftBufferError> {
 	Ok(buffer.present()?)
 }
 
-fn create_look_matrix(window_size: PhysicalSize<u32>, cam_pos: Vec3, yaw: f32, pitch: f32) -> Mat4 {
-	Mat4::perspective_rh(FRAC_PI_4, window_size.width as f32 / window_size.height as f32, 0.1, 200.0) *
-	Mat4::from_euler(EulerRot::XYZ, pitch, yaw, 0.0) *
-	Mat4::from_translation(cam_pos) *
-	Mat4::from_scale(vec3(1.0, -1.0, -1.0))
-}
-
-fn get_yaw_pitch(v: Vec3) -> (f32, f32) {
-	(v.z.atan2(v.x), v.y.atan2(v.xz().length()))
-}
-
 fn write_look_matrix(queue: &Queue, look_matrix_uniform: &Buffer, look_matrix: &Mat4) {
 	queue.write_buffer(look_matrix_uniform, 0, unsafe { reinterpret::ref_to_slice(look_matrix) });//floats to bytes
 }
 
-fn create_depth_texture(device: &Device, window_size: PhysicalSize<u32>) -> TextureView {
-	device.create_texture(&TextureDescriptor {
-		label: None,
-		size: Extent3d { width: window_size.width, height: window_size.height, depth_or_array_layers: 1 },
-		mip_level_count: 1,
-		sample_count: 1,
-		dimension: TextureDimension::D2,
-		format: DEPTH_FORMAT,
-		usage: TextureUsages::RENDER_ATTACHMENT,
-		view_formats: &[],
-	}).create_view(&TextureViewDescriptor::default())
-}
-
-fn room_indices<'a>(static_room_indices: &'a [usize], flip_groups: &'a [FlipGroup]) -> impl Iterator<Item = usize> + 'a {
+fn get_room_indices<'a>(static_room_indices: &'a [usize], flip_groups: &'a [FlipGroup]) -> impl Iterator<Item = usize> + 'a {
 	static_room_indices.iter().copied().chain(flip_groups.iter().flat_map(|flip_group| flip_group.get_room_indices()))
 }
 
 struct LevelViewState {
 	look_matrix_uniform: Buffer,
+	textured_vertex_buffer: Buffer,
+	textured_bind_group: BindGroup,
+	colored: Option<(Buffer, BindGroup)>,
+	room_vertex_indices: Vec<RoomVertexIndices>,
+	static_room_indices: Vec<usize>,
+	flip_groups: Vec<FlipGroup>,
 	cam_pos: Vec3,
 	yaw: f32,
 	pitch: f32,
-	flip_groups: Vec<FlipGroup>,
-	bind_group: BindGroup,
-	vertex_buf: Buffer,
-	static_room_indices: Vec<usize>,
-	room_vertex_indices: Vec<RoomVertexIndices>,
 }
 
 fn load_level(
@@ -101,67 +67,62 @@ fn load_level(
 	device: &Device,
 	queue: &Queue,
 	window_size: PhysicalSize<u32>,
-	layout: &BindGroupLayout,
+	textured_layout: &BindGroupLayout,
+	colored_layout: &BindGroupLayout,
 ) -> LevelViewState {
 	let LevelRenderData {
 		atlas_size,
 		atlas_data,
-		vertices,
+		textured_vertices,
+		colored,
 		room_vertex_indices,
 		static_room_indices,
 		flip_groups,
-	} = load_level_render_data(&path);
-	let bounds = MinMax::from_iter(vertices.iter().map(|v| v.pos)).unwrap();
-	let (yaw, pitch) = get_yaw_pitch(bounds.max - bounds.min);
+	} = load_level_render_data(&path).expect("read level file");
+	let bounds = MinMax::from_iter(textured_vertices.iter().map(|v| v.pos)).unwrap();
 	let cam_pos = bounds.min;
-	let vertex_buf = device.create_buffer_init(&BufferInitDescriptor {
-		label: None,
-		usage: BufferUsages::VERTEX,
-		contents: unsafe { reinterpret::slice(&vertices) },//contiguous primitives to bytes
-	});
+	let (yaw, pitch) = make::yaw_pitch(bounds.max - bounds.min);
 	let look_matrix_uniform = device.create_buffer_init(&BufferInitDescriptor {
 		label: None,
 		usage: BufferUsages::UNIFORM | BufferUsages::COPY_DST,
-		contents: unsafe { reinterpret::ref_to_slice(&create_look_matrix(window_size, cam_pos, yaw, pitch)) },//floats to bytes
+		contents: unsafe { reinterpret::ref_to_slice(&make::look_matrix(window_size, cam_pos, yaw, pitch)) },//floats to bytes
 	});
-	let bind_group = device.create_bind_group(&BindGroupDescriptor {
-		label: None,
-		layout,
-		entries: &[
-			BindGroupEntry {
-				binding: 0,
-				resource: look_matrix_uniform.as_entire_binding(),
-			},
-			BindGroupEntry {
-				binding: 1,
-				resource: BindingResource::TextureView(&device.create_texture_with_data(
-					queue,
-					&TextureDescriptor {
-						label: None,
-						size: Extent3d { width: atlas_size.x, height: atlas_size.y, depth_or_array_layers: 1 },
-						mip_level_count: 1,
-						sample_count: 1,
-						dimension: TextureDimension::D2,
-						format: TextureFormat::Bgra8UnormSrgb,
-						usage: TextureUsages::COPY_DST | TextureUsages::TEXTURE_BINDING,
-						view_formats: &[],
-					},
-					TextureDataOrder::default(),
-					&atlas_data,
-				).create_view(&TextureViewDescriptor::default()))
-			},
-		],
+	let textured_vertex_buf = make::vertex_buffer(device, unsafe { reinterpret::slice(&textured_vertices) });//contiguous primitives to bytes
+	let textured_bind_group = make::bind_group(
+		device,
+		queue,
+		textured_layout,
+		&look_matrix_uniform,
+		Extent3d { width: atlas_size.x, height: atlas_size.y, depth_or_array_layers: 1 },
+		TextureDimension::D2,
+		TextureFormat::Bgra8UnormSrgb,
+		&atlas_data,
+	);
+	let colored = colored.map(|ColoredData { palette, colored_vertices }| {
+		let colored_vertex_buf = make::vertex_buffer(device, unsafe { reinterpret::slice(&colored_vertices) });//contiguous primitives to bytes
+		let colored_bind_group = make::bind_group(
+			device,
+			queue,
+			colored_layout,
+			&look_matrix_uniform,
+			Extent3d { width: tr_reader::model::PALETTE_SIZE as u32, height: 1, depth_or_array_layers: 1 },
+			TextureDimension::D1,
+			TextureFormat::Rgba8UnormSrgb,
+			palette.as_slice(),
+		);
+		(colored_vertex_buf, colored_bind_group)
 	});
 	LevelViewState {
 		look_matrix_uniform,
+		textured_vertex_buffer: textured_vertex_buf,
+		textured_bind_group,
+		colored,
+		room_vertex_indices,
+		static_room_indices,
+		flip_groups,
 		cam_pos,
 		yaw,
 		pitch,
-		flip_groups,
-		bind_group,
-		vertex_buf,
-		static_room_indices,
-		room_vertex_indices,
 	}
 }
 
@@ -230,6 +191,15 @@ impl TrackedKeysState {
 
 use TrackedKey::*;
 
+const MOVEMENT_MAP: [(TrackedKey, Vec3); 6] = [
+	(Forward, Vec3::Z),
+	(Backward, Vec3::NEG_Z),
+	(Left, Vec3::X),
+	(Right, Vec3::NEG_X),
+	(Down, Vec3::Y),
+	(Up, Vec3::NEG_Y),
+];
+
 fn main() {
 	env_logger::init();
 	let event_loop = EventLoop::new().expect("new event loop");
@@ -245,7 +215,7 @@ fn main() {
 	let mut camera_control = false;
 	let mut keys = TrackedKeysState::default();
 	let key_map = get_key_map();
-	let mut level_view_state: Option<LevelViewState>;
+	let mut level_view_state: Option<LevelViewState> = None;
 	
 	let instance = Instance::default();
 	let surface = instance.create_surface(window).expect("create surface");
@@ -261,124 +231,58 @@ fn main() {
 	}, None).wait().expect("request device");
 	let mut config = surface.get_default_config(&adapter, window_size.width, window_size.height).expect("get default config");
 	surface.configure(&device, &config);
-	let bind_group_layout = device.create_bind_group_layout(&BindGroupLayoutDescriptor {
-		label: None,
-		entries: &[
-			BindGroupLayoutEntry {
-				binding: 0,
-				visibility: ShaderStages::VERTEX,
-				count: None,
-				ty: BindingType::Buffer {
-					ty: BufferBindingType::Uniform,
-					has_dynamic_offset: false,
-					min_binding_size: BufferSize::new(size_of::<Mat4>() as u64),
-				},
-			},
-			BindGroupLayoutEntry {
-				binding: 1,
-				visibility: ShaderStages::FRAGMENT,
-				count: None,
-				ty: BindingType::Texture {
-					sample_type: TextureSampleType::Float { filterable: false },
-					view_dimension: TextureViewDimension::D2,
-					multisampled: false,
-				},
-			},
-		],
-	});
 	
-	level_view_state = args().skip(1).next().map(|level_path| load_level(&level_path, &device, &queue, window_size, &bind_group_layout));
+	let textured_bind_group_layout = make::bind_group_layout(&device, TextureViewDimension::D2);
+	let textured_bind_group_layout_ref = [&textured_bind_group_layout];
+	let textured_shader = make::shader(&device, include_str!("shader/textured.wgsl"));
+	let textured_pipeline_layout_descriptor = make::pipeline_layout_descriptor(&textured_bind_group_layout_ref);
+	let textured_vertex_attributes = make::vertex_attributes(VertexFormat::Float32x2);
+	let textured_vertex_buffer_layout = make::vertex_buffer_layout(size_of::<TexturedVertex>() as u64, &textured_vertex_attributes);
+	let textured_vertex_state = make::vertex_state(&textured_shader, slice::from_ref(&textured_vertex_buffer_layout));
 	
-	let shader = device.create_shader_module(ShaderModuleDescriptor {
-		label: None,
-		source: ShaderSource::Wgsl(Cow::Borrowed(include_str!("shader.wgsl"))),
-	});
-	let pipeline_layout_descriptor = PipelineLayoutDescriptor {
-		label: None,
-		bind_group_layouts: &[&bind_group_layout],
-		push_constant_ranges: &[],
-	};
-	let vertex_state = VertexState {
-		module: &shader,
-		entry_point: "vs_main",
-		buffers: &[VertexBufferLayout {
-			array_stride: size_of::<Vertex>() as u64,
-			step_mode: VertexStepMode::Vertex,
-			attributes: &[
-				VertexAttribute {
-					offset: 0,
-					format: VertexFormat::Float32x3,
-					shader_location: 0,
-				},
-				VertexAttribute {
-					offset: VertexFormat::Float32x3.size(),
-					format: VertexFormat::Float32x2,
-					shader_location: 1,
-				},
-			],
-		}],
-	};
-	let primitive_state = PrimitiveState { cull_mode: Some(Face::Front), ..PrimitiveState::default() };
-	let opaque_pipeline = device.create_render_pipeline(&RenderPipelineDescriptor {
-		label: None,
-		layout: Some(&device.create_pipeline_layout(&pipeline_layout_descriptor)),
-		vertex: vertex_state.clone(),
-		fragment: Some(FragmentState {
-			module: &shader,
-			entry_point: "fs_main",
-			targets:
-			&[Some(ColorTargetState {
-				blend: None,
-				format: TextureFormat::Bgra8UnormSrgb,
-				write_mask: ColorWrites::all(),
-			})],
+	let colored_bind_group_layout = make::bind_group_layout(&device, TextureViewDimension::D1);
+	let colored_bind_group_layout_ref = [&colored_bind_group_layout];
+	let colored_shader = make::shader(&device, include_str!("shader/colored.wgsl"));
+	let colored_pipeline_layout_descriptor = make::pipeline_layout_descriptor(&colored_bind_group_layout_ref);
+	let colored_vertex_attributes = make::vertex_attributes(VertexFormat::Uint32);
+	let colored_vertex_buffer_layout = make::vertex_buffer_layout(size_of::<ColoredVertex>() as u64, &colored_vertex_attributes);
+	let colored_vertex_state = make::vertex_state(&colored_shader, slice::from_ref(&colored_vertex_buffer_layout));
+	
+	let opaque_pipeline = make::render_pipeline(
+		&device,
+		&textured_pipeline_layout_descriptor,
+		textured_vertex_state.clone(),
+		&textured_shader,
+		None,
+		true,
+	);
+	let additive_pipeline = make::render_pipeline(
+		&device,
+		&textured_pipeline_layout_descriptor,
+		textured_vertex_state,
+		&textured_shader,
+		Some(BlendState {
+			alpha: BlendComponent {
+				src_factor: BlendFactor::One,
+				dst_factor: BlendFactor::One,
+				operation: BlendOperation::Add,
+			},
+			color: BlendComponent {
+				src_factor: BlendFactor::One,
+				dst_factor: BlendFactor::One,
+				operation: BlendOperation::Add,
+			},
 		}),
-		primitive: primitive_state,
-		depth_stencil: Some(DepthStencilState {
-			bias: DepthBiasState::default(),
-			depth_compare: CompareFunction::Less,
-			depth_write_enabled: true,
-			format: DEPTH_FORMAT,
-			stencil: StencilState::default(),
-		}),
-		multisample: MultisampleState::default(),
-		multiview: None,
-	});
-	let additive_pipeline = device.create_render_pipeline(&RenderPipelineDescriptor {
-		label: None,
-		layout: Some(&device.create_pipeline_layout(&pipeline_layout_descriptor)),
-		vertex: vertex_state,
-		fragment: Some(FragmentState {
-			module: &shader,
-			entry_point: "fs_main",
-			targets: &[Some(ColorTargetState {
-				blend: Some(BlendState {
-					alpha: BlendComponent {
-						src_factor: BlendFactor::One,
-						dst_factor: BlendFactor::One,
-						operation: BlendOperation::Add,
-					},
-					color: BlendComponent {
-						src_factor: BlendFactor::One,
-						dst_factor: BlendFactor::One,
-						operation: BlendOperation::Add,
-					},
-				}),
-				format: TextureFormat::Bgra8UnormSrgb,
-				write_mask: ColorWrites::all(),
-			})],
-		}),
-		primitive: primitive_state,
-		depth_stencil: Some(DepthStencilState {
-			bias: DepthBiasState::default(),
-			depth_compare: CompareFunction::Less,
-			depth_write_enabled: false,
-			format: DEPTH_FORMAT,
-			stencil: StencilState::default(),
-		}),
-		multisample: MultisampleState::default(),
-		multiview: None,
-	});
+		false,
+	);
+	let colored_pipeline = make::render_pipeline(
+		&device,
+		&colored_pipeline_layout_descriptor,
+		colored_vertex_state,
+		&colored_shader,
+		None,
+		true,
+	);
 	
 	let egui_ctx = egui::Context::default();
 	let mut egui_input_state = egui_winit::State::new(egui_ctx.clone(), egui_ctx.viewport_id(), window, None, None);
@@ -389,7 +293,19 @@ fn main() {
 	});
 	let mut choosing_file = false;
 	
-	let mut depth_texture = create_depth_texture(&device, window_size);
+	let mut depth_view = make::depth_view(&device, window_size);
+	
+	if let Some(level_path) = args().skip(1).next() {
+		level_view_state = Some(load_level(
+			&level_path,
+			&device,
+			&queue,
+			window_size,
+			&textured_bind_group_layout,
+			&colored_bind_group_layout,
+		));
+	}
+	
 	let mut last_frame = Instant::now();
 	event_loop.run(move |event, target| match event {
 		Event::WindowEvent { event, .. } => {
@@ -404,7 +320,7 @@ fn main() {
 						config.width = window_size.width;
 						config.height = window_size.height;
 						surface.configure(&device, &config);
-						depth_texture = create_depth_texture(&device, window_size);
+						depth_view = make::depth_view(&device, window_size);
 						if let Some(LevelViewState {
 							look_matrix_uniform,
 							cam_pos,
@@ -412,69 +328,87 @@ fn main() {
 							pitch,
 							..
 						}) = &level_view_state {
-							write_look_matrix(&queue, look_matrix_uniform, &create_look_matrix(window_size, *cam_pos, *yaw, *pitch));
+							write_look_matrix(&queue, look_matrix_uniform, &make::look_matrix(window_size, *cam_pos, *yaw, *pitch));
 						}
 					},
 					WindowEvent::RedrawRequested => {
 						let now = Instant::now();
 						let delta_time = now - last_frame;
-						
 						let frame = surface.get_current_texture().expect("Failed to acquire next swap chain texture");
-						let view = &frame.texture.create_view(&TextureViewDescriptor::default());
+						let color_view = frame.texture.create_view(&TextureViewDescriptor::default());
 						let mut encoder = device.create_command_encoder(&CommandEncoderDescriptor::default());
 						
 						if let Some(LevelViewState {
 							look_matrix_uniform,
+							textured_vertex_buffer,
+							textured_bind_group,
+							colored,
+							room_vertex_indices,
+							static_room_indices,
+							flip_groups,
 							cam_pos,
 							yaw,
 							pitch,
-							flip_groups,
-							bind_group,
-							vertex_buf,
-							static_room_indices,
-							room_vertex_indices,
 						}) = &mut level_view_state {
-							let movement = [
-								(keys.down(Forward), Vec3::Z),
-								(keys.down(Backward), Vec3::NEG_Z),
-								(keys.down(Left), Vec3::X),
-								(keys.down(Right), Vec3::NEG_X),
-								(keys.down(Down), Vec3::Y),
-								(keys.down(Up), Vec3::NEG_Y),
-							].into_iter().filter_map(|(dir, vec)| dir.then_some(vec)).reduce(|a, b| a + b);
-							if let Some(movement) = movement {
+							if let Some(movement) = MOVEMENT_MAP.into_iter().filter_map(|(key, vec)| keys.down(key).then_some(vec)).reduce(|a, b| a + b) {
 								*cam_pos +=
 									if keys.down(Shift) { 5.0 } else { 1.0 } *
 									if keys.down(Control) { 0.2 } else { 1.0 } *
 									5.0 *
 									delta_time.as_secs_f32() *
 									Mat4::from_rotation_y(*yaw).inverse().transform_point3(movement);
-								write_look_matrix(&queue, look_matrix_uniform, &create_look_matrix(window_size, *cam_pos, *yaw, *pitch));
+								write_look_matrix(&queue, look_matrix_uniform, &make::look_matrix(window_size, *cam_pos, *yaw, *pitch));
 							}
-							let mut rpass = encoder.begin_render_pass(&RenderPassDescriptor {
-								label: None,
-								color_attachments: &[Some(RenderPassColorAttachment {
-									ops: Operations { load: LoadOp::Clear(Color::BLACK), store: StoreOp::Store },
-									resolve_target: None,
-									view,
-								})],
-								depth_stencil_attachment: Some(RenderPassDepthStencilAttachment {
-									depth_ops: Some(Operations { load: LoadOp::Clear(1.0), store: StoreOp::Store }),
-									stencil_ops: None,
-									view: &depth_texture,
-								}),
-								timestamp_writes: None,
-								occlusion_query_set: None,
-							});
-							rpass.set_bind_group(0, bind_group, &[]);
-							rpass.set_vertex_buffer(0, vertex_buf.slice(..));
-							rpass.set_pipeline(&opaque_pipeline);
-							for room_index in room_indices(static_room_indices, flip_groups) {
-								rpass.draw(room_vertex_indices[room_index].opaque.clone(), 0..1);
+							let room_indices = get_room_indices(static_room_indices, flip_groups).collect::<Vec<_>>();
+							{
+								let mut rpass = encoder.begin_render_pass(&RenderPassDescriptor {
+									label: None,
+									color_attachments: &[Some(RenderPassColorAttachment {
+										ops: Operations { load: LoadOp::Clear(Color::BLACK), store: StoreOp::Store },
+										resolve_target: None,
+										view: &color_view,
+									})],
+									depth_stencil_attachment: Some(RenderPassDepthStencilAttachment {
+										depth_ops: Some(Operations { load: LoadOp::Clear(1.0), store: StoreOp::Store }),
+										stencil_ops: None,
+										view: &depth_view,
+									}),
+									timestamp_writes: None,
+									occlusion_query_set: None,
+								});
+								rpass.set_bind_group(0, textured_bind_group, &[]);
+								rpass.set_vertex_buffer(0, textured_vertex_buffer.slice(..));
+								rpass.set_pipeline(&opaque_pipeline);
+								for &room_index in &room_indices {
+									rpass.draw(room_vertex_indices[room_index].opaque.clone(), 0..1);
+								}
+								rpass.set_pipeline(&additive_pipeline);
+								for &room_index in &room_indices {
+									rpass.draw(room_vertex_indices[room_index].additive.clone(), 0..1);
+								}
 							}
-							rpass.set_pipeline(&additive_pipeline);
-							for room_index in room_indices(static_room_indices, flip_groups) {
-								rpass.draw(room_vertex_indices[room_index].additive.clone(), 0..1);
+							if let Some((colored_vertex_buffer, colored_bind_group)) = colored {
+								let mut rpass = encoder.begin_render_pass(&RenderPassDescriptor {
+									label: None,
+									color_attachments: &[Some(RenderPassColorAttachment {
+										ops: Operations { load: LoadOp::Load, store: StoreOp::Store },
+										resolve_target: None,
+										view: &color_view,
+									})],
+									depth_stencil_attachment: Some(RenderPassDepthStencilAttachment {
+										depth_ops: Some(Operations { load: LoadOp::Load, store: StoreOp::Store }),
+										stencil_ops: None,
+										view: &depth_view,
+									}),
+									timestamp_writes: None,
+									occlusion_query_set: None,
+								});
+								rpass.set_bind_group(0, colored_bind_group, &[]);
+								rpass.set_vertex_buffer(0, colored_vertex_buffer.slice(..));
+								rpass.set_pipeline(&colored_pipeline);
+								for &room_index in &room_indices {
+									rpass.draw(room_vertex_indices[room_index].colored.clone(), 0..1);
+								}
 							}
 						}
 						
@@ -508,15 +442,6 @@ fn main() {
 							}
 							file_dialog.update(ctx);
 						});
-						
-						if choosing_file {
-							let file_dialog_state = file_dialog.state();
-							choosing_file = matches!(file_dialog_state, DialogState::Open);
-							if let DialogState::Selected(path) = file_dialog_state {
-								level_view_state = Some(load_level(path.to_str().expect("file path UTF-8"), &device, &queue, window_size, &bind_group_layout));
-							}
-						}
-						
 						let screen_descriptor = egui_wgpu::ScreenDescriptor { size_in_pixels: window_size.into(), pixels_per_point };
 						egui_input_state.handle_platform_output(window, platform_output);
 						for (id, delta) in &tex_set {
@@ -524,25 +449,41 @@ fn main() {
 						}
 						let egui_tris = egui_ctx.tessellate(shapes, pixels_per_point);
 						egui_renderer.update_buffers(&device, &queue, &mut encoder, &egui_tris, &screen_descriptor);
-						let mut rpass = encoder.begin_render_pass(&RenderPassDescriptor {
-							label: None,
-							color_attachments: &[Some(RenderPassColorAttachment {
-								view,
-								resolve_target: None,
-								ops: Operations { load: LoadOp::Load, store: StoreOp::Store },
-							})],
-							depth_stencil_attachment: None,
-							timestamp_writes: None,
-							occlusion_query_set: None,
-						});
-						egui_renderer.render(&mut rpass, &egui_tris, &screen_descriptor);
-						drop(rpass);
+						{
+							let mut rpass = encoder.begin_render_pass(&RenderPassDescriptor {
+								label: None,
+								color_attachments: &[Some(RenderPassColorAttachment {
+									ops: Operations { load: LoadOp::Load, store: StoreOp::Store },
+									resolve_target: None,
+									view: &color_view,
+								})],
+								depth_stencil_attachment: None,
+								timestamp_writes: None,
+								occlusion_query_set: None,
+							});
+							egui_renderer.render(&mut rpass, &egui_tris, &screen_descriptor);
+						}
 						for id in &tex_free {
 							egui_renderer.free_texture(id);
 						}
 						
 						queue.submit([encoder.finish()]);
 						frame.present();
+						
+						if choosing_file {
+							let file_dialog_state = file_dialog.state();
+							choosing_file = matches!(file_dialog_state, DialogState::Open);
+							if let DialogState::Selected(path) = file_dialog_state {
+								level_view_state = Some(load_level(
+									&path.to_string_lossy(),
+									&device,
+									&queue,
+									window_size,
+									&textured_bind_group_layout,
+									&colored_bind_group_layout,
+								));
+							}
+						}
 						
 						keys.clear_just_pressed();
 						last_frame = now;
@@ -566,7 +507,7 @@ fn main() {
 			if let Some(LevelViewState { look_matrix_uniform, cam_pos, yaw, pitch, .. }) = &mut level_view_state {
 				*yaw = *yaw + delta_x as f32 / 150.0;
 				*pitch = (*pitch + delta_y as f32 / 150.0).clamp(-FRAC_PI_2, FRAC_PI_2);
-				write_look_matrix(&queue, look_matrix_uniform, &create_look_matrix(window_size, *cam_pos, *yaw, *pitch));
+				write_look_matrix(&queue, look_matrix_uniform, &make::look_matrix(window_size, *cam_pos, *yaw, *pitch));
 			}
 		},
 		Event::DeviceEvent { event: DeviceEvent::Key(RawKeyEvent { physical_key: PhysicalKey::Code(keycode), state }), .. } => {

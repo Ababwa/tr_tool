@@ -1,7 +1,7 @@
 use std::borrow::Cow;
 
 use proc_macro2::{TokenStream, Ident, Span};
-use syn::{DeriveInput, Data, Fields, DataStruct, FieldsNamed, FieldsUnnamed};
+use syn::{Data, DataStruct, DeriveInput, Fields, FieldsNamed, FieldsUnnamed, GenericParam, TypeParam};
 use quote::quote;
 
 fn read_derive_impl(input: &DeriveInput) -> TokenStream {
@@ -56,6 +56,18 @@ fn read_derive_impl(input: &DeriveInput) -> TokenStream {
 	}
 	initializer = if tuple { quote! { (#initializer) } } else { quote! { {#initializer} } };
 	let (impl_generics, ty_generics, where_clause) = input.generics.split_for_impl();
+	let additional_where = input.generics.params.iter().filter_map(|generic| {
+		match generic {
+			GenericParam::Type(TypeParam { ident, .. }) => Some(quote! { #ident: tr_reader::Readable, }),
+			_ => None,
+		}
+	}).reduce(|a, b| quote! { #a #b });
+	let where_clause = match (where_clause, additional_where) {
+		(Some(where_clause), Some(additional_where)) => quote! { #where_clause, #additional_where },
+		(Some(where_clause), None) => quote! { #where_clause },
+		(None, Some(additional_where)) => quote! { where #additional_where },
+		(None, None) => quote! {},
+	};
 	let type_name = &input.ident;
 	quote! {
 		impl #impl_generics tr_reader::Readable for #type_name #ty_generics #where_clause {

@@ -2,6 +2,7 @@
 members = ["tr_reader", "tr_derive", "shared"]
 
 [workspace.dependencies]
+byteorder = "1.4.3"
 glam = { git = "https://github.com/bitshifter/glam-rs.git" }
 glam-traits = { git = "https://github.com/Ababwa/glam-traits.git", branch = "latest_glam" }
 
@@ -11,6 +12,7 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
+byteorder = { workspace = true }
 egui = "0.26.2"
 egui-file-dialog = "0.4.0"
 egui-wgpu = "0.26.2"

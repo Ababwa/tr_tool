@@ -132,9 +132,9 @@ dependencies = [
 
 [[package]]
 name = "arboard"
-version = "3.3.1"
+version = "3.3.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1faa3c733d9a3dd6fbaf85da5d162a2e03b2e0033a90dceb0e2a90fdd1e5380a"
+checksum = "a2041f1943049c7978768d84e6d0fd95de98b76d6c4727b09e78ec253d29fa58"
 dependencies = [
  "clipboard-win",
  "log",
@@ -854,7 +854,7 @@ source = "git+https://github.com/bitshifter/glam-rs.git#1ea8163d0907f1ac876d1ec1
 [[package]]
 name = "glam-traits"
 version = "0.1.0"
-source = "git+https://github.com/Ababwa/glam-traits.git?branch=latest_glam#e0e26f745445af47bc664b3bf07b2a42ce7a9b61"
+source = "git+https://github.com/Ababwa/glam-traits.git?branch=latest_glam#16c8aabedddd513c581a4d3a50837c156e7c6c2e"
 dependencies = [
  "glam",
 ]
@@ -2052,6 +2052,7 @@ dependencies = [
 name = "tr_tool"
 version = "0.1.0"
 dependencies = [
+ "byteorder",
  "egui",
  "egui-file-dialog",
  "egui-wgpu",
@@ -2759,9 +2760,9 @@ checksum = "32b752e52a2da0ddfbdbcc6fceadfeede4c939ed16d13e648833a61dfb611ed8"
 
 [[package]]
 name = "winit"
-version = "0.29.12"
+version = "0.29.13"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b042fd2f023ddd9713f02f8f89c62f5a32c18d104ac182b480a0e3e6cb8d37f7"
+checksum = "2b9d7047a2a569d5a81e3be098dcd8153759909b127477f4397e03cf1006d90a"
 dependencies = [
  "ahash",
  "android-activity",

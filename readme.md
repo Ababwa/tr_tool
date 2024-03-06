@@ -1,6 +1,6 @@
 # TR Tool
 
-Tool for viewing Tomb Raider level files. Currently only reads TR4 level files.
+Tool for viewing Tomb Raider level files. Currently reads TR3 and TR4 level files.
 
 ## Usage
 
@@ -23,5 +23,5 @@ Create adjacent file `dir` to specify default directory for file selection inter
 ## Todo
 
 * Export to .prj2 ([Tomb Editor project file](https://github.com/MontyTRC89/Tomb-Editor))
-* Support other classic TR level files (TR1-3, 5)
+* Support other classic TR level files (TR1, 2, 5)
 * Render lighting
