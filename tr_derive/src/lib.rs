@@ -1,71 +1,86 @@
-use std::borrow::Cow;
+mod attrs;
 
+use std::borrow::Cow;
 use proc_macro2::{TokenStream, Ident, Span};
-use syn::{Data, DataStruct, DeriveInput, Fields, FieldsNamed, FieldsUnnamed, GenericParam, TypeParam};
+use syn::{Data, DataStruct, DeriveInput, Fields, FieldsNamed, FieldsUnnamed};
 use quote::quote;
 
-fn read_derive_impl(input: &DeriveInput) -> TokenStream {
-	let (fields, tuple) = match &input.data {
-		Data::Struct(DataStruct { fields: Fields::Named(FieldsNamed { named, .. }), .. }) => (named, false),
-		Data::Struct(DataStruct { fields: Fields::Unnamed(FieldsUnnamed { unnamed, .. }), .. }) => (unnamed, true),
-		_ => unimplemented!("only tuple struct or struct with named fields supported"),
+parse_attrs_fn!(
+	parse_struct_attrs -> StructAttrs {
+		skip_after: Arg,
+		impl_where: Arg,
+	}
+);
+
+parse_attrs_fn!(
+	parse_field_attrs -> FieldAttrs {
+		list: Arg,
+		skip: Arg,
+		zlib: bool,
+	}
+);
+
+enum InitializerType {
+	Named,
+	Tuple,
+	Unit,
+}
+
+fn derive_readable_impl(input: &DeriveInput) -> TokenStream {
+	let (fields, initializer_type) = match &input.data {
+		Data::Struct(DataStruct { fields: Fields::Named(FieldsNamed { named, .. }), .. }) => (Some(named), InitializerType::Named),
+		Data::Struct(DataStruct { fields: Fields::Unnamed(FieldsUnnamed { unnamed, .. }), .. }) => (Some(unnamed), InitializerType::Tuple),
+		Data::Struct(DataStruct { fields: Fields::Unit, .. }) => (None, InitializerType::Unit),
+		_ => panic!("only unit structs, tuple structs, or structs with named fields supported"),
 	};
 	let mut body = quote! {};
 	let mut initializer = quote! {};
 	let mut tuple_field_num = 0u8..;
-	for field in fields {
-		let mut field_expr = quote! { Readable::read(reader) };
-		let mut skip = 0usize;
-		let mut zlib = false;
-		for attr in &field.attrs {
-			if let Some(ident) = attr.path().get_ident() {
-				match ident.to_string().as_str() {
-					"list_u16" => field_expr = quote! { read_list::<_, _, u16>(reader) },//read a u16, read that many items
-					"list_u32" => field_expr = quote! { read_list::<_, _, u32>(reader) },//read a u32, read that many items
-					"skip_1" => skip = 1,//skip 1 byte before reading
-					"skip_2" => skip = 2,//skip 2 bytes before reading
-					"skip_4" => skip = 4,//skip 4 bytes before reading
-					"skip_8" => skip = 8,//skip 8 bytes before reading
-					"zlib" => zlib = true,//read zlib-compressed item
-					_ => {},
-				}
-			}
+	if let Some(fields) = fields {
+		for field in fields {
+			let FieldAttrs { list, skip, zlib } = parse_field_attrs(&field.attrs);
+			let reader = match zlib {
+				true => quote! { &mut tr_reader::get_zlib(reader)? },
+				false => quote! { reader },
+			};
+			let field_ident = match &field.ident {
+				Some(field_ident) => Cow::Borrowed(field_ident),
+				None => Cow::Owned(Ident::new(&format!("field{}", tuple_field_num.next().unwrap()), Span::call_site())),
+			};
+			let field_tokens = match list {
+				Some(list_type) => quote! { read_list::<_, _, #list_type> },
+				None => quote! { Readable::read },
+			};
+			let field_tokens = quote! { let #field_ident = tr_reader::#field_tokens(#reader).unwrap(); };
+			let field_tokens = match skip {
+				Some(skip) => quote! {
+					tr_reader::skip(reader, #skip)?;
+					#field_tokens
+				},
+				None => field_tokens,
+			};
+			body = quote! { #body #field_tokens };
+			initializer = quote! { #initializer #field_ident, };
 		}
-		field_expr = quote! { tr_reader::#field_expr? };
-		if zlib {
-			field_expr = quote! {{
-				let reader = &mut tr_reader::get_zlib(reader)?;
-				#field_expr
-			}};
-		}
-		if skip > 0 {
-			field_expr = quote! {{
-				tr_reader::skip(reader, #skip)?;
-				#field_expr
-			}};
-		}
-		let field_ident = match &field.ident {
-			Some(field_ident) => Cow::Borrowed(field_ident),
-			None => Cow::Owned(Ident::new(&format!("field{}", tuple_field_num.next().unwrap()), Span::call_site())),
-		};
-		body = quote! {
-			#body
-			let #field_ident = #field_expr;
-		};
-		initializer = quote! { #initializer #field_ident, };
 	}
-	initializer = if tuple { quote! { (#initializer) } } else { quote! { {#initializer} } };
+	let StructAttrs { skip_after, impl_where } = parse_struct_attrs(&input.attrs);
+	let body = match skip_after {
+		Some(skip) => quote! {
+			#body
+			tr_reader::skip(reader, #skip)?;
+		},
+		None => body,
+	};
+	let initializer = match initializer_type {
+		InitializerType::Named => quote! { { #initializer } },
+		InitializerType::Tuple => quote! { (#initializer) },
+		InitializerType::Unit => initializer,
+	};
 	let (impl_generics, ty_generics, where_clause) = input.generics.split_for_impl();
-	let additional_where = input.generics.params.iter().filter_map(|generic| {
-		match generic {
-			GenericParam::Type(TypeParam { ident, .. }) => Some(quote! { #ident: tr_reader::Readable, }),
-			_ => None,
-		}
-	}).reduce(|a, b| quote! { #a #b });
-	let where_clause = match (where_clause, additional_where) {
-		(Some(where_clause), Some(additional_where)) => quote! { #where_clause, #additional_where },
+	let where_clause = match (where_clause, impl_where) {
+		(Some(where_clause), Some(impl_where)) => quote! { #where_clause, #impl_where },
 		(Some(where_clause), None) => quote! { #where_clause },
-		(None, Some(additional_where)) => quote! { where #additional_where },
+		(None, Some(impl_where)) => quote! { where #impl_where },
 		(None, None) => quote! {},
 	};
 	let type_name = &input.ident;
@@ -79,18 +94,27 @@ fn read_derive_impl(input: &DeriveInput) -> TokenStream {
 	}
 }
 
+
+/**
+Helper attributes:
+* struct
+	* `skip_after(num_bytes)`
+	* `impl_where(impl_where_clause)`
+* field
+	* `list(len_type)`
+	* `skip(num_bytes)`
+	* `zlib`
+*/
 #[proc_macro_derive(
 	Readable,
 	attributes(
-		list_u16,
-		list_u32,
-		skip_1,
-		skip_2,
-		skip_4,
-		skip_8,
+		skip_after,
+		impl_where,
+		list,
+		skip,
 		zlib,
 	)
 )]
-pub fn read_derive(tokens: proc_macro::TokenStream) -> proc_macro::TokenStream {
-	read_derive_impl(&syn::parse_macro_input!(tokens)).into()
+pub fn derive_readable(item: proc_macro::TokenStream) -> proc_macro::TokenStream {
+	derive_readable_impl(&syn::parse_macro_input!(item)).into()
 }

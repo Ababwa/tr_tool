@@ -2,11 +2,16 @@ use std::io::{Read, Result};
 use arrayvec::ArrayVec;
 use byteorder::{ReadBytesExt, LE};
 use shared::geom::MinMax;
-use glam::{U16Vec2, I16Vec3, IVec3, Vec3};
+use glam::{I16Vec2, I16Vec3, IVec3, U16Vec2, Vec3};
+use glam_traits::ext::U8Vec2;
 use nonmax::{NonMaxU8, NonMaxU16};
 use crate::{read_boxed_slice, Readable};
 
 //primitive impls
+
+impl Readable for () {
+	fn read<R: Read>(_: &mut R) -> Result<Self> { Ok(()) }
+}
 
 macro_rules! impl_readable_prim {
 	($type:ty, $func:ident $(, $($endian:tt)*)?) => {
@@ -88,6 +93,9 @@ macro_rules! impl_readable_glam {
 }
 
 impl_readable_glam!(U16Vec2, [u16; 2]);
+impl_readable_glam!(I16Vec2, [i16; 2]);
 impl_readable_glam!(I16Vec3, [i16; 3]);
 impl_readable_glam!(IVec3, [i32; 3]);
 impl_readable_glam!(Vec3, [f32; 3]);
+
+impl_readable_glam!(U8Vec2, [u8; 2]);

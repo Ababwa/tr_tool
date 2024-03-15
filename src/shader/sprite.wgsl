@@ -15,8 +15,13 @@ var<uniform> camera: mat4x4<f32>;
 fn vs_main(
 	@location(0) position: vec4<f32>,
 	@location(1) tex_coord: vec2<f32>,
+	@location(2) offset: vec2<f32>,
 ) -> VertexOutput {
-	return VertexOutput(perspective * camera * position, tex_coord);
+	var pos = camera * position;
+	pos.x += offset.x;
+	pos.y += offset.y;
+	pos = perspective * pos;
+	return VertexOutput(pos, tex_coord);
 }
 
 @group(0)

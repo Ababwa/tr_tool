@@ -4,7 +4,7 @@ use tr_reader::model::{self as tr, tr4};
 use shared::reinterpret;
 use super::{
 	add_textured_face, get_level_render_data,
-	ColoredVertex, LevelRenderData, LocalTrVersion, ObjTex, TexturedVertex,
+	SolidVertex, LevelRenderData, TrVersionExt, ObjTex, TexturedVertex,
 };
 
 fn add_mesh_faces<const N: usize>(
@@ -12,7 +12,7 @@ fn add_mesh_faces<const N: usize>(
 	additive: &mut Vec<TexturedVertex>,
 	obj_texs: &[ObjTex],
 	positions: &[Vec3],
-	mesh_faces: &[tr4::MeshFace<N>],
+	mesh_faces: &[tr::MeshFace<N>],
 ) {
 	for mesh_face in mesh_faces {
 		let ObjTex { vertices: uvs, blend_mode } = &obj_texs[mesh_face.face.texture_details.texture_index() as usize];
@@ -28,34 +28,24 @@ fn add_mesh_faces<const N: usize>(
 	}
 }
 
-impl LocalTrVersion for tr4::Tr4 {
+impl TrVersionExt for tr4::Tr4 {
 	const FRAME_SINGLE_ROT_DIVISOR: f32 = 4096.0;
-	const COLORED: bool = false;
-	type Mesh = tr4::Mesh;
-	type RoomLight = tr4::Light;
-	type ObjectTexture = tr4::ObjectTexture;
+	type Mesh = tr::Mesh<tr::MeshComponentTr45>;
+	type RoomExtra = tr4::RoomExtra;
 	
-	fn flip_group(room: &tr::Room<Self::RoomLight>) -> u8 { room.flip_group }
-	
-	fn get_obj_tex_details(obj_tex: &Self::ObjectTexture) -> (
-			tr::BlendMode,
-			tr::ObjectTextureAtlasAndTriangle,
-			[glam::U16Vec2; 4],
-		) {
-		(obj_tex.blend_mode, obj_tex.atlas_and_triangle, obj_tex.vertices)
-	}
+	fn flip_group(room_extra: &Self::RoomExtra) -> u8 { room_extra.flip_group }
 	
 	fn add_mesh(
 		opaque: &mut Vec<TexturedVertex>,
 		additive: &mut Vec<TexturedVertex>,
-		_colored: &mut Vec<ColoredVertex>,
+		_solid: &mut Vec<SolidVertex>,
 		obj_texs: &[ObjTex],
 		transform: Mat4,
 		mesh: &Self::Mesh,
 	) {
 		let mesh_verts = mesh.vertices.iter().map(|v| transform.transform_point3(v.as_vec3() / 1024.0)).collect::<Vec<_>>();
-		add_mesh_faces(opaque, additive, obj_texs, &mesh_verts, &mesh.tris);
-		add_mesh_faces(opaque, additive, obj_texs, &mesh_verts, &mesh.quads);
+		add_mesh_faces(opaque, additive, obj_texs, &mesh_verts, &mesh.component.tris);
+		add_mesh_faces(opaque, additive, obj_texs, &mesh_verts, &mesh.component.quads);
 	}
 }
 
@@ -69,13 +59,15 @@ pub fn load_level_render_data<R: Read>(reader: &mut R) -> Result<LevelRenderData
 			frame_data,
 			models,
 			static_meshes,
+			sprite_textures,
+			sprite_sequences,
 			object_textures,
 			entities,
 			..
 		},
 		..
 	} = tr4::read_level(reader)?;
-	Ok(get_level_render_data::<tr4::Tr4>(
+	Ok(get_level_render_data::<tr4::Tr4, _, _, _, _, _, _>(
 		None,
 		uvec2(tr::IMAGE_SIZE as u32, (images32.len() * tr::IMAGE_SIZE) as u32),
 		unsafe { reinterpret::box_slice(images32) },//primitive arrays to byte array
@@ -85,6 +77,8 @@ pub fn load_level_render_data<R: Read>(reader: &mut R) -> Result<LevelRenderData
 		&frame_data,
 		&models,
 		&static_meshes,
+		&sprite_textures,
+		&sprite_sequences,
 		&object_textures,
 		&entities,
 	))

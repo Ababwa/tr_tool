@@ -1,18 +1,26 @@
+pub mod tr2;
 pub mod tr3;
 pub mod tr4;
 
 use std::{collections::HashMap, io::{Cursor, Read, Result}};
 use bitfield::bitfield;
 use byteorder::{ReadBytesExt, LE};
-use glam::{i16vec3, I16Vec3, IVec3, U16Vec2, U16Vec3};
+use glam::{i16vec3, I16Vec2, I16Vec3, IVec3, U16Vec2, U16Vec3};
+use glam_traits::ext::U8Vec2;
 use nonmax::{NonMaxU16, NonMaxU8};
 use shared::{geom::MinMax, reinterpret};
-use crate::{read_boxed_slice, read_list, Readable};
+use crate::{read_boxed_slice, read_boxed_slice_raw, read_list, Readable};
+
+// 1 sector unit = 1024 world coord units
 
 pub const PALETTE_SIZE: usize = 256;
 pub const IMAGE_SIZE: usize = 256;
 pub const NUM_PIXELS: usize = IMAGE_SIZE * IMAGE_SIZE;
+pub const LIGHT_MAP_SIZE: usize = 32;
 pub const SOUND_MAP_SIZE: usize = 370;
+
+const FRAME_SINGLE_ROT_MASK_TR123: u16 = 1023;
+const FRAME_SINGLE_ROT_MASK_TR45: u16 = 4095;
 
 pub trait TrVersion {
 	const FRAME_SINGLE_ROT_MASK: u16;
@@ -33,74 +41,189 @@ pub struct Color4 {
 	pub unused: u8,
 }
 
+pub struct Images {
+	pub pallete_images: Box<[[u8; NUM_PIXELS]]>,
+	pub images16: Box<[[u16; NUM_PIXELS]]>,
+}
+
+impl Readable for Images {
+	fn read<R: Read>(reader: &mut R) -> Result<Self> {
+		let num_images = reader.read_u32::<LE>()? as usize;
+		let pallete_images = unsafe { read_boxed_slice_raw(reader, num_images)? };//safe: arrays of primitives
+		let images16 = unsafe { read_boxed_slice_raw(reader, num_images)? };
+		Ok(Images { pallete_images, images16 })
+	}
+}
+
 #[derive(Readable, Clone, Copy)]
-pub struct RoomVertex {
-	/// Relative to Room
-	pub vertex: I16Vec3,
-	#[skip_2]
+pub struct RoomVertexComponentTr2 {
+	#[skip(2)]
+	pub flags: u16,
+	pub brightness: u16,
+}
+
+#[derive(Readable, Clone, Copy)]
+pub struct RoomVertexComponentTr34 {
+	#[skip(2)]
 	pub flags: u16,
 	pub color: u16,
 }
 
+#[derive(Readable, Clone, Copy)]
+#[impl_where(Component: Readable)]
+pub struct RoomVertex<Component> {
+	/// Relative to Room
+	pub vertex: I16Vec3,
+	pub component: Component,
+}
+
 bitfield! {
 	#[derive(Readable, Clone, Copy)]
-	pub struct TextureDetails(u16);
-	/// Index into palette3
-	pub palette3_index, _: 7, 0;
-	/// Index into palette4
-	pub palette4_index, _: 15, 8;
+	pub struct TexturedFaceDetails(u16);
 	/// Index into object_textures
 	pub texture_index, _: 14, 0;
 	pub double_sided, _: 15;
 }
 
 #[derive(Readable, Clone, Copy)]
-pub struct Face<const N: usize> {
-	pub vertex_indices: [u16; N],
-	pub texture_details: TextureDetails,
+pub struct SolidFaceDetails {
+	/// Index into palette3
+	pub palette3_index: u8,
+	/// Index into palette4
+	pub palette4_index: u8,
 }
 
-bitfield! {
-	#[derive(Readable, Clone, Copy)]
-	pub struct AmbientLight(u32);
-	/// ARGB
-	pub color, _: 31, 0;
-	pub brightness, _: 15, 0;
+#[derive(Readable, Clone, Copy)]
+#[impl_where(D: Readable)]
+pub struct Face<const N: usize, D> {
+	pub vertex_indices: [u16; N],
+	pub texture_details: D,
 }
 
 #[derive(Readable)]
-pub struct Room<L> {
+#[impl_where(
+	VertexComponent: Readable,
+	AmbientLight: Readable,
+	Light: Readable,
+	Extra: Readable,
+)]
+pub struct Room<VertexComponent, AmbientLight, Light, Extra> {
 	/// World coord
 	pub x: i32,
 	/// World coord
 	pub z: i32,
 	pub y_bottom: i32,
 	pub y_top: i32,
-	#[skip_4]
-	#[list_u16]
-	pub vertices: Box<[RoomVertex]>,
+	#[skip(4)]
+	#[list(u16)]
+	pub vertices: Box<[RoomVertex<VertexComponent>]>,
 	/// `vertex_indices` index into Room.vertices
-	#[list_u16]
-	pub quads: Box<[Face<4>]>,
+	#[list(u16)]
+	pub quads: Box<[Face<4, TexturedFaceDetails>]>,
 	/// `vertex_indices` index into Room.vertices
-	#[list_u16]
-	pub tris: Box<[Face<3>]>,
-	#[list_u16]
+	#[list(u16)]
+	pub tris: Box<[Face<3, TexturedFaceDetails>]>,
+	#[list(u16)]
 	pub sprites: Box<[Sprite]>,
-	#[list_u16]
+	#[list(u16)]
 	pub portals: Box<[Portal]>,
 	pub sectors: Sectors,
 	pub ambient_light: AmbientLight,
-	#[list_u16]
-	pub lights: Box<[L]>,
-	#[list_u16]
+	#[list(u16)]
+	pub lights: Box<[Light]>,
+	#[list(u16)]
 	pub room_static_meshes: Box<[RoomStaticMesh]>,
 	/// Index into LevelData.rooms
 	pub flip_room_index: Option<NonMaxU16>,
 	pub flags: RoomFlags,
-	pub water_effect: u8,
-	pub reverb: u8,
-	pub flip_group: u8,
+	pub extra: Extra,
+}
+
+pub enum MeshLighting {
+	Normals(Box<[I16Vec3]>),
+	Lights(Box<[u16]>),
+}
+
+impl Readable for MeshLighting {
+	fn read<R: Read>(reader: &mut R) -> Result<Self> {
+		Ok(match reader.read_i16::<LE>()? {
+			num if num > 0 => MeshLighting::Normals(read_boxed_slice(reader, num as usize)?),
+			num => MeshLighting::Lights(read_boxed_slice(reader, (-num) as usize)?),
+		})
+	}
+}
+
+#[derive(Readable)]
+pub struct MeshComponentTr123 {
+	#[list(u16)]
+	pub textured_quads: Box<[Face<4, TexturedFaceDetails>]>,
+	#[list(u16)]
+	pub textured_tris: Box<[Face<3, TexturedFaceDetails>]>,
+	#[list(u16)]
+	pub solid_quads: Box<[Face<4, SolidFaceDetails>]>,
+	#[list(u16)]
+	pub solid_tris: Box<[Face<3, SolidFaceDetails>]>,
+}
+
+bitfield! {
+	#[derive(Readable, Clone, Copy)]
+	pub struct MeshEffects(u16);
+	pub additive, _: 0;
+	pub shiny, _: 1;
+	pub shine_strength, _: 7, 2;
+}
+
+#[derive(Readable, Clone, Copy)]
+pub struct MeshFace<const N: usize> {
+	/// Vertex_ids id into Mesh.vertices
+	pub face: Face<N, TexturedFaceDetails>,
+	pub effects: MeshEffects,
+}
+
+#[derive(Readable)]
+pub struct MeshComponentTr45 {
+	#[list(u16)]
+	pub quads: Box<[MeshFace<4>]>,
+	#[list(u16)]
+	pub tris: Box<[MeshFace<3>]>,
+}
+
+#[derive(Readable)]
+#[impl_where(C: Readable)]
+pub struct Mesh<C> {
+	pub center: I16Vec3,
+	pub radius: i32,
+	/// Relative to RoomStaticMesh.pos if static mesh
+	#[list(u16)]
+	pub vertices: Box<[I16Vec3]>,
+	pub lighting: MeshLighting,
+	pub component: C,
+}
+
+#[derive(Readable, Clone, Copy)]
+#[impl_where(Lateral: Readable)]
+pub struct Animation<Lateral> {
+	/// Byte offset into frame_data
+	pub frame_byte_offset: u32,
+	/// 30ths of a second
+	pub frame_duration: u8,
+	pub num_frames: u8,
+	pub state: u16,
+	/// Fixed-point
+	pub speed: u32,
+	/// Fixed-point
+	pub accel: u32,
+	pub lateral: Lateral,
+	pub frame_start: u16,
+	pub frame_end: u16,
+	pub next_anim: u16,
+	pub next_frame: u16,
+	pub num_state_changes: u16,
+	/// Id? into state_changes
+	pub state_change_id: u16,
+	pub num_anim_commands: u16,
+	/// Id? into anim_commands
+	pub anim_command_id: u16,
 }
 
 #[derive(Readable, Clone, Copy)]
@@ -163,7 +286,7 @@ pub struct RoomStaticMesh {
 	pub rotation: u16,
 	pub color: u16,
 	/// Id into LevelData.static_meshes
-	#[skip_2]
+	#[skip(2)]
 	pub static_mesh_id: u16,
 }
 
@@ -171,20 +294,6 @@ bitfield! {
 	#[derive(Readable, Clone, Copy)]
 	pub struct RoomFlags(u16);
 	pub water, _: 0;
-}
-
-pub enum MeshComponent {
-	Normals(Box<[I16Vec3]>),
-	Lights(Box<[u16]>),
-}
-
-impl Readable for MeshComponent {
-	fn read<R: Read>(reader: &mut R) -> Result<Self> {
-		Ok(match reader.read_i16::<LE>()? {
-			num if num > 0 => MeshComponent::Normals(read_boxed_slice(reader, num as usize)?),
-			num => MeshComponent::Lights(read_boxed_slice(reader, (-num) as usize)?),
-		})
-	}
 }
 
 pub struct Meshes<M> {
@@ -239,9 +348,6 @@ pub struct AnimDispatch {
 	pub next_frame_id: u16,
 }
 
-#[derive(Readable)]
-pub struct MeshNodeData(#[list_u32] pub Box<[u32]>);
-
 bitfield! {
 	#[derive(Readable, Clone, Copy)]
 	pub struct MeshNodeDetails(u32);
@@ -257,6 +363,9 @@ pub struct MeshNode {
 	pub offset: IVec3,
 }
 
+#[derive(Readable)]
+pub struct MeshNodeData(#[list(u32)] pub Box<[u32]>);
+
 impl MeshNodeData {
 	/// Should be called with Model.num_meshes - 1
 	pub fn get_mesh_nodes(&self, mesh_node_offset: u32, num_meshes: u16) -> &[MeshNode] {
@@ -267,9 +376,9 @@ impl MeshNodeData {
 }
 
 #[derive(Readable)]
-pub struct FrameData(#[list_u32] pub Box<[u16]>);
+pub struct FrameData(#[list(u32)] pub Box<[u16]>);
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Clone, Copy)]
 pub enum FrameRotation {
 	X(u16),
 	Y(u16),
@@ -362,28 +471,24 @@ pub struct StaticMesh {
 	pub mesh_id: u16,
 	pub visibility: BoundBox,
 	pub collision: BoundBox,
-	/// Unused, necessary to read when parsing
-	pub unused: u16,
+	pub flags: u16,
 }
 
 #[derive(Readable, Clone, Copy)]
 pub struct SpriteTexture {
 	/// Index into images
 	pub atlas_index: u16,
-	#[skip_2]
-	pub width: u16,
-	pub height: u16,
-	pub left: i16,
-	pub top: i16,
-	pub right: i16,
-	pub bottom: i16,
+	pub pos: U8Vec2,
+	pub size: U16Vec2,
+	pub world_bounds: [I16Vec2; 2],
 }
 
 #[derive(Readable, Clone, Copy)]
 pub struct SpriteSequence {
-	pub sprite_id: u32,
+	pub id: u32,
 	pub neg_length: i16,
-	pub offset: u16,
+	/// Index into sprite_textures
+	pub sprite_index: u16,
 }
 
 #[derive(Readable, Clone, Copy)]
@@ -404,27 +509,26 @@ pub struct SoundSource {
 }
 
 #[derive(Readable, Clone, Copy)]
-pub struct TrBox {
+#[impl_where(T: Readable)]
+pub struct TrBox<T> {
 	/// Sectors
-	pub z: MinMax<u8>,
-	pub x: MinMax<u8>,
+	pub z: MinMax<T>,
+	pub x: MinMax<T>,
 	pub y: i16,
 	pub overlap: u16,
 }
 
-pub struct BoxData {
-	pub boxes: Box<[TrBox]>,
+pub struct BoxData<T> {
+	pub boxes: Box<[TrBox<T>]>,
 	pub overlaps: Box<[u16]>,
 	pub zones: Box<[u16]>,
 }
 
-impl Readable for BoxData {
+impl<T: Readable> Readable for BoxData<T> {
 	fn read<R: Read>(reader: &mut R) -> Result<Self> {
-		let num_boxes = reader.read_u32::<LE>()? as usize;
-		let boxes = read_boxed_slice(reader, num_boxes)?;
-		let num_overlaps = reader.read_u32::<LE>()? as usize;
-		let overlaps = read_boxed_slice(reader, num_overlaps)?;
-		let zones = read_boxed_slice(reader, num_boxes * 10)?;
+		let boxes = read_list::<_, _, u32>(reader)?;
+		let overlaps = read_list::<_, _,u32>(reader)?;
+		let zones = read_boxed_slice(reader, boxes.len() * 10)?;
 		Ok(BoxData { boxes, overlaps, zones })
 	}
 }
@@ -455,20 +559,30 @@ bitfield! {
 	pub triangle, _: 15;
 }
 
-bitfield! {
-	#[derive(Readable, Clone, Copy)]
-	pub struct ObjectTextureDetails(u16);
-	pub mapping_correction, _: 2, 0;
-	pub bump_mapping, _: 10, 9;
-	/// True if room texture, false if object texture
-	pub room_texture, _: 15;
+#[derive(Readable, Clone, Copy)]
+#[impl_where(Details: Readable, Component: Readable)]
+pub struct ObjectTexture<Details, Component> {
+	pub blend_mode: BlendMode,
+	pub atlas_and_triangle: ObjectTextureAtlasAndTriangle,
+	pub details: Details,
+	/// Units are 1/256th of a pixel
+	pub vertices: [U16Vec2; 4],
+	pub component: Component,
 }
 
 #[derive(Readable, Clone, Copy)]
-pub struct Entity {
-	/// Id into Level.models
+#[skip_after(2)]
+pub struct EntityComponentSkip;
+
+#[derive(Readable, Clone, Copy)]
+pub struct EntityComponentOcb(pub u16);
+
+#[derive(Readable, Clone, Copy)]
+#[impl_where(Component: Readable)]
+pub struct Entity<Component> {
+	/// Id into models or sprite_textures
 	pub model_id: u16,
-	/// Index into LevelData.rooms
+	/// Index into rooms
 	pub room_index: u16,
 	/// World coords
 	pub pos: IVec3,
@@ -476,17 +590,48 @@ pub struct Entity {
 	pub rotation: u16,
 	/// If None, use mesh light
 	pub brightness: Option<NonMaxU16>,
-	pub ocb: u16,
+	pub component: Component,
 	pub flags: u16,
 }
 
+pub struct LightMap(pub Box<[[u8; PALETTE_SIZE]; LIGHT_MAP_SIZE]>);
+
+impl Readable for LightMap {
+	fn read<R: Read>(reader: &mut R) -> Result<Self> {
+		unsafe {
+			Ok(Self(read_boxed_slice_raw(reader, LIGHT_MAP_SIZE)?.try_into().ok().unwrap()))//exactly 32
+		}//array of bytes
+	}
+}
+
 #[derive(Readable, Clone, Copy)]
-pub struct SoundDetails {
-	#[skip_2]
+pub struct CinematicFrame {
+	pub target: I16Vec3,
+	pub pos: I16Vec3,
+	pub fov: i16,
+	pub roll: i16,
+}
+
+#[derive(Readable, Clone, Copy)]
+pub struct SoundDetailsComponentTr12 {
+	pub volume: u16,
+	pub chance: u16,
+}
+
+#[derive(Readable, Clone, Copy)]
+pub struct SoundDetailsComponentTr345 {
 	pub volume: u8,
 	/// Sectors
 	pub range: u8,
 	pub chance: u8,
 	pub pitch: u8,
+}
+
+#[derive(Readable, Clone, Copy)]
+#[impl_where(Component: Readable)]
+pub struct SoundDetails<Component> {
+	/// Index into sample_indices
+	pub sample_index: u16,
+	pub component: Component,
 	pub flags: u16,
 }

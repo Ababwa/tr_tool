@@ -3,15 +3,14 @@ mod load;
 mod make;
 
 use std::{
-	collections::HashMap, env::args, f32::consts::FRAC_PI_2, mem::size_of, num::NonZeroU32, slice,
+	collections::{HashMap, HashSet}, env::args, f32::consts::FRAC_PI_2, mem::size_of, num::NonZeroU32, slice,
 	time::Instant,
 };
 use egui_file_dialog::{DialogState, FileDialog, FileDialogConfig};
-use glam::{Mat4, Vec3};
+use glam::{Mat4, UVec2, Vec3};
 use wgpu::{
-	util::{BufferInitDescriptor, DeviceExt},
 	BindGroup, BindGroupLayout, BlendComponent, BlendFactor, BlendOperation, BlendState, Buffer,
-	BufferUsages, Color, CommandEncoderDescriptor, Device, DeviceDescriptor, Extent3d, Features,
+	Color, CommandEncoderDescriptor, Device, DeviceDescriptor, Extent3d, Features,
 	Instance, Limits, LoadOp, Operations, PowerPreference, Queue, RenderPassColorAttachment,
 	RenderPassDepthStencilAttachment, RenderPassDescriptor, RequestAdapterOptions, StoreOp,
 	TextureDimension, TextureFormat, TextureViewDescriptor, TextureViewDimension, VertexFormat,
@@ -23,13 +22,10 @@ use winit::{
 	keyboard::{KeyCode, PhysicalKey},
 	window::{CursorGrabMode, Window},
 };
-use shared::{
-	geom::{MinMax, VecMinMax},
-	reinterpret,
-};
-use ext::Wait;
+use shared::geom::{MinMax, VecMinMax};
+use ext::{AsBytes, Wait};
 use load::{
-	load_level_render_data, ColoredData, ColoredVertex, FlipGroup, LevelRenderData, RoomVertexIndices, TexturedVertex
+	load_level_render_data, FlipGroup, LevelRenderData, RoomVertexIndices, SolidData, SolidVertex, SpriteVertex, TexturedVertex
 };
 
 fn fill_dark(window: &Window) -> Result<(), softbuffer::SoftBufferError> {
@@ -41,19 +37,30 @@ fn fill_dark(window: &Window) -> Result<(), softbuffer::SoftBufferError> {
 	Ok(buffer.present()?)
 }
 
-fn write_look_matrix(queue: &Queue, look_matrix_uniform: &Buffer, look_matrix: &Mat4) {
-	queue.write_buffer(look_matrix_uniform, 0, unsafe { reinterpret::ref_to_slice(look_matrix) });//floats to bytes
+fn write_transform(queue: &Queue, buffer: &Buffer, transform: &Mat4) {
+	queue.write_buffer(buffer, 0, transform.as_bytes());
 }
 
 fn get_room_indices<'a>(static_room_indices: &'a [usize], flip_groups: &'a [FlipGroup]) -> impl Iterator<Item = usize> + 'a {
 	static_room_indices.iter().copied().chain(flip_groups.iter().flat_map(|flip_group| flip_group.get_room_indices()))
 }
 
+fn swap_br(data: &mut [u8]) {
+	for pixel in data.chunks_exact_mut(4) {
+		pixel.swap(0, 2);
+	}
+}
+
 struct LevelViewState {
-	look_matrix_uniform: Buffer,
+	path: String,
+	atlas_size: UVec2,
+	atlas_data: Box<[u8]>,
+	perspective_buffer: Buffer,
+	camera_buffer: Buffer,
 	textured_vertex_buffer: Buffer,
 	textured_bind_group: BindGroup,
-	colored: Option<(Buffer, BindGroup)>,
+	solid: Option<(Buffer, BindGroup)>,
+	sprite_vertex_buffer: Option<Buffer>,
 	room_vertex_indices: Vec<RoomVertexIndices>,
 	static_room_indices: Vec<usize>,
 	flip_groups: Vec<FlipGroup>,
@@ -63,18 +70,19 @@ struct LevelViewState {
 }
 
 fn load_level(
-	path: &str,
+	path: String,
 	device: &Device,
 	queue: &Queue,
 	window_size: PhysicalSize<u32>,
 	textured_layout: &BindGroupLayout,
-	colored_layout: &BindGroupLayout,
+	solid_layout: &BindGroupLayout,
 ) -> LevelViewState {
 	let LevelRenderData {
 		atlas_size,
 		atlas_data,
 		textured_vertices,
-		colored,
+		solid,
+		sprite_vertices,
 		room_vertex_indices,
 		static_room_indices,
 		flip_groups,
@@ -82,41 +90,52 @@ fn load_level(
 	let bounds = MinMax::from_iter(textured_vertices.iter().map(|v| v.pos)).unwrap();
 	let cam_pos = bounds.min;
 	let (yaw, pitch) = make::yaw_pitch(bounds.max - bounds.min);
-	let look_matrix_uniform = device.create_buffer_init(&BufferInitDescriptor {
-		label: None,
-		usage: BufferUsages::UNIFORM | BufferUsages::COPY_DST,
-		contents: unsafe { reinterpret::ref_to_slice(&make::look_matrix(window_size, cam_pos, yaw, pitch)) },//floats to bytes
-	});
-	let textured_vertex_buf = make::vertex_buffer(device, unsafe { reinterpret::slice(&textured_vertices) });//contiguous primitives to bytes
+	let perspective_transform = make::perspective_transform(window_size);
+	let camera_transform = make::camera_transform(cam_pos, yaw, pitch);
+	let perspective_buffer = make::uniform_buffer(device, perspective_transform.as_bytes());
+	let camera_buffer = make::uniform_buffer(device, camera_transform.as_bytes());
+	let textured_vertex_buffer = make::vertex_buffer(device, textured_vertices.as_bytes());
 	let textured_bind_group = make::bind_group(
 		device,
 		queue,
 		textured_layout,
-		&look_matrix_uniform,
+		&perspective_buffer,
+		&camera_buffer,
 		Extent3d { width: atlas_size.x, height: atlas_size.y, depth_or_array_layers: 1 },
 		TextureDimension::D2,
 		TextureFormat::Bgra8UnormSrgb,
 		&atlas_data,
 	);
-	let colored = colored.map(|ColoredData { palette, colored_vertices }| {
-		let colored_vertex_buf = make::vertex_buffer(device, unsafe { reinterpret::slice(&colored_vertices) });//contiguous primitives to bytes
-		let colored_bind_group = make::bind_group(
+	let solid = solid.map(|SolidData { palette, solid_vertices }| {
+		let solid_vertex_buffer = make::vertex_buffer(device, solid_vertices.as_bytes());
+		let solid_bind_group = make::bind_group(
 			device,
 			queue,
-			colored_layout,
-			&look_matrix_uniform,
+			solid_layout,
+			&perspective_buffer,
+			&camera_buffer,
 			Extent3d { width: tr_reader::model::PALETTE_SIZE as u32, height: 1, depth_or_array_layers: 1 },
 			TextureDimension::D1,
 			TextureFormat::Rgba8UnormSrgb,
 			palette.as_slice(),
 		);
-		(colored_vertex_buf, colored_bind_group)
+		(solid_vertex_buffer, solid_bind_group)
 	});
+	let sprite_vertex_buffer = (!sprite_vertices.is_empty()).then(||
+		make::vertex_buffer(device, sprite_vertices.as_bytes())
+	);
+	let mut atlas_data = atlas_data;
+	swap_br(&mut atlas_data);
 	LevelViewState {
-		look_matrix_uniform,
-		textured_vertex_buffer: textured_vertex_buf,
+		path,
+		atlas_size,
+		atlas_data,
+		perspective_buffer,
+		camera_buffer,
+		textured_vertex_buffer,
 		textured_bind_group,
-		colored,
+		solid,
+		sprite_vertex_buffer,
 		room_vertex_indices,
 		static_room_indices,
 		flip_groups,
@@ -127,29 +146,34 @@ fn load_level(
 }
 
 macro_rules! keys_decl {
-	($($symbol:ident, $($keycode:expr),*;)*) => {
-		#[derive(Clone, Copy)]
+	($($symbol:ident: [$($keycode:expr),*],)*) => {
+		#[derive(Clone, Copy, PartialEq, Eq, Hash)]
 		enum TrackedKey { $($symbol),* }
 		
-		const NUM_TRACKED_KEYS: usize = [$(TrackedKey::$symbol),*].len();
+		const NUM_TRACKED_KEYS: usize = [$($symbol),*].len();
 		
-		fn get_key_map() -> HashMap<KeyCode, TrackedKey> {
-			HashMap::from([$($(($keycode, $symbol),)*)*])
+		fn get_key_map() -> HashMap<KeyCode, HashSet<TrackedKey>> {
+			let mut keymap = HashMap::<KeyCode, HashSet<TrackedKey>>::new();
+			for (keycode, symbol) in [$($(($keycode, $symbol),)*)*] {
+				keymap.entry(keycode).or_default().insert(symbol);
+			}
+			keymap
 		}
 	};
 }
 
 keys_decl!(
-	Exit, KeyCode::Escape, KeyCode::KeyF;
-	Forward, KeyCode::KeyW, KeyCode::ArrowUp;
-	Left, KeyCode::KeyA, KeyCode::ArrowLeft;
-	Backward, KeyCode::KeyS, KeyCode::ArrowDown;
-	Right, KeyCode::KeyD, KeyCode::ArrowRight;
-	Up, KeyCode::KeyQ, KeyCode::PageUp;
-	Down, KeyCode::KeyE, KeyCode::PageDown;
-	Shift, KeyCode::ShiftLeft, KeyCode::ShiftRight;
-	Control, KeyCode::ControlLeft, KeyCode::ControlRight;
-	Open, KeyCode::KeyO;
+	Exit: [KeyCode::Escape, KeyCode::KeyF],
+	Forward: [KeyCode::KeyW, KeyCode::ArrowUp],
+	Left: [KeyCode::KeyA, KeyCode::ArrowLeft],
+	Backward: [KeyCode::KeyS, KeyCode::ArrowDown],
+	Right: [KeyCode::KeyD, KeyCode::ArrowRight],
+	Up: [KeyCode::KeyQ, KeyCode::PageUp],
+	Down: [KeyCode::KeyE, KeyCode::PageDown],
+	Shift: [KeyCode::ShiftLeft, KeyCode::ShiftRight],
+	Control: [KeyCode::ControlLeft, KeyCode::ControlRight],
+	Open: [KeyCode::KeyO],
+	SaveTexture: [KeyCode::KeyT],
 );
 
 #[derive(Default)]
@@ -200,6 +224,12 @@ const MOVEMENT_MAP: [(TrackedKey, Vec3); 6] = [
 	(Up, Vec3::NEG_Y),
 ];
 
+fn set_camera_control_off(window: &Window, camera_control: &mut bool) {
+	window.set_cursor_visible(true);
+	window.set_cursor_grab(CursorGrabMode::None).unwrap();
+	*camera_control = false;
+}
+
 fn main() {
 	env_logger::init();
 	let event_loop = EventLoop::new().expect("new event loop");
@@ -233,20 +263,27 @@ fn main() {
 	surface.configure(&device, &config);
 	
 	let textured_bind_group_layout = make::bind_group_layout(&device, TextureViewDimension::D2);
-	let textured_bind_group_layout_ref = [&textured_bind_group_layout];
+	let textured_bind_group_layout_ref = &textured_bind_group_layout;
+	let textured_pipeline_layout_descriptor = make::pipeline_layout_descriptor(slice::from_ref(&textured_bind_group_layout_ref));
+	
 	let textured_shader = make::shader(&device, include_str!("shader/textured.wgsl"));
-	let textured_pipeline_layout_descriptor = make::pipeline_layout_descriptor(&textured_bind_group_layout_ref);
-	let textured_vertex_attributes = make::vertex_attributes(VertexFormat::Float32x2);
+	let textured_vertex_attributes = make::vertex_attributes(&[VertexFormat::Float32x3, VertexFormat::Float32x2]);
 	let textured_vertex_buffer_layout = make::vertex_buffer_layout(size_of::<TexturedVertex>() as u64, &textured_vertex_attributes);
 	let textured_vertex_state = make::vertex_state(&textured_shader, slice::from_ref(&textured_vertex_buffer_layout));
 	
-	let colored_bind_group_layout = make::bind_group_layout(&device, TextureViewDimension::D1);
-	let colored_bind_group_layout_ref = [&colored_bind_group_layout];
-	let colored_shader = make::shader(&device, include_str!("shader/colored.wgsl"));
-	let colored_pipeline_layout_descriptor = make::pipeline_layout_descriptor(&colored_bind_group_layout_ref);
-	let colored_vertex_attributes = make::vertex_attributes(VertexFormat::Uint32);
-	let colored_vertex_buffer_layout = make::vertex_buffer_layout(size_of::<ColoredVertex>() as u64, &colored_vertex_attributes);
-	let colored_vertex_state = make::vertex_state(&colored_shader, slice::from_ref(&colored_vertex_buffer_layout));
+	let solid_bind_group_layout = make::bind_group_layout(&device, TextureViewDimension::D1);
+	let solid_bind_group_layout_ref = &solid_bind_group_layout;
+	let solid_pipeline_layout_descriptor = make::pipeline_layout_descriptor(slice::from_ref(&solid_bind_group_layout_ref));
+	
+	let solid_shader = make::shader(&device, include_str!("shader/solid.wgsl"));
+	let solid_vertex_attributes = make::vertex_attributes(&[VertexFormat::Float32x3, VertexFormat::Uint32]);
+	let solid_vertex_buffer_layout = make::vertex_buffer_layout(size_of::<SolidVertex>() as u64, &solid_vertex_attributes);
+	let solid_vertex_state = make::vertex_state(&solid_shader, slice::from_ref(&solid_vertex_buffer_layout));
+	
+	let sprite_shader = make::shader(&device, include_str!("shader/sprite.wgsl"));
+	let sprite_vertex_attributes = make::vertex_attributes(&[VertexFormat::Float32x3, VertexFormat::Float32x2, VertexFormat::Float32x2]);
+	let sprite_vertex_buffer_layout = make::vertex_buffer_layout(size_of::<SpriteVertex>() as u64, &sprite_vertex_attributes);
+	let sprite_vertex_state = make::vertex_state(&sprite_shader, slice::from_ref(&sprite_vertex_buffer_layout));
 	
 	let opaque_pipeline = make::render_pipeline(
 		&device,
@@ -275,11 +312,19 @@ fn main() {
 		}),
 		false,
 	);
-	let colored_pipeline = make::render_pipeline(
+	let solid_pipeline = make::render_pipeline(
 		&device,
-		&colored_pipeline_layout_descriptor,
-		colored_vertex_state,
-		&colored_shader,
+		&solid_pipeline_layout_descriptor,
+		solid_vertex_state,
+		&solid_shader,
+		None,
+		true,
+	);
+	let sprite_pipeline = make::render_pipeline(
+		&device,
+		&textured_pipeline_layout_descriptor,
+		sprite_vertex_state,
+		&sprite_shader,
 		None,
 		true,
 	);
@@ -297,12 +342,12 @@ fn main() {
 	
 	if let Some(level_path) = args().skip(1).next() {
 		level_view_state = Some(load_level(
-			&level_path,
+			level_path,
 			&device,
 			&queue,
 			window_size,
 			&textured_bind_group_layout,
-			&colored_bind_group_layout,
+			&solid_bind_group_layout,
 		));
 	}
 	
@@ -321,14 +366,8 @@ fn main() {
 						config.height = window_size.height;
 						surface.configure(&device, &config);
 						depth_view = make::depth_view(&device, window_size);
-						if let Some(LevelViewState {
-							look_matrix_uniform,
-							cam_pos,
-							yaw,
-							pitch,
-							..
-						}) = &level_view_state {
-							write_look_matrix(&queue, look_matrix_uniform, &make::look_matrix(window_size, *cam_pos, *yaw, *pitch));
+						if let Some(LevelViewState { perspective_buffer, .. }) = &level_view_state {
+							write_transform(&queue, perspective_buffer, &make::perspective_transform(window_size));
 						}
 					},
 					WindowEvent::RedrawRequested => {
@@ -337,81 +376,71 @@ fn main() {
 						let frame = surface.get_current_texture().expect("Failed to acquire next swap chain texture");
 						let color_view = frame.texture.create_view(&TextureViewDescriptor::default());
 						let mut encoder = device.create_command_encoder(&CommandEncoderDescriptor::default());
-						
 						if let Some(LevelViewState {
-							look_matrix_uniform,
+							camera_buffer,
 							textured_vertex_buffer,
 							textured_bind_group,
-							colored,
+							solid,
+							sprite_vertex_buffer,
 							room_vertex_indices,
 							static_room_indices,
 							flip_groups,
 							cam_pos,
 							yaw,
 							pitch,
+							..
 						}) = &mut level_view_state {
 							if let Some(movement) = MOVEMENT_MAP.into_iter().filter_map(|(key, vec)| keys.down(key).then_some(vec)).reduce(|a, b| a + b) {
 								*cam_pos +=
 									if keys.down(Shift) { 5.0 } else { 1.0 } *
-									if keys.down(Control) { 0.2 } else { 1.0 } *
+									if keys.down(Control) { 0.1 } else { 1.0 } *
 									5.0 *
 									delta_time.as_secs_f32() *
 									Mat4::from_rotation_y(*yaw).inverse().transform_point3(movement);
-								write_look_matrix(&queue, look_matrix_uniform, &make::look_matrix(window_size, *cam_pos, *yaw, *pitch));
+								write_transform(&queue, camera_buffer, &make::camera_transform(*cam_pos, *yaw, *pitch));
 							}
 							let room_indices = get_room_indices(static_room_indices, flip_groups).collect::<Vec<_>>();
-							{
-								let mut rpass = encoder.begin_render_pass(&RenderPassDescriptor {
-									label: None,
-									color_attachments: &[Some(RenderPassColorAttachment {
-										ops: Operations { load: LoadOp::Clear(Color::BLACK), store: StoreOp::Store },
-										resolve_target: None,
-										view: &color_view,
-									})],
-									depth_stencil_attachment: Some(RenderPassDepthStencilAttachment {
-										depth_ops: Some(Operations { load: LoadOp::Clear(1.0), store: StoreOp::Store }),
-										stencil_ops: None,
-										view: &depth_view,
-									}),
-									timestamp_writes: None,
-									occlusion_query_set: None,
-								});
-								rpass.set_bind_group(0, textured_bind_group, &[]);
-								rpass.set_vertex_buffer(0, textured_vertex_buffer.slice(..));
-								rpass.set_pipeline(&opaque_pipeline);
+							let mut rpass = encoder.begin_render_pass(&RenderPassDescriptor {
+								label: None,
+								color_attachments: &[Some(RenderPassColorAttachment {
+									ops: Operations { load: LoadOp::Clear(Color::BLACK), store: StoreOp::Store },
+									resolve_target: None,
+									view: &color_view,
+								})],
+								depth_stencil_attachment: Some(RenderPassDepthStencilAttachment {
+									depth_ops: Some(Operations { load: LoadOp::Clear(1.0), store: StoreOp::Store }),
+									stencil_ops: None,
+									view: &depth_view,
+								}),
+								timestamp_writes: None,
+								occlusion_query_set: None,
+							});
+							rpass.set_bind_group(0, textured_bind_group, &[]);
+							rpass.set_vertex_buffer(0, textured_vertex_buffer.slice(..));
+							rpass.set_pipeline(&opaque_pipeline);
+							for &room_index in &room_indices {
+								rpass.draw(room_vertex_indices[room_index].opaque.clone(), 0..1);
+							}
+							rpass.set_pipeline(&additive_pipeline);
+							for &room_index in &room_indices {
+								rpass.draw(room_vertex_indices[room_index].additive.clone(), 0..1);
+							}
+							if let Some(sprite_vertex_buffer) = sprite_vertex_buffer {
+								rpass.set_vertex_buffer(0, sprite_vertex_buffer.slice(..));
+								rpass.set_pipeline(&sprite_pipeline);
 								for &room_index in &room_indices {
-									rpass.draw(room_vertex_indices[room_index].opaque.clone(), 0..1);
-								}
-								rpass.set_pipeline(&additive_pipeline);
-								for &room_index in &room_indices {
-									rpass.draw(room_vertex_indices[room_index].additive.clone(), 0..1);
+									rpass.draw(room_vertex_indices[room_index].sprite.clone(), 0..1);
 								}
 							}
-							if let Some((colored_vertex_buffer, colored_bind_group)) = colored {
-								let mut rpass = encoder.begin_render_pass(&RenderPassDescriptor {
-									label: None,
-									color_attachments: &[Some(RenderPassColorAttachment {
-										ops: Operations { load: LoadOp::Load, store: StoreOp::Store },
-										resolve_target: None,
-										view: &color_view,
-									})],
-									depth_stencil_attachment: Some(RenderPassDepthStencilAttachment {
-										depth_ops: Some(Operations { load: LoadOp::Load, store: StoreOp::Store }),
-										stencil_ops: None,
-										view: &depth_view,
-									}),
-									timestamp_writes: None,
-									occlusion_query_set: None,
-								});
-								rpass.set_bind_group(0, colored_bind_group, &[]);
-								rpass.set_vertex_buffer(0, colored_vertex_buffer.slice(..));
-								rpass.set_pipeline(&colored_pipeline);
+							if let Some((solid_vertex_buffer, solid_bind_group)) = solid {
+								rpass.set_bind_group(0, solid_bind_group, &[]);
+								rpass.set_vertex_buffer(0, solid_vertex_buffer.slice(..));
+								rpass.set_pipeline(&solid_pipeline);
 								for &room_index in &room_indices {
-									rpass.draw(room_vertex_indices[room_index].colored.clone(), 0..1);
+									rpass.draw(room_vertex_indices[room_index].solid.clone(), 0..1);
 								}
 							}
 						}
-						
 						let egui_input = egui_input_state.take_egui_input(window);
 						let egui::FullOutput {
 							platform_output,
@@ -466,33 +495,28 @@ fn main() {
 						for id in &tex_free {
 							egui_renderer.free_texture(id);
 						}
-						
 						queue.submit([encoder.finish()]);
 						frame.present();
-						
 						if choosing_file {
 							let file_dialog_state = file_dialog.state();
 							choosing_file = matches!(file_dialog_state, DialogState::Open);
 							if let DialogState::Selected(path) = file_dialog_state {
 								level_view_state = Some(load_level(
-									&path.to_string_lossy(),
+									path.into_os_string().into_string().expect("path not UTF-8"),
 									&device,
 									&queue,
 									window_size,
 									&textured_bind_group_layout,
-									&colored_bind_group_layout,
+									&solid_bind_group_layout,
 								));
 							}
 						}
-						
 						keys.clear_just_pressed();
 						last_frame = now;
 						window.request_redraw();
 					},
 					WindowEvent::MouseInput { state: ElementState::Pressed, button: MouseButton::Right, .. } => if camera_control {
-						window.set_cursor_visible(true);
-						window.set_cursor_grab(CursorGrabMode::None).unwrap();
-						camera_control = false;
+						set_camera_control_off(window, &mut camera_control);
 					} else if level_view_state.is_some() {
 						window.set_cursor_visible(false);
 						window.set_cursor_grab(CursorGrabMode::Confined).or_else(|_| window.set_cursor_grab(CursorGrabMode::Locked)).expect("cursor grab");
@@ -504,25 +528,44 @@ fn main() {
 			}
 		},
 		Event::DeviceEvent { event: DeviceEvent::MouseMotion { delta: (delta_x, delta_y) }, .. } => if camera_control {
-			if let Some(LevelViewState { look_matrix_uniform, cam_pos, yaw, pitch, .. }) = &mut level_view_state {
+			if let Some(LevelViewState { camera_buffer, cam_pos, yaw, pitch, .. }) = &mut level_view_state {
 				*yaw = *yaw + delta_x as f32 / 150.0;
 				*pitch = (*pitch + delta_y as f32 / 150.0).clamp(-FRAC_PI_2, FRAC_PI_2);
-				write_look_matrix(&queue, look_matrix_uniform, &make::look_matrix(window_size, *cam_pos, *yaw, *pitch));
+				write_transform(&queue, camera_buffer, &make::camera_transform(*cam_pos, *yaw, *pitch));
 			}
 		},
 		Event::DeviceEvent { event: DeviceEvent::Key(RawKeyEvent { physical_key: PhysicalKey::Code(keycode), state }), .. } => {
-			if let Some(&tracked_key) = key_map.get(&keycode) {
-				match state {
-					ElementState::Pressed => keys.press(tracked_key),
-					ElementState::Released => keys.release(tracked_key),
+			if let Some(tracked_keys) = key_map.get(&keycode) {
+				let key_op = match state {
+					ElementState::Pressed => TrackedKeysState::press,
+					ElementState::Released => TrackedKeysState::release,
+				};
+				for &tracked_key in tracked_keys {
+					key_op(&mut keys, tracked_key);
 				}
 			}
 			if keys.just_pressed(Exit) {
 				target.exit();
 			}
-			if keys.down(Control) && keys.just_pressed(Open) {
-				choosing_file = true;
-				file_dialog.select_file();
+			if keys.down(Control) {
+				if keys.just_pressed(Open) {
+					if camera_control {
+						set_camera_control_off(window, &mut camera_control);
+					}
+					choosing_file = true;
+					file_dialog.select_file();
+				}
+				if keys.just_pressed(SaveTexture) {
+					if let Some(LevelViewState { path, atlas_size, atlas_data, .. }) = &mut level_view_state {
+						_ = path;
+						/*let end = match path.rfind('.') {
+							Some(last_period) => last_period,
+							None => path.len(),
+						};*/
+						let texture_path = "texture.png";//format!("{}_texture.png", &path[..end]);
+						image::save_buffer(texture_path, atlas_data, atlas_size.x, atlas_size.y, image::ColorType::Rgba8).expect("save texture");
+					}
+				}
 			}
 		},
 		_ => {},

@@ -6,6 +6,7 @@ pub(crate) mod impls;
 use std::{io::{Cursor, Read, Result}, mem::size_of, slice};
 use byteorder::{ReadBytesExt, LE};
 use compress::zlib::Decoder;
+use num_traits::AsPrimitive;
 pub(crate) use tr_derive::Readable;
 
 pub(crate) trait Readable: Sized {
@@ -28,25 +29,8 @@ pub(crate) unsafe fn read_boxed_slice_raw<R: Read, T>(reader: &mut R, len: usize
 	Ok(vec.into_boxed_slice())
 }
 
-pub(crate) trait Len {
-	fn read_len<R: Read>(reader: &mut R) -> Result<usize>;
-}
-
-macro_rules! impl_len {
-	($type:ty, $func:ident) => {
-		impl Len for $type {
-			fn read_len<R: Read>(reader: &mut R) -> Result<usize> {
-				Ok(reader.$func::<LE>()? as usize)
-			}
-		}
-	};
-}
-
-impl_len!(u16, read_u16);
-impl_len!(u32, read_u32);
-
-pub(crate) fn read_list<R: Read, T: Readable, L: Len>(reader: &mut R) -> Result<Box<[T]>> {
-	let len = L::read_len(reader)?;
+pub(crate) fn read_list<R: Read, T: Readable, L: Readable + AsPrimitive<usize>>(reader: &mut R) -> Result<Box<[T]>> {
+	let len = L::read(reader)?.as_();
 	read_boxed_slice(reader, len)
 }
 

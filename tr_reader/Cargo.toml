@@ -9,6 +9,8 @@ bitfield = "0.14.0"
 byteorder = { workspace = true }
 compress = "0.2.1"
 glam = { workspace = true }
+glam-traits = { workspace = true }
 nonmax = "0.5.5"
+num-traits = "0.2.18"
 shared = { path = "../shared" }
 tr_derive = { path = "../tr_derive" }

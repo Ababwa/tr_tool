@@ -1,10 +1,10 @@
-use std::{borrow::Cow, f32::consts::FRAC_PI_4, mem::size_of};
+use std::{borrow::Cow, f32::consts::FRAC_PI_4, mem::size_of, num::NonZeroU64};
 use glam::{vec3, EulerRot, Mat4, Vec3, Vec3Swizzles};
 use wgpu::{
 	util::{BufferInitDescriptor, DeviceExt, TextureDataOrder},
 	BindGroup, BindGroupDescriptor, BindGroupEntry, BindGroupLayout, BindGroupLayoutDescriptor,
 	BindGroupLayoutEntry, BindingResource, BindingType, BlendState, Buffer, BufferBindingType,
-	BufferSize, BufferUsages, ColorTargetState, ColorWrites, CompareFunction, DepthBiasState,
+	BufferUsages, ColorTargetState, ColorWrites, CompareFunction, DepthBiasState,
 	DepthStencilState, Device, Extent3d, Face, FragmentState, MultisampleState,
 	PipelineLayoutDescriptor, PrimitiveState, Queue, RenderPipeline, RenderPipelineDescriptor,
 	ShaderModule, ShaderModuleDescriptor, ShaderSource, ShaderStages, StencilState,
@@ -16,11 +16,12 @@ use winit::dpi::PhysicalSize;
 
 const DEPTH_FORMAT: TextureFormat = TextureFormat::Depth32Float;
 
-pub fn look_matrix(window_size: PhysicalSize<u32>, cam_pos: Vec3, yaw: f32, pitch: f32) -> Mat4 {
-	Mat4::perspective_rh(FRAC_PI_4, window_size.width as f32 / window_size.height as f32, 0.1, 200.0) *
-	Mat4::from_euler(EulerRot::XYZ, pitch, yaw, 0.0) *
-	Mat4::from_translation(cam_pos) *
-	Mat4::from_scale(vec3(1.0, -1.0, -1.0))
+pub fn perspective_transform(window_size: PhysicalSize<u32>) -> Mat4 {
+	Mat4::perspective_rh(FRAC_PI_4, window_size.width as f32 / window_size.height as f32, 0.1, 200.0)
+}
+
+pub fn camera_transform(cam_pos: Vec3, yaw: f32, pitch: f32) -> Mat4 {
+	Mat4::from_euler(EulerRot::XYZ, pitch, yaw, 0.0) * Mat4::from_translation(cam_pos) * Mat4::from_scale(vec3(1.0, -1.0, -1.0))
 }
 
 pub fn yaw_pitch(v: Vec3) -> (f32, f32) {
@@ -44,11 +45,46 @@ pub fn depth_view(device: &Device, window_size: PhysicalSize<u32>) -> TextureVie
 	}).create_view(&TextureViewDescriptor::default())
 }
 
+fn buffer(device: &Device, contents: &[u8], usage: BufferUsages) -> Buffer {
+	device.create_buffer_init(&BufferInitDescriptor { label: None, contents, usage })
+}
+
+pub fn uniform_buffer(device: &Device, contents: &[u8]) -> Buffer {
+	buffer(device, contents, BufferUsages::UNIFORM | BufferUsages::COPY_DST)
+}
+
 pub fn vertex_buffer(device: &Device, contents: &[u8]) -> Buffer {
-	device.create_buffer_init(&BufferInitDescriptor {
+	buffer(device, contents, BufferUsages::VERTEX)
+}
+
+const MATRIX_BIND_GROUP_LAYOUT_ENTRY: BindGroupLayoutEntry = BindGroupLayoutEntry {
+	binding: 0,
+	visibility: ShaderStages::VERTEX,
+	count: None,
+	ty: BindingType::Buffer {
+		ty: BufferBindingType::Uniform,
+		has_dynamic_offset: false,
+		min_binding_size: NonZeroU64::new(size_of::<Mat4>() as u64),
+	},
+};
+
+pub fn bind_group_layout(device: &Device, view_dimension: TextureViewDimension) -> BindGroupLayout {
+	device.create_bind_group_layout(&BindGroupLayoutDescriptor {
 		label: None,
-		usage: BufferUsages::VERTEX,
-		contents,
+		entries: &[
+			BindGroupLayoutEntry { binding: 0, ..MATRIX_BIND_GROUP_LAYOUT_ENTRY },
+			BindGroupLayoutEntry { binding: 1, ..MATRIX_BIND_GROUP_LAYOUT_ENTRY },
+			BindGroupLayoutEntry {
+				binding: 2,
+				visibility: ShaderStages::FRAGMENT,
+				count: None,
+				ty: BindingType::Texture {
+					sample_type: TextureSampleType::Float { filterable: false },
+					view_dimension,
+					multisampled: false,
+				},
+			},
+		],
 	})
 }
 
@@ -56,7 +92,8 @@ pub fn bind_group(
 	device: &Device,
 	queue: &Queue,
 	layout: &BindGroupLayout,
-	look_matrix_uniform: &Buffer,
+	perspective_buffer: &Buffer,
+	camera_buffer: &Buffer,
 	size: Extent3d,
 	dimension: TextureDimension,
 	format: TextureFormat,
@@ -66,12 +103,10 @@ pub fn bind_group(
 		label: None,
 		layout,
 		entries: &[
+			BindGroupEntry { binding: 0, resource: perspective_buffer.as_entire_binding() },
+			BindGroupEntry { binding: 1, resource: camera_buffer.as_entire_binding() },
 			BindGroupEntry {
-				binding: 0,
-				resource: look_matrix_uniform.as_entire_binding(),
-			},
-			BindGroupEntry {
-				binding: 1,
+				binding: 2,
 				resource: BindingResource::TextureView(&device.create_texture_with_data(
 					queue,
 					&TextureDescriptor {
@@ -92,34 +127,6 @@ pub fn bind_group(
 	})
 }
 
-pub fn bind_group_layout(device: &Device, view_dimension: TextureViewDimension) -> BindGroupLayout {
-	device.create_bind_group_layout(&BindGroupLayoutDescriptor {
-		label: None,
-		entries: &[
-			BindGroupLayoutEntry {
-				binding: 0,
-				visibility: ShaderStages::VERTEX,
-				count: None,
-				ty: BindingType::Buffer {
-					ty: BufferBindingType::Uniform,
-					has_dynamic_offset: false,
-					min_binding_size: BufferSize::new(size_of::<Mat4>() as u64),
-				},
-			},
-			BindGroupLayoutEntry {
-				binding: 1,
-				visibility: ShaderStages::FRAGMENT,
-				count: None,
-				ty: BindingType::Texture {
-					sample_type: TextureSampleType::Float { filterable: false },
-					view_dimension,
-					multisampled: false,
-				},
-			},
-		],
-	})
-}
-
 pub fn shader(device: &Device, contents: &str) -> ShaderModule {
 	device.create_shader_module(ShaderModuleDescriptor {
 		label: None,
@@ -127,19 +134,17 @@ pub fn shader(device: &Device, contents: &str) -> ShaderModule {
 	})
 }
 
-pub fn vertex_attributes(attr2_format: VertexFormat) -> [VertexAttribute; 2] {
-	[
-		VertexAttribute {
-			offset: 0,
-			format: VertexFormat::Float32x3,
-			shader_location: 0,
-		},
-		VertexAttribute {
-			offset: VertexFormat::Float32x3.size(),
-			format: attr2_format,
-			shader_location: 1,
-		},
-	]
+pub fn vertex_attributes(formats: &[VertexFormat]) -> Vec<VertexAttribute> {
+	let mut offset = 0;
+	formats.iter().enumerate().map(|(index, &format)| {
+		let va = VertexAttribute {
+			format,
+			offset,
+			shader_location: index as u32,
+		};
+		offset += format.size();
+		va
+	}).collect()
 }
 
 pub fn vertex_buffer_layout(array_stride: u64, attributes: &[VertexAttribute]) -> VertexBufferLayout {
@@ -176,13 +181,12 @@ pub fn render_pipeline(
 ) -> RenderPipeline {
 	device.create_render_pipeline(&RenderPipelineDescriptor {
 		label: None,
-		layout: Some(&device.create_pipeline_layout(&pipeline_layout_descriptor)),
+		layout: Some(&device.create_pipeline_layout(pipeline_layout_descriptor)),
 		vertex,
 		fragment: Some(FragmentState {
 			module,
 			entry_point: "fs_main",
-			targets:
-			&[Some(ColorTargetState {
+			targets: &[Some(ColorTargetState {
 				blend,
 				format: TextureFormat::Bgra8UnormSrgb,
 				write_mask: ColorWrites::all(),

@@ -1,25 +1,26 @@
 struct VertexOutput {
-	@location(0) color_index: u32,
 	@builtin(position) position: vec4<f32>,
+	@location(0) color_index: u32,
 };
 
 @group(0)
 @binding(0)
-var<uniform> transform: mat4x4<f32>;
+var<uniform> perspective: mat4x4<f32>;
+
+@group(0)
+@binding(1)
+var<uniform> camera: mat4x4<f32>;
 
 @vertex
 fn vs_main(
 	@location(0) position: vec4<f32>,
 	@location(1) color_index: u32,
 ) -> VertexOutput {
-	var result: VertexOutput;
-	result.color_index = color_index;
-	result.position = transform * position;
-	return result;
+	return VertexOutput(perspective * camera * position, color_index);
 }
 
 @group(0)
-@binding(1)
+@binding(2)
 var r_color: texture_1d<f32>;
 
 @fragment
