@@ -1,7 +1,6 @@
 use std::io::{Read, Result};
 use glam::{uvec2, Mat4, Vec3};
 use tr_reader::model::{self as tr, tr4};
-use shared::reinterpret;
 use super::{
 	add_textured_face, get_level_render_data,
 	SolidVertex, LevelRenderData, TrVersionExt, ObjTex, TexturedVertex,

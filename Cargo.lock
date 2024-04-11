@@ -1779,6 +1779,11 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "adad44e29e4c806119491a7f06f03de4d1af22c3a680dd47f1e6e179439d1f56"
 
 [[package]]
+name = "reinterpret"
+version = "0.1.0"
+source = "git+https://github.com/Ababwa/reinterpret.git#1eece877b4f5cade243af0a5a87cca7ad97b0cde"
+
+[[package]]
 name = "renderdoc-sys"
 version = "1.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2147,6 +2152,7 @@ dependencies = [
  "glam-traits",
  "nonmax",
  "num-traits",
+ "reinterpret",
  "shared",
  "tr_derive",
 ]
@@ -2168,6 +2174,7 @@ dependencies = [
  "nonmax",
  "num-traits",
  "pollster",
+ "reinterpret",
  "shared",
  "softbuffer",
  "tr_reader",

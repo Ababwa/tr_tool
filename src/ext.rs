@@ -1,7 +1,6 @@
 use std::future::Future;
 use glam::Mat4;
 use pollster::block_on;
-use shared::reinterpret;
 use crate::load::{SolidVertex, SpriteVertex, TexturedVertex};
 
 pub trait Wait: Future {

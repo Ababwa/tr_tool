@@ -8,7 +8,7 @@ use byteorder::{ReadBytesExt, LE};
 use glam::{i16vec3, I16Vec2, I16Vec3, IVec3, U16Vec2, U16Vec3};
 use glam_traits::ext::U8Vec2;
 use nonmax::{NonMaxU16, NonMaxU8};
-use shared::{geom::MinMax, reinterpret};
+use shared::geom::MinMax;
 use crate::{read_boxed_slice, read_boxed_slice_raw, read_list, Readable};
 
 // 1 sector unit = 1024 world coord units

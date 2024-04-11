@@ -1,6 +1,5 @@
 use std::io::{Read, Result};
 use glam::{uvec2, Mat4};
-use shared::reinterpret;
 use tr_reader::model::{self as tr, tr3};
 use super::{
 	add_mesh_tr123, get_level_render_data, to_bgra, SolidVertex, LevelRenderData, TrVersionExt, ObjTex, TexturedVertex, FRAME_SINGLE_ROT_DIVISOR_TR123
