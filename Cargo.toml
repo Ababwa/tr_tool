@@ -3,8 +3,11 @@ members = ["tr_reader", "tr_derive", "shared"]
 
 [workspace.dependencies]
 byteorder = "1.4.3"
-glam = { git = "https://github.com/bitshifter/glam-rs.git" }
-glam-traits = { git = "https://github.com/Ababwa/glam-traits.git", branch = "latest_glam", features = ["ext"] }
+glam = "0.27.0"
+glam-traits = { version = "0.1.2", features = ["ext"] }
+nonmax = "0.5.5"
+num-traits = "0.2.18"
+shared = { path = "shared" }
 
 [package]
 name = "tr_tool"
@@ -22,10 +25,10 @@ glam = { workspace = true }
 glam-traits = { workspace = true }
 image = { version = "0.24.9", default-features = false, features = ["png"] }
 itertools = "0.12.1"
-nonmax = "0.5.5"
-num-traits = "0.2.17"
+nonmax = { workspace = true }
+num-traits = { workspace = true }
 pollster = "0.3.0"
-shared = { path = "shared" }
+shared = { workspace = true }
 softbuffer = "0.4.1"
 tr_reader = { path = "tr_reader" }
 wgpu = "0.19.1"

@@ -10,7 +10,7 @@ byteorder = { workspace = true }
 compress = "0.2.1"
 glam = { workspace = true }
 glam-traits = { workspace = true }
-nonmax = "0.5.5"
-num-traits = "0.2.18"
-shared = { path = "../shared" }
+nonmax = { workspace = true }
+num-traits = { workspace = true }
+shared = { workspace = true }
 tr_derive = { path = "../tr_derive" }
