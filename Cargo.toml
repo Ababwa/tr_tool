@@ -1,5 +1,6 @@
 [workspace]
-members = ["tr_reader", "tr_derive", "shared"]
+members = ["tr_model", "tr_derive", "shared", "tool2", "tr_readable"]
+resolver = "2"
 
 [workspace.dependencies]
 byteorder = "1.4.3"
@@ -9,29 +10,3 @@ nonmax = "0.5.5"
 num-traits = "0.2.18"
 reinterpret = { git = "https://github.com/Ababwa/reinterpret.git" }
 shared = { path = "shared" }
-
-[package]
-name = "tr_tool"
-version = "0.1.0"
-edition = "2021"
-
-[dependencies]
-byteorder = { workspace = true }
-egui = "0.26.2"
-egui-file-dialog = "0.4.0"
-egui-wgpu = "0.26.2"
-egui-winit = "0.26.2"
-env_logger = "0.11.1"
-glam = { workspace = true }
-glam-traits = { workspace = true }
-image = { version = "0.24.9", default-features = false, features = ["png"] }
-itertools = "0.12.1"
-nonmax = { workspace = true }
-num-traits = { workspace = true }
-pollster = "0.3.0"
-reinterpret = { workspace = true }
-shared = { workspace = true }
-softbuffer = "0.4.1"
-tr_reader = { path = "tr_reader" }
-wgpu = "0.19.1"
-winit = "0.29.10"

@@ -2,9 +2,15 @@ use std::io::{Read, Result};
 use bitfield::bitfield;
 use byteorder::{ReadBytesExt, LE};
 use glam::{IVec3, Vec3};
-use crate::{get_zlib, read_boxed_slice_raw, Readable};
+use tr_readable::{get_zlib, read_boxed_slice_raw, Readable};
 use super::{
-	AnimDispatch, Animation, BoxData, Camera, Color3, Entity, EntityComponentOcb, FrameData, Mesh, MeshComponentTr45, MeshNodeData, Meshes, Model, ObjectTexture, Room, RoomVertexComponentTr34, SoundDetails, SoundDetailsComponentTr345, SoundSource, SpriteSequence, SpriteTexture, StateChange, StaticMesh, TrVersion, FRAME_SINGLE_ROT_MASK_TR45, NUM_PIXELS, SOUND_MAP_SIZE
+	generic::{Animation, Entity, Meshes, ObjectTexture, Room, SoundDetails, TrVersion},
+	shared::{
+		AnimDispatch, BoxDataTr234, Camera, Color3, EntityComponentOcb, FrameData,
+		MeshComponentTr45, MeshNodeData, Model, RoomVertexLightTr34, SoundDetailsComponentTr345,
+		SoundSource, SpriteSequence, SpriteTexture, StateChange, StaticMesh, NUM_PIXELS,
+		SOUND_MAP_SIZE_TR234,
+	},
 };
 
 pub struct Images {
@@ -25,7 +31,7 @@ impl Readable for Images {
 		let images32 = unsafe { read_boxed_slice_raw(&mut get_zlib(reader)?, num_images)? };//arrays of primitives
 		let images16 = unsafe { read_boxed_slice_raw(&mut get_zlib(reader)?, num_images)? };
 		let misc_images = unsafe { read_boxed_slice_raw(&mut get_zlib(reader)?, 2)?.try_into().ok().unwrap() };//exactly 2
-		Ok(Images {
+		Ok(Self {
 			num_room_images,
 			num_obj_images,
 			num_bump_maps,
@@ -34,6 +40,15 @@ impl Readable for Images {
 			misc_images,
 		})
 	}
+}
+
+bitfield! {
+	#[derive(Readable, Clone, Copy)]
+	pub struct RoomColor(u32);
+	pub blue, _: 7, 0;
+	pub green, _: 15, 8;
+	pub red, _: 23, 16;
+	pub alpha, _: 31, 24;
 }
 
 #[derive(Readable, Clone, Copy)]
@@ -59,7 +74,7 @@ pub struct RoomExtra {
 }
 
 #[derive(Readable, Clone, Copy)]
-pub struct Lateral {
+pub struct AnimationComponent {
 	/// Fixed-point
 	pub lateral_speed: u32,
 	/// Fixed-point
@@ -114,19 +129,28 @@ pub struct Ai {
 pub struct Tr4;
 
 impl TrVersion for Tr4 {
-	const FRAME_SINGLE_ROT_MASK: u16 = FRAME_SINGLE_ROT_MASK_TR45;
+	type AnimationComponent = AnimationComponent;
+	type EntityComponent = EntityComponentOcb;
+	type MeshComponent = MeshComponentTr45;
+	type ObjectTextureComponent = ObjectTextureComponent;
+	type ObjectTextureDetails = ObjectTextureDetails;
+	type RoomAmbientLight = RoomColor;
+	type RoomExtra = RoomExtra;
+	type RoomLight = RoomLight;
+	type RoomVertexLight = RoomVertexLightTr34;
+	type SoundDetailsComponent = SoundDetailsComponentTr345;
 }
 
 #[derive(Readable)]
 pub struct LevelData {
 	#[skip(4)]
 	#[list(u16)]
-	pub rooms: Box<[Room<RoomVertexComponentTr34, u32, RoomLight, RoomExtra>]>,
+	pub rooms: Box<[Room<Tr4>]>,
 	#[list(u32)]
 	pub floor_data: Box<[u16]>,
-	pub meshes: Meshes<Mesh<MeshComponentTr45>>,
+	pub meshes: Meshes<Tr4>,
 	#[list(u32)]
-	pub animations: Box<[Animation<Lateral>]>,
+	pub animations: Box<[Animation<Tr4>]>,
 	#[list(u32)]
 	pub state_changes: Box<[StateChange]>,
 	#[list(u32)]
@@ -150,22 +174,22 @@ pub struct LevelData {
 	pub flyby_cameras: Box<[FlybyCamera]>,
 	#[list(u32)]
 	pub sound_sources: Box<[SoundSource]>,
-	pub box_data: BoxData<u8>,
+	pub box_data: BoxDataTr234,
 	#[list(u32)]
 	pub animated_textures: Box<[u16]>,
 	pub animated_textures_uv_count: u8,
 	pub tex: [u8; 3],
 	#[list(u32)]
-	pub object_textures: Box<[ObjectTexture<ObjectTextureDetails, ObjectTextureComponent>]>,
+	pub object_textures: Box<[ObjectTexture<Tr4>]>,
 	#[list(u32)]
-	pub entities: Box<[Entity<EntityComponentOcb>]>,
+	pub entities: Box<[Entity<Tr4>]>,
 	#[list(u32)]
 	pub ais: Box<[Ai]>,
 	#[list(u16)]
 	pub demo_data: Box<[u8]>,
-	pub sound_map: Box<[u16; SOUND_MAP_SIZE]>,
+	pub sound_map: Box<[u16; SOUND_MAP_SIZE_TR234]>,
 	#[list(u32)]
-	pub sound_details: Box<[SoundDetails<SoundDetailsComponentTr345>]>,
+	pub sound_details: Box<[SoundDetails<Tr4>]>,
 	#[list(u32)]
 	pub sample_indices: Box<[u32]>,
 	pub zero: [u8; 6],

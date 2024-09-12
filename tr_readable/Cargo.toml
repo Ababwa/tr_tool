@@ -1,11 +1,10 @@
 [package]
-name = "tr_reader"
+name = "tr_readable"
 version = "0.1.0"
 edition = "2021"
 
 [dependencies]
 arrayvec = "0.7.4"
-bitfield = "0.14.0"
 byteorder = { workspace = true }
 compress = "0.2.1"
 glam = { workspace = true }

@@ -16,6 +16,7 @@ parse_attrs_fn!(
 	parse_field_attrs -> FieldAttrs {
 		list: Arg,
 		skip: Arg,
+		flat: bool,
 		zlib: bool,
 	}
 );
@@ -38,23 +39,26 @@ fn derive_readable_impl(input: &DeriveInput) -> TokenStream {
 	let mut tuple_field_num = 0u8..;
 	if let Some(fields) = fields {
 		for field in fields {
-			let FieldAttrs { list, skip, zlib } = parse_field_attrs(&field.attrs);
-			let reader = match zlib {
-				true => quote! { &mut tr_reader::get_zlib(reader)? },
-				false => quote! { reader },
+			let FieldAttrs { list, skip, flat, zlib } = parse_field_attrs(&field.attrs);
+			let reader = if zlib {
+				quote! { &mut tr_readable::get_zlib(reader)? }
+			} else {
+				quote! { reader }
 			};
 			let field_ident = match &field.ident {
 				Some(field_ident) => Cow::Borrowed(field_ident),
 				None => Cow::Owned(Ident::new(&format!("field{}", tuple_field_num.next().unwrap()), Span::call_site())),
 			};
-			let field_tokens = match list {
-				Some(list_type) => quote! { read_list::<_, _, #list_type> },
-				None => quote! { Readable::read },
+			let field_tokens = match (list, flat) {
+				(Some(list_type), true) => quote! { read_list_flat::<_, _, #list_type> },
+				(Some(list_type), false) => quote! { read_list::<_, _, #list_type> },
+				(None, true) => quote! { read_boxed_array_flat },
+				(None, false) => quote! { Readable::read },
 			};
-			let field_tokens = quote! { let #field_ident = tr_reader::#field_tokens(#reader).unwrap(); };
+			let field_tokens = quote! { let #field_ident = tr_readable::#field_tokens(#reader).unwrap(); };
 			let field_tokens = match skip {
 				Some(skip) => quote! {
-					tr_reader::skip(reader, #skip)?;
+					tr_readable::skip(reader, #skip)?;
 					#field_tokens
 				},
 				None => field_tokens,
@@ -67,7 +71,7 @@ fn derive_readable_impl(input: &DeriveInput) -> TokenStream {
 	let body = match skip_after {
 		Some(skip) => quote! {
 			#body
-			tr_reader::skip(reader, #skip)?;
+			tr_readable::skip(reader, #skip)?;
 		},
 		None => body,
 	};
@@ -85,7 +89,7 @@ fn derive_readable_impl(input: &DeriveInput) -> TokenStream {
 	};
 	let type_name = &input.ident;
 	quote! {
-		impl #impl_generics tr_reader::Readable for #type_name #ty_generics #where_clause {
+		impl #impl_generics tr_readable::Readable for #type_name #ty_generics #where_clause {
 			fn read<R: std::io::Read>(reader: &mut R) -> std::io::Result<Self> {
 				#body
 				Ok(#type_name #initializer)
@@ -103,18 +107,10 @@ Helper attributes:
 * field
 	* `list(len_type)`
 	* `skip(num_bytes)`
+	* `flat`
 	* `zlib`
 */
-#[proc_macro_derive(
-	Readable,
-	attributes(
-		skip_after,
-		impl_where,
-		list,
-		skip,
-		zlib,
-	)
-)]
+#[proc_macro_derive(Readable, attributes(skip_after, impl_where, list, skip, flat, zlib))]
 pub fn derive_readable(item: proc_macro::TokenStream) -> proc_macro::TokenStream {
 	derive_readable_impl(&syn::parse_macro_input!(item)).into()
 }

@@ -1,3 +1,4 @@
+mod tr1;
 mod tr2;
 mod tr3;
 mod tr4;
@@ -7,7 +8,7 @@ use byteorder::{ReadBytesExt, LE};
 use glam::{i16vec2, ivec3, u16vec2, IVec3, Mat4, U16Vec2, U16Vec3, UVec2, Vec2, Vec3};
 use glam_traits::ext::select;
 use itertools::Itertools;
-use tr_reader::model::{self as tr, IMAGE_SIZE};
+use tr_model::{generic::{Entity, Meshes, ObjectTexture, Room, TrVersion}, shared::{BlendMode, Face, FrameData, FrameRotation, Mesh, MeshComponentTr123, MeshNodeData, Model, RoomVertex, SolidFaceDetails, SpriteSequence, SpriteTexture, StaticMesh, TexturedFaceDetails, IMAGE_SIZE, NUM_PIXELS, PALETTE_SIZE}};
 
 const WORLD_COORD_SCALE: f32 = 1.0 / 1024.0;
 const FRAME_SINGLE_ROT_DIVISOR_TR123: f32 = 1024.0;
@@ -66,7 +67,7 @@ impl FlipGroup {
 
 struct ObjTex {
 	vertices: [Vec2; 4],
-	blend_mode: tr::BlendMode,
+	blend_mode: BlendMode,
 }
 
 struct SprTexVert {
@@ -77,14 +78,15 @@ struct SprTexVert {
 /// TR texture coord units are 1/256 of a pixel.
 /// Transform to whole pixel units by rounding to nearest.
 fn transform_coord(a: u16) -> u16 {
-	(a >> 8) + (((a & 255) + 128) >> 8)
+	//(a >> 8) + (((a & 255) + 128) >> 8)
+	(a + 128) / 256
 }
 
-fn transform_object_textures<D, C>(object_textures: &[tr::ObjectTexture<D, C>]) -> Vec<ObjTex> {
-	object_textures.iter().map(|tr::ObjectTexture { blend_mode, atlas_and_triangle, vertices, .. }| ObjTex {
+fn transform_object_textures<T: TrVersion>(object_textures: &[ObjectTexture<T>]) -> Vec<ObjTex> {
+	object_textures.iter().map(|ObjectTexture::<T> { blend_mode, atlas_and_triangle, vertices, .. }| ObjTex {
 		vertices: vertices
 			.map(|v| v.to_array().map(transform_coord))
-			.map(|[x, y]| u16vec2(x, y + atlas_and_triangle.atlas_index() * tr::IMAGE_SIZE as u16))
+			.map(|[x, y]| u16vec2(x, y + atlas_and_triangle.atlas_index() * IMAGE_SIZE as u16))
 			.map(|v| v.as_vec2()),
 		blend_mode: *blend_mode,
 	}).collect()
@@ -92,7 +94,7 @@ fn transform_object_textures<D, C>(object_textures: &[tr::ObjectTexture<D, C>]) 
 
 const CLOCKWISE_SQUARE: [U16Vec2; 4] = [u16vec2(0, 0), u16vec2(1, 0), u16vec2(1, 1), u16vec2(0, 1)];
 
-fn transform_sprite_textures(sprite_textures: &[tr::SpriteTexture]) -> Vec<[SprTexVert; 4]> {
+fn transform_sprite_textures(sprite_textures: &[SpriteTexture]) -> Vec<[SprTexVert; 4]> {
 	sprite_textures.iter().map(|sprite_texture| {
 		let pos = sprite_texture.pos.as_u16vec2() + u16vec2(0, sprite_texture.atlas_index * IMAGE_SIZE as u16);
 		let size = (sprite_texture.size - 255) / 256;
@@ -134,7 +136,7 @@ fn add_textured_face<const N: usize>(
 	vertex_list: &mut Vec<TexturedVertex>,
 	positions: &[Vec3],
 	uvs: &[Vec2; 4],
-	face: &tr::Face<N, tr::TexturedFaceDetails>,
+	face: &Face<N, TexturedFaceDetails>,
 ) {
 	let indices = match N {
 		3 => TRI_INDICES,
@@ -158,12 +160,12 @@ fn add_textured_faces<const N: usize>(
 	additive: &mut Vec<TexturedVertex>,
 	object_textures: &[ObjTex],
 	positions: &[Vec3],
-	faces: &[tr::Face<N, tr::TexturedFaceDetails>],
+	faces: &[Face<N, TexturedFaceDetails>],
 ) {
 	for face in faces {
 		let ObjTex { vertices: uvs, blend_mode } = &object_textures[face.texture_details.texture_index() as usize];
 		let vertex_list = match blend_mode {
-			tr::BlendMode::Add => &mut *additive,
+			BlendMode::Add => &mut *additive,
 			_ => &mut *opaque,
 		};
 		add_textured_face(vertex_list, positions, uvs, face);
@@ -173,7 +175,7 @@ fn add_textured_faces<const N: usize>(
 fn add_solid_faces<const N: usize>(
 	solid: &mut Vec<SolidVertex>,
 	positions: &[Vec3],
-	faces: &[tr::Face<N, tr::SolidFaceDetails>],
+	faces: &[Face<N, SolidFaceDetails>],
 ) {
 	let indices = match N {
 		3 => TRI_INDICES,
@@ -196,7 +198,7 @@ fn add_mesh_tr123(
 	solid: &mut Vec<SolidVertex>,
 	obj_texs: &[ObjTex],
 	transform: Mat4,
-	mesh: &tr::Mesh<tr::MeshComponentTr123>,
+	mesh: &Mesh<MeshComponentTr123>,
 ) {
 	let mesh_verts = mesh
 		.vertices
@@ -209,23 +211,22 @@ fn add_mesh_tr123(
 	add_solid_faces(solid, &mesh_verts, &mesh.component.solid_quads);
 }
 
-fn to_bgra(images: &[[u16; tr::NUM_PIXELS]]) -> Box<[u8]> {
-	let mut vec = Vec::with_capacity(images.len() * tr::NUM_PIXELS * 4);
+fn to_bgra(images: &[[u16; NUM_PIXELS]]) -> Box<[u8]> {
+	let mut bytes = Vec::with_capacity(images.len() * NUM_PIXELS * 4);
 	for image in images {
 		for &pixel in image {
-			vec.push(((pixel & 31) << 3) as u8);
-			vec.push(((pixel & 992) >> 2) as u8);
-			vec.push(((pixel & 31744) >> 7) as u8);
-			vec.push(((pixel >> 15) * 255) as u8);
+			bytes.push(((pixel & 31) << 3) as u8);
+			bytes.push(((pixel & 992) >> 2) as u8);
+			bytes.push(((pixel & 31744) >> 7) as u8);
+			bytes.push(((pixel >> 15) * 255) as u8);
 		}
 	}
-	vec.into_boxed_slice()
+	bytes.into_boxed_slice()
 }
 
-trait TrVersionExt: tr::TrVersion {
+trait TrVersionExt: TrVersion {
+	const FRAME_SINGLE_ROT_MASK: u16;
 	const FRAME_SINGLE_ROT_DIVISOR: f32;
-	type RoomExtra;
-	type Mesh;
 	
 	fn flip_group(room: &Self::RoomExtra) -> u8;
 	
@@ -235,17 +236,17 @@ trait TrVersionExt: tr::TrVersion {
 		solid: &mut Vec<SolidVertex>,
 		object_textures: &[ObjTex],
 		transform: Mat4,
-		mesh: &Self::Mesh,
+		mesh: &Mesh<Self::MeshComponent>,
 	);
 }
 
-fn get_rotation<T: TrVersionExt>(rot: tr::FrameRotation) -> Mat4 {
+fn get_rotation<T: TrVersionExt>(rot: FrameRotation) -> Mat4 {
 	fn t(r: u16, d: f32) -> f32 { r as f32 / d * TAU }
 	match rot {
-		tr::FrameRotation::X(x) => Mat4::from_rotation_x(t(x, T::FRAME_SINGLE_ROT_DIVISOR)),
-		tr::FrameRotation::Y(y) => Mat4::from_rotation_y(t(y, T::FRAME_SINGLE_ROT_DIVISOR)),
-		tr::FrameRotation::Z(z) => Mat4::from_rotation_z(t(z, T::FRAME_SINGLE_ROT_DIVISOR)),
-		tr::FrameRotation::All(U16Vec3 { x, y, z }) =>
+		FrameRotation::X(x) => Mat4::from_rotation_x(t(x, T::FRAME_SINGLE_ROT_DIVISOR)),
+		FrameRotation::Y(y) => Mat4::from_rotation_y(t(y, T::FRAME_SINGLE_ROT_DIVISOR)),
+		FrameRotation::Z(z) => Mat4::from_rotation_z(t(z, T::FRAME_SINGLE_ROT_DIVISOR)),
+		FrameRotation::All(U16Vec3 { x, y, z }) =>
 			Mat4::from_rotation_y(t(y, 1024.0)) *
 			Mat4::from_rotation_x(t(x, 1024.0)) *
 			Mat4::from_rotation_z(t(z, 1024.0)),
@@ -253,7 +254,7 @@ fn get_rotation<T: TrVersionExt>(rot: tr::FrameRotation) -> Mat4 {
 }
 
 pub struct SolidData {
-	pub palette: Box<[u8; tr::PALETTE_SIZE * 4]>,
+	pub palette: Box<[u8; PALETTE_SIZE * 4]>,
 	pub solid_vertices: Vec<SolidVertex>,
 }
 
@@ -268,26 +269,26 @@ pub struct LevelRenderData {
 	pub flip_groups: Vec<FlipGroup>,
 }
 
-fn get_level_render_data<T: TrVersionExt, Rv, Ra, Rl, Od, Oc, Ec>(
-	palette: Option<Box<[u8; tr::PALETTE_SIZE * 4]>>,
+fn get_level_render_data<T: TrVersionExt>(
+	palette: Option<Box<[u8; PALETTE_SIZE * 4]>>,
 	atlas_size: UVec2,
 	atlas_data: Box<[u8]>,
-	rooms: &[tr::Room<Rv, Ra, Rl, T::RoomExtra>],
-	meshes: &tr::Meshes<T::Mesh>,
-	mesh_node_data: &tr::MeshNodeData,
-	frame_data: &tr::FrameData,
-	models: &[tr::Model],
-	static_meshes: &[tr::StaticMesh],
-	sprite_textures: &[tr::SpriteTexture],
-	sprite_sequences: &[tr::SpriteSequence],
-	object_textures: &[tr::ObjectTexture<Od, Oc>],
-	entities: &[tr::Entity<Ec>],
+	rooms: &[Room<T>],
+	meshes: &Meshes<T>,
+	mesh_node_data: &MeshNodeData,
+	frame_data: &FrameData,
+	models: &[Model],
+	static_meshes: &[StaticMesh],
+	sprite_textures: &[SpriteTexture],
+	sprite_sequences: &[SpriteSequence],
+	object_textures: &[ObjectTexture<T>],
+	entities: &[Entity<T>],
 ) -> LevelRenderData {
 	let models = models.iter().map(|model| (model.id as u16, model)).collect::<HashMap<_, _>>();
 	let sprite_textures = transform_sprite_textures(sprite_textures);
 	let static_meshes = static_meshes.iter().map(|static_mesh| (static_mesh.id as u16, static_mesh)).collect::<HashMap<_, _>>();
 	let sprite_sequences = sprite_sequences.iter().map(|sprite_sequence| (sprite_sequence.id as u16, sprite_sequence)).collect::<HashMap<_, _>>();
-	let object_textures = transform_object_textures::<Od, Oc>(object_textures);
+	let object_textures = transform_object_textures::<T>(object_textures);
 	let entities = entities.iter().into_group_map_by(|e| e.room_index as usize);
 	let mut textured_vertices = vec![];
 	let mut solid_vertices = vec![];
@@ -298,7 +299,7 @@ fn get_level_render_data<T: TrVersionExt, Rv, Ra, Rl, Od, Oc, Ec>(
 		let room_verts = room
 			.vertices
 			.iter()
-			.map(|tr::RoomVertex { vertex, .. }| vertex.as_ivec3())
+			.map(|RoomVertex { vertex, .. }| vertex.as_ivec3())
 			.map(|IVec3 { x, y, z }| ivec3(x + room.x, y, z + room.z).as_vec3() * WORLD_COORD_SCALE)
 			.collect::<Vec<_>>();
 		let mut opaque = vec![];
@@ -320,7 +321,7 @@ fn get_level_render_data<T: TrVersionExt, Rv, Ra, Rl, Od, Oc, Ec>(
 			for &entity in entities {
 				match models.get(&entity.model_id) {
 					Some(model) => {
-						let frame = frame_data.get_frame::<T>(model.frame_byte_offset, model.num_meshes);
+						let frame = frame_data.get_frame(T::FRAME_SINGLE_ROT_MASK, model.frame_byte_offset, model.num_meshes);
 						let entity_transform = Mat4::from_translation(entity.pos.as_vec3() * WORLD_COORD_SCALE) * Mat4::from_rotation_y(entity.rotation as f32 / 65536.0 * TAU);
 						let transform = Mat4::from_translation(frame.offset.as_vec3() * WORLD_COORD_SCALE) * get_rotation::<T>(frame.rotations[0]);
 						T::add_mesh(
@@ -416,7 +417,7 @@ pub fn load_level_render_data(path: &str) -> Result<LevelRenderData> {
 	let version = reader.read_u32::<LE>()?;
 	reader.rewind()?;
 	match version {
-		32 => todo!("tr1"),
+		32 => tr1::load_level_render_data(&mut reader),
 		45 => tr2::load_level_render_data(&mut reader),
 		4278714424 | 4279763000 => tr3::load_level_render_data(&mut reader),
 		3428948 => match path.rfind('.') {

@@ -1,15 +1,11 @@
-pub mod tr2;
-pub mod tr3;
-pub mod tr4;
-
 use std::{collections::HashMap, io::{Cursor, Read, Result}};
 use bitfield::bitfield;
 use byteorder::{ReadBytesExt, LE};
 use glam::{i16vec3, I16Vec2, I16Vec3, IVec3, U16Vec2, U16Vec3};
 use glam_traits::ext::U8Vec2;
 use nonmax::{NonMaxU16, NonMaxU8};
-use shared::geom::MinMax;
-use crate::{read_boxed_slice, read_boxed_slice_raw, read_list, Readable};
+use shared::MinMax;
+use tr_readable::{read_boxed_slice, read_boxed_slice_raw, read_list, Readable};
 
 // 1 sector unit = 1024 world coord units
 
@@ -17,14 +13,12 @@ pub const PALETTE_SIZE: usize = 256;
 pub const IMAGE_SIZE: usize = 256;
 pub const NUM_PIXELS: usize = IMAGE_SIZE * IMAGE_SIZE;
 pub const LIGHT_MAP_SIZE: usize = 32;
-pub const SOUND_MAP_SIZE: usize = 370;
+pub const SOUND_MAP_SIZE_TR234: usize = 370;
+pub const ZONE_MULTIPLIER_TR234: usize = 10;
+pub const FRAME_SINGLE_ROT_MASK_TR123: u16 = 1023;
+pub const FRAME_SINGLE_ROT_MASK_TR45: u16 = 4095;
 
-const FRAME_SINGLE_ROT_MASK_TR123: u16 = 1023;
-const FRAME_SINGLE_ROT_MASK_TR45: u16 = 4095;
-
-pub trait TrVersion {
-	const FRAME_SINGLE_ROT_MASK: u16;
-}
+pub type BoxCoordTr234 = u8;
 
 #[repr(C)]
 #[derive(Readable, Clone, Copy)]
@@ -41,41 +35,36 @@ pub struct Color4 {
 	pub unused: u8,
 }
 
-pub struct Images {
-	pub pallete_images: Box<[[u8; NUM_PIXELS]]>,
+pub struct ImagesTr23 {
+	pub palette_images: Box<[[u8; NUM_PIXELS]]>,
 	pub images16: Box<[[u16; NUM_PIXELS]]>,
 }
 
-impl Readable for Images {
+impl Readable for ImagesTr23 {
 	fn read<R: Read>(reader: &mut R) -> Result<Self> {
 		let num_images = reader.read_u32::<LE>()? as usize;
-		let pallete_images = unsafe { read_boxed_slice_raw(reader, num_images)? };//safe: arrays of primitives
+		let palette_images = unsafe { read_boxed_slice_raw(reader, num_images)? };//safe: arrays of primitives
 		let images16 = unsafe { read_boxed_slice_raw(reader, num_images)? };
-		Ok(Images { pallete_images, images16 })
+		Ok(Self { palette_images, images16 })
 	}
 }
 
 #[derive(Readable, Clone, Copy)]
-pub struct RoomVertexComponentTr2 {
-	#[skip(2)]
-	pub flags: u16,
-	pub brightness: u16,
-}
-
-#[derive(Readable, Clone, Copy)]
-pub struct RoomVertexComponentTr34 {
+pub struct RoomVertexLightTr34 {
 	#[skip(2)]
 	pub flags: u16,
 	pub color: u16,
 }
 
 #[derive(Readable, Clone, Copy)]
-#[impl_where(Component: Readable)]
-pub struct RoomVertex<Component> {
+#[impl_where(Light: Readable)]
+pub struct RoomVertex<Light> {
 	/// Relative to Room
 	pub vertex: I16Vec3,
-	pub component: Component,
+	pub light: Light,
 }
+
+
 
 bitfield! {
 	#[derive(Readable, Clone, Copy)]
@@ -102,12 +91,12 @@ pub struct Face<const N: usize, D> {
 
 #[derive(Readable)]
 #[impl_where(
-	VertexComponent: Readable,
+	VertexLight: Readable,
 	AmbientLight: Readable,
 	Light: Readable,
 	Extra: Readable,
 )]
-pub struct Room<VertexComponent, AmbientLight, Light, Extra> {
+pub struct Room<VertexLight, AmbientLight, Light, Extra> {
 	/// World coord
 	pub x: i32,
 	/// World coord
@@ -116,7 +105,7 @@ pub struct Room<VertexComponent, AmbientLight, Light, Extra> {
 	pub y_top: i32,
 	#[skip(4)]
 	#[list(u16)]
-	pub vertices: Box<[RoomVertex<VertexComponent>]>,
+	pub vertices: Box<[RoomVertex<VertexLight>]>,
 	/// `vertex_indices` index into Room.vertices
 	#[list(u16)]
 	pub quads: Box<[Face<4, TexturedFaceDetails>]>,
@@ -147,8 +136,8 @@ pub enum MeshLighting {
 impl Readable for MeshLighting {
 	fn read<R: Read>(reader: &mut R) -> Result<Self> {
 		Ok(match reader.read_i16::<LE>()? {
-			num if num > 0 => MeshLighting::Normals(read_boxed_slice(reader, num as usize)?),
-			num => MeshLighting::Lights(read_boxed_slice(reader, (-num) as usize)?),
+			num if num > 0 => Self::Normals(read_boxed_slice(reader, num as usize)?),
+			num => Self::Lights(read_boxed_slice(reader, (-num) as usize)?),
 		})
 	}
 }
@@ -189,20 +178,20 @@ pub struct MeshComponentTr45 {
 }
 
 #[derive(Readable)]
-#[impl_where(C: Readable)]
-pub struct Mesh<C> {
+#[impl_where(Component: Readable)]
+pub struct Mesh<Component> {
 	pub center: I16Vec3,
 	pub radius: i32,
 	/// Relative to RoomStaticMesh.pos if static mesh
 	#[list(u16)]
 	pub vertices: Box<[I16Vec3]>,
 	pub lighting: MeshLighting,
-	pub component: C,
+	pub component: Component,
 }
 
 #[derive(Readable, Clone, Copy)]
-#[impl_where(Lateral: Readable)]
-pub struct Animation<Lateral> {
+#[impl_where(Component: Readable)]
+pub struct Animation<Component> {
 	/// Byte offset into frame_data
 	pub frame_byte_offset: u32,
 	/// 30ths of a second
@@ -213,7 +202,7 @@ pub struct Animation<Lateral> {
 	pub speed: u32,
 	/// Fixed-point
 	pub accel: u32,
-	pub lateral: Lateral,
+	pub component: Component,
 	pub frame_start: u16,
 	pub frame_end: u16,
 	pub next_anim: u16,
@@ -274,7 +263,7 @@ impl Readable for Sectors {
 	fn read<R: Read>(reader: &mut R) -> Result<Self> {
 		let num_sectors = U16Vec2::read(reader)?;
 		let sectors = read_boxed_slice(reader, num_sectors.element_product() as usize)?;
-		Ok(Sectors { num_sectors, sectors })
+		Ok(Self { num_sectors, sectors })
 	}
 }
 
@@ -296,18 +285,18 @@ bitfield! {
 	pub water, _: 0;
 }
 
-pub struct Meshes<M> {
-	pub meshes: Box<[M]>,
+pub struct Meshes<MeshComponent> {
+	pub meshes: Box<[Mesh<MeshComponent>]>,
 	pub index_map: Box<[usize]>,
 }
 
-impl<M> Meshes<M> {
-	pub fn get_mesh(&self, mesh_id: u16) -> &M {
+impl<MeshComponent> Meshes<MeshComponent> {
+	pub fn get_mesh(&self, mesh_id: u16) -> &Mesh<MeshComponent> {
 		&self.meshes[self.index_map[mesh_id as usize]]
 	}
 }
 
-impl<M: Readable> Readable for Meshes<M> {
+impl<MeshComponent: Readable> Readable for Meshes<MeshComponent> {
 	fn read<R: Read>(reader: &mut R) -> Result<Self> {
 		let num_mesh_bytes = 2 * reader.read_u32::<LE>()? as usize;
 		let mesh_bytes = read_boxed_slice::<_, u8>(reader, num_mesh_bytes)?;
@@ -323,10 +312,10 @@ impl<M: Readable> Readable for Meshes<M> {
 		offset_map.sort_by_key(|&(_, index)| index);
 		let meshes = offset_map
 			.into_iter()
-			.map(|(offset, _)| M::read(&mut Cursor::new(&mesh_bytes[offset as usize..])))
+			.map(|(offset, _)| Mesh::read(&mut Cursor::new(&mesh_bytes[offset as usize..])))
 			.collect::<Result<Vec<_>>>()?
 			.into_boxed_slice();
-		Ok(Meshes { meshes, index_map })
+		Ok(Self { meshes, index_map })
 	}
 }
 
@@ -375,14 +364,12 @@ impl MeshNodeData {
 	}
 }
 
-#[derive(Readable)]
-pub struct FrameData(#[list(u32)] pub Box<[u16]>);
+#[derive(Clone, Copy)]
+pub enum Axis { X, Y, Z }
 
 #[derive(Clone, Copy)]
 pub enum FrameRotation {
-	X(u16),
-	Y(u16),
-	Z(u16),
+	Single(Axis, u16),
 	All(U16Vec3),
 }
 
@@ -392,51 +379,39 @@ pub struct Frame {
 	pub rotations: Vec<FrameRotation>,
 }
 
+#[derive(Readable)]
+pub struct FrameData(#[list(u32)] pub Box<[u16]>);
+
 impl FrameData {
-	pub fn get_frame<T: TrVersion>(&self, frame_byte_offset: u32, num_meshes: u16) -> Frame {
+	pub fn get_frame(&self, single_rot_mask: u16, frame_byte_offset: u32, num_meshes: u16) -> Frame {
 		let frame_offset = frame_byte_offset as usize / 2;
-		let bound_box = MinMax {
-			min: i16vec3(
-				self.0[frame_offset] as i16,
-				self.0[frame_offset + 1] as i16,
-				self.0[frame_offset + 2] as i16,
-			),
-			max: i16vec3(
-				self.0[frame_offset + 3] as i16,
-				self.0[frame_offset + 4] as i16,
-				self.0[frame_offset + 5] as i16,
-			),
-		};
-		let offset = i16vec3(
-			self.0[frame_offset + 6] as i16,
-			self.0[frame_offset + 7] as i16,
-			self.0[frame_offset + 8] as i16,
-		);
+		let &(bound_box, offset) = unsafe { reinterpret::slice_to_ref::<_, _>(&self.0[frame_offset..][..9]) };//contiguous 2-aligned values
 		let mut rotations = Vec::with_capacity(num_meshes as usize);
 		let mut frame_offset = frame_offset + 9;
 		for _ in 0..num_meshes {
 			let word = self.0[frame_offset];
-			let rot = match word >> 14 {
+			let (rot, advance) = match word >> 14 {
 				0 => {
 					let word2 = self.0[frame_offset + 1];
-					frame_offset += 2;
-					FrameRotation::All(U16Vec3 {
+					let rot = U16Vec3 {
 						x: (word >> 4) & 1023,
 						y: ((word & 15) << 6) | (word2 >> 10),
 						z: word2 & 1023,
-					})
+					};
+					(FrameRotation::All(rot), 2)
 				},
 				axis => {
-					frame_offset += 1;
-					let rot = word & T::FRAME_SINGLE_ROT_MASK;
-					match axis {
-						1 => FrameRotation::X(rot),
-						2 => FrameRotation::Y(rot),
-						3 => FrameRotation::Z(rot),
+					let axis = match axis {
+						1 => Axis::X,
+						2 => Axis::Y,
+						3 => Axis::Z,
 						_ => unreachable!(),//2 bits must be 0-3
-					}
+					};
+					let rot = word & single_rot_mask;
+					(FrameRotation::Single(axis, rot), 1)
 				},
 			};
+			frame_offset += advance;
 			rotations.push(rot);
 		}
 		Frame { bound_box, offset, rotations }
@@ -508,28 +483,36 @@ pub struct SoundSource {
 	pub flags: u16,
 }
 
+bitfield! {
+	#[derive(Readable, Clone, Copy)]
+	pub struct Overlap(u16);
+	pub index, _: 13, 0;
+	pub blocked, _: 14;
+	pub blockable, _: 15;
+}
+
 #[derive(Readable, Clone, Copy)]
-#[impl_where(T: Readable)]
-pub struct TrBox<T> {
+#[impl_where(Coord: Readable)]
+pub struct TrBox<Coord> {
 	/// Sectors
-	pub z: MinMax<T>,
-	pub x: MinMax<T>,
+	pub z: MinMax<Coord>,
+	pub x: MinMax<Coord>,
 	pub y: i16,
-	pub overlap: u16,
+	pub overlap: Overlap,
 }
 
-pub struct BoxData<T> {
-	pub boxes: Box<[TrBox<T>]>,
+pub struct BoxDataTr234 {
+	pub boxes: Box<[TrBox<u8>]>,
 	pub overlaps: Box<[u16]>,
-	pub zones: Box<[u16]>,
+	pub zone_data: Box<[u16]>,
 }
 
-impl<T: Readable> Readable for BoxData<T> {
+impl Readable for BoxDataTr234 {
 	fn read<R: Read>(reader: &mut R) -> Result<Self> {
 		let boxes = read_list::<_, _, u32>(reader)?;
 		let overlaps = read_list::<_, _,u32>(reader)?;
 		let zones = read_boxed_slice(reader, boxes.len() * 10)?;
-		Ok(BoxData { boxes, overlaps, zones })
+		Ok(Self { boxes, overlaps, zone_data: zones })
 	}
 }
 

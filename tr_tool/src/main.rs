@@ -22,7 +22,7 @@ use winit::{
 	keyboard::{KeyCode, PhysicalKey},
 	window::{CursorGrabMode, Window},
 };
-use shared::geom::{MinMax, VecMinMax};
+use shared::{MinMax, VecMinMax};
 use ext::{AsBytes, Wait};
 use load::{
 	load_level_render_data, FlipGroup, LevelRenderData, RoomVertexIndices, SolidData, SolidVertex, SpriteVertex, TexturedVertex
@@ -114,7 +114,7 @@ fn load_level(
 			solid_layout,
 			&perspective_buffer,
 			&camera_buffer,
-			Extent3d { width: tr_reader::model::PALETTE_SIZE as u32, height: 1, depth_or_array_layers: 1 },
+			Extent3d { width: tr_model::shared::PALETTE_SIZE as u32, height: 1, depth_or_array_layers: 1 },
 			TextureDimension::D1,
 			TextureFormat::Rgba8UnormSrgb,
 			palette.as_slice(),
