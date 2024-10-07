@@ -1,149 +1,78 @@
-use std::{io::{Cursor, Read, Result}, mem::size_of, slice};
-use arrayvec::ArrayVec;
-use byteorder::{ReadBytesExt, LE};
-use compress::zlib::Decoder;
-use num_traits::AsPrimitive;
-use glam::{I16Vec2, I16Vec3, IVec3, U16Vec2, Vec3};
-use glam_traits::ext::U8Vec2;
-use nonmax::{NonMaxU8, NonMaxU16};
-use shared::MinMax;
+use std::{
+	alloc::{alloc, handle_alloc_error, Layout}, io::{Read, Result}, mem::{size_of, transmute, MaybeUninit},
+	ops::Range, ptr::slice_from_raw_parts_mut, slice::from_raw_parts_mut,
+};
 
 pub use tr_derive::Readable;
 
-pub trait Readable: Sized {
-	fn read<R: Read>(reader: &mut R) -> Result<Self>;
+pub trait Readable {
+	unsafe fn read<R: Read>(reader: &mut R, this: *mut Self) -> Result<()>;
 }
 
-//impl helpers
-
-pub fn read_boxed_slice<R: Read, T: Readable>(reader: &mut R, len: usize) -> Result<Box<[T]>> {
-	let mut vec = Vec::with_capacity(len);
-	for _ in 0..len {
-		vec.push(T::read(reader)?);
+unsafe fn boxed_uninit<T>() -> Box<MaybeUninit<T>> {
+	let layout = Layout::new::<T>();
+	let ptr = alloc(layout);
+	if ptr.is_null() {
+		handle_alloc_error(layout);
 	}
-	Ok(vec.into_boxed_slice())
+	let ptr = ptr as *mut MaybeUninit<T>;
+	Box::from_raw(ptr)
 }
 
-pub fn read_list<R: Read, T: Readable, L: Readable + AsPrimitive<usize>>(reader: &mut R) -> Result<Box<[T]>> {
-	let len = L::read(reader)?.as_();
-	read_boxed_slice(reader, len)
-}
-
-pub fn get_zlib<R: Read>(reader: &mut R) -> Result<Decoder<Cursor<Box<[u8]>>>> {
-	reader.read_u32::<LE>()?;//uncompressed_len
-	let compressed_len = reader.read_u32::<LE>()? as usize;
-	let bytes = read_boxed_slice(reader, compressed_len)?;
-	Ok(Decoder::new(Cursor::new(bytes)))
-}
-
-pub fn skip<R: Read>(reader: &mut R, num: usize) -> Result<()> {
-	let mut buf = [0];
-	for _ in 0..num {
-		reader.read_exact(&mut buf)?;
+unsafe fn boxed_slice_uninit<T>(len: usize) -> Box<[MaybeUninit<T>]> {
+	let layout = Layout::array::<T>(len).unwrap();
+	let ptr = alloc(layout);
+	if ptr.is_null() {
+		handle_alloc_error(layout);
 	}
+	let ptr = slice_from_raw_parts_mut(ptr as *mut MaybeUninit<T>, len);
+	Box::from_raw(ptr)
+}
+
+pub unsafe fn read_flat<R: Read, T>(reader: &mut R, ptr: *mut T) -> Result<()> {
+	let buf = from_raw_parts_mut(ptr as *mut u8, size_of::<T>());
+	reader.read_exact(buf)
+}
+
+pub unsafe fn read_val_flat<R: Read, T>(reader: &mut R) -> Result<T> {
+	let mut i = MaybeUninit::<T>::uninit();
+	read_flat(reader, i.as_mut_ptr())?;
+	let i = i.assume_init();
+	Ok(i)
+}
+
+pub unsafe fn read_range_flat<R: Read, T, U>(reader: &mut R, start: *mut T, end: *mut U) -> Result<()> {
+	let buf = from_raw_parts_mut(start as *mut u8, end as usize - start as usize);
+	reader.read_exact(buf)
+}
+
+pub unsafe fn read_boxed_flat<R: Read, T>(reader: &mut R, dest: *mut Box<T>) -> Result<()> {
+	let mut boxed = boxed_uninit::<T>();
+	read_flat(reader, boxed.as_mut_ptr())?;
+	let boxed = transmute::<_, Box<T>>(boxed);
+	dest.write(boxed);
 	Ok(())
 }
 
-//flat
+pub unsafe fn read_boxed_slice_flat<R: Read, T>(
+	reader: &mut R, dest: *mut Box<[T]>, len: usize,
+) -> Result<()> {
+	let mut boxed_slice = boxed_slice_uninit::<T>(len);
+	let Range { start, end } = boxed_slice.as_mut_ptr_range();
+	read_range_flat(reader, start, end)?;
+	let boxed_slice = transmute::<_, Box<[T]>>(boxed_slice);
+	dest.write(boxed_slice);
+	Ok(())
+}
 
-pub fn read_boxed_slice_flat<R: Read, T>(reader: &mut R, len: usize) -> Result<Box<[T]>> {
-	let mut vec = Vec::with_capacity(len);
-	unsafe {
-		vec.set_len(len);
-		let buf = slice::from_raw_parts_mut(vec.as_mut_ptr() as *mut u8, len * size_of::<T>());
-		reader.read_exact(buf)?;
+pub unsafe fn read_boxed_slice_delegate<R: Read, T: Readable>(
+	reader: &mut R, dest: *mut Box<[T]>, len: usize,
+) -> Result<()> {
+	let mut boxed_slice = boxed_slice_uninit::<T>(len);
+	for i in boxed_slice.iter_mut() {
+		Readable::read(reader, i.as_mut_ptr())?;
 	}
-	Ok(vec.into_boxed_slice())
+	let boxed_slice = transmute::<_, Box<[T]>>(boxed_slice);
+	dest.write(boxed_slice);
+	Ok(())
 }
-
-pub fn read_list_flat<R: Read, T, L: Readable + AsPrimitive<usize>>(reader: &mut R) -> Result<Box<[T]>> {
-	let len = L::read(reader)?.as_();
-	read_boxed_slice_flat(reader, len)
-}
-
-pub fn read_boxed_array_flat<R: Read, T, const N: usize>(reader: &mut R) -> Result<Box<[T; N]>> {
-	Ok(read_boxed_slice_flat(reader, N)?.try_into().ok().unwrap())//reads exactly N items
-}
-
-//primitive impls
-
-macro_rules! impl_readable_prim {
-	($type:ty, $func:ident $(, $endian:ty)?) => {
-		impl Readable for $type {
-			fn read<R: Read>(reader: &mut R) -> Result<Self> {
-				reader.$func$(::<$endian>)?()
-			}
-		}
-	};
-}
-
-impl_readable_prim!(u8, read_u8);
-impl_readable_prim!(i8, read_i8);
-impl_readable_prim!(u16, read_u16, LE);
-impl_readable_prim!(i16, read_i16, LE);
-impl_readable_prim!(u32, read_u32, LE);
-impl_readable_prim!(i32, read_i32, LE);
-impl_readable_prim!(u64, read_u64, LE);
-impl_readable_prim!(i64, read_i64, LE);
-impl_readable_prim!(f32, read_f32, LE);
-impl_readable_prim!(f64, read_f64, LE);
-
-//array impls
-
-impl<T: Readable, const N: usize> Readable for [T; N] {
-	fn read<R: Read>(reader: &mut R) -> Result<Self> {
-		let mut array = ArrayVec::new();
-		for _ in 0..N {
-			array.push(T::read(reader)?);
-		}
-		Ok(array.into_inner().ok().unwrap())//reads exactly N items
-	}
-}
-
-impl<T: Readable, const N: usize> Readable for Box<[T; N]> {
-	fn read<R: Read>(reader: &mut R) -> Result<Self> {
-		Ok(read_boxed_slice(reader, N)?.try_into().ok().unwrap())//reads exactly N items
-	}
-}
-
-//nonmax impls
-
-macro_rules! impl_nonmax {
-	($type:ty, $func:ident $(, $endian:ty)?) => {
-		impl Readable for Option<$type> {
-			fn read<R: Read>(reader: &mut R) -> Result<Self> {
-				Ok(<$type>::new(reader.$func$(::<$endian>)?()?))
-			}
-		}
-	};
-}
-
-impl_nonmax!(NonMaxU8, read_u8);
-impl_nonmax!(NonMaxU16, read_u16, LE);
-
-//minmax impl
-
-impl<T: Readable> Readable for MinMax<T> {
-	fn read<R: Read>(reader: &mut R) -> Result<Self> {
-		Ok(Self { min: T::read(reader)?, max: T::read(reader)? })
-	}
-}
-
-//glam impls
-
-macro_rules! impl_readable_glam {
-	($type:ty, $prim:ty, $n:literal) => {
-		impl Readable for $type {
-			fn read<R: Read>(reader: &mut R) -> Result<Self> {
-				Ok(<[$prim; $n]>::read(reader)?.into())
-			}
-		}
-	};
-}
-
-impl_readable_glam!(U8Vec2, u8, 2);
-impl_readable_glam!(U16Vec2, u16, 2);
-impl_readable_glam!(I16Vec2, i16, 2);
-impl_readable_glam!(I16Vec3, i16, 3);
-impl_readable_glam!(IVec3, i32, 3);
-impl_readable_glam!(Vec3, f32, 3);

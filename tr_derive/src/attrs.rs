@@ -38,7 +38,9 @@ macro_rules! parse_attrs_fn {
 						$(
 							stringify!($attr_name) => match $attr_name {
 								parse_attrs_field_default!($attr_type) => match &attr.meta {
-									parse_attrs_field_pattern!($attr_type, tokens) => $attr_name = parse_attrs_field_value!($attr_type, tokens),
+									parse_attrs_field_pattern!($attr_type, tokens) => {
+										$attr_name = parse_attrs_field_value!($attr_type, tokens)
+									},
 									_ => panic!("invalid use of helper attribute"),
 								},
 								_ => panic!("cannot use helper attribute more than once"),

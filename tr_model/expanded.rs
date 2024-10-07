@@ -1,258 +1,160 @@
+#![feature(prelude_import)]
+#[prelude_import]
 use std::prelude::rust_2021::*;
+#[macro_use]
 extern crate std;
-pub use tr_readable::Readable;
+pub use tr_readable::Readable2;
 pub mod tr1 {
-    use std::io::{Cursor, Error, ErrorKind, Read, Result};
+    use std::{
+        io::{Read, Result},
+        mem::size_of, ptr::addr_of_mut,
+    };
     use bitfield::bitfield;
-    use byteorder::{ReadBytesExt, LE};
-    use glam::{I16Vec2, I16Vec3, IVec3, U16Vec2, U16Vec3};
+    use glam::{I16Vec2, I16Vec3, IVec2, IVec3, U16Vec2};
     use glam_traits::ext::U8Vec2;
     use nonmax::{NonMaxU16, NonMaxU8};
     use shared::MinMax;
-    use tr_readable::{read_boxed_slice, read_list, Readable};
-    pub const IMAGE_SIZE: usize = 256;
-    pub const NUM_PIXELS: usize = IMAGE_SIZE * IMAGE_SIZE;
+    use tr_readable::{read_boxed_slice_flat, read_flat, read_len, Readable2};
+    pub const ATLAS_SIZE: usize = 256;
+    pub const NUM_PIXELS: usize = ATLAS_SIZE * ATLAS_SIZE;
     pub const PALETTE_SIZE: usize = 256;
+    pub const COLOR_SIZE: usize = 3;
     pub const SOUND_MAP_SIZE: usize = 256;
     pub const LIGHT_MAP_SIZE: usize = 32;
     pub const ZONE_MULT: usize = 6;
+    pub mod blend_mode {
+        pub const OPAQUE: u16 = 0;
+        pub const TEST: u16 = 1;
+    }
+    #[repr(packed)]
+    pub struct NoAlign<T: Copy>(T);
+    #[automatically_derived]
+    impl<T: ::core::clone::Clone + ::core::marker::Copy + Copy> ::core::clone::Clone
+    for NoAlign<T> {
+        #[inline]
+        fn clone(&self) -> NoAlign<T> {
+            NoAlign(::core::clone::Clone::clone(&{ self.0 }))
+        }
+    }
+    #[automatically_derived]
+    impl<T: ::core::marker::Copy + Copy> ::core::marker::Copy for NoAlign<T> {}
+    impl<T: Copy> NoAlign<T> {
+        pub fn get(&self) -> T {
+            self.0
+        }
+        pub fn set(&mut self, val: T) {
+            self.0 = val;
+        }
+    }
+    #[repr(C)]
     pub struct RoomVertex {
-        /// Relative to Room
-        pub vertex: I16Vec3,
+        /// Relative to room
+        pub pos: I16Vec3,
         pub light: u16,
     }
-    impl tr_readable::Readable for RoomVertex {
-        fn read<R: std::io::Read>(reader: &mut R) -> std::io::Result<Self> {
-            let vertex = tr_readable::Readable::read(reader).unwrap();
-            let light = tr_readable::Readable::read(reader).unwrap();
-            Ok(RoomVertex { vertex, light })
-        }
-    }
+    #[automatically_derived]
     impl ::core::clone::Clone for RoomVertex {
+        #[inline]
         fn clone(&self) -> RoomVertex {
+            let _: ::core::clone::AssertParamIsClone<I16Vec3>;
+            let _: ::core::clone::AssertParamIsClone<u16>;
             *self
         }
     }
+    #[automatically_derived]
     impl ::core::marker::Copy for RoomVertex {}
-    pub struct Face<const N: usize, D: Readable> {
+    #[repr(C)]
+    pub struct Face<const N: usize> {
+        /// If room face, index into Room.vertices
         pub vertex_indices: [u16; N],
-        pub details: D,
+        /// If textured, index into Level.object_textures
+        /// If solid, index into Level.palette
+        pub texture_index: u16,
     }
-    impl<const N: usize, D: Readable> tr_readable::Readable for Face<N, D> {
-        fn read<R: std::io::Read>(reader: &mut R) -> std::io::Result<Self> {
-            let vertex_indices = tr_readable::Readable::read(reader).unwrap();
-            let details = tr_readable::Readable::read(reader).unwrap();
-            Ok(Face { vertex_indices, details })
-        }
-    }
-    impl<const N: usize, D: ::core::clone::Clone + Readable> ::core::clone::Clone
-    for Face<N, D> {
-        fn clone(&self) -> Face<N, D> {
-            Face {
-                vertex_indices: ::core::clone::Clone::clone(&self.vertex_indices),
-                details: ::core::clone::Clone::clone(&self.details),
-            }
-        }
-    }
-    impl<const N: usize, D: ::core::marker::Copy + Readable> ::core::marker::Copy
-    for Face<N, D> {}
-    impl<T> ::bitfield::BitRange<T> for TexturedFaceDetails
-    where
-        u16: ::bitfield::BitRange<T>,
-    {
-        fn bit_range(&self, msb: usize, lsb: usize) -> T {
-            self.0.bit_range(msb, lsb)
-        }
-    }
-    impl<T> ::bitfield::BitRangeMut<T> for TexturedFaceDetails
-    where
-        u16: ::bitfield::BitRangeMut<T>,
-    {
-        fn set_bit_range(&mut self, msb: usize, lsb: usize, value: T) {
-            self.0.set_bit_range(msb, lsb, value);
-        }
-    }
-    pub struct TexturedFaceDetails(pub u16);
-    impl tr_readable::Readable for TexturedFaceDetails {
-        fn read<R: std::io::Read>(reader: &mut R) -> std::io::Result<Self> {
-            let field0 = tr_readable::Readable::read(reader).unwrap();
-            Ok(TexturedFaceDetails(field0))
-        }
-    }
-    impl ::core::clone::Clone for TexturedFaceDetails {
-        fn clone(&self) -> TexturedFaceDetails {
+    #[automatically_derived]
+    impl<const N: usize> ::core::clone::Clone for Face<N> {
+        #[inline]
+        fn clone(&self) -> Face<N> {
+            let _: ::core::clone::AssertParamIsClone<[u16; N]>;
+            let _: ::core::clone::AssertParamIsClone<u16>;
             *self
         }
     }
-    impl ::core::marker::Copy for TexturedFaceDetails {}
-    impl TexturedFaceDetails {
-        /// Index into object_textures
-        pub fn texture_index(&self) -> u16 {
-            use ::bitfield::BitRange;
-            let raw_value: u16 = self.bit_range(14, 0);
-            ::bitfield::Into::into(raw_value)
-        }
-        pub fn double_sided(&self) -> bool {
-            use ::bitfield::Bit;
-            self.bit(15)
-        }
-    }
-    pub type TexturedTri = Face<3, TexturedFaceDetails>;
-    pub type TexturedQuad = Face<4, TexturedFaceDetails>;
-    pub struct SolidFaceDetails {
-        /// Index into palette3
-        pub palette3_index: u8,
-        /// Index into palette4
-        pub palette4_index: u8,
-    }
-    impl tr_readable::Readable for SolidFaceDetails {
-        fn read<R: std::io::Read>(reader: &mut R) -> std::io::Result<Self> {
-            let palette3_index = tr_readable::Readable::read(reader).unwrap();
-            let palette4_index = tr_readable::Readable::read(reader).unwrap();
-            Ok(SolidFaceDetails {
-                palette3_index,
-                palette4_index,
-            })
-        }
-    }
-    impl ::core::clone::Clone for SolidFaceDetails {
-        fn clone(&self) -> SolidFaceDetails {
-            *self
-        }
-    }
-    impl ::core::marker::Copy for SolidFaceDetails {}
-    pub type SolidTri = Face<3, SolidFaceDetails>;
-    pub type SolidQuad = Face<4, SolidFaceDetails>;
+    #[automatically_derived]
+    impl<const N: usize> ::core::marker::Copy for Face<N> {}
+    pub type Quad = Face<4>;
+    pub type Tri = Face<3>;
+    #[repr(C)]
     pub struct Sprite {
         /// Index into Room.vertices
         pub vertex_index: u16,
-        /// Index into sprite_textures
+        /// Index into Level.sprite_textures
         pub texture_index: u16,
     }
-    impl tr_readable::Readable for Sprite {
-        fn read<R: std::io::Read>(reader: &mut R) -> std::io::Result<Self> {
-            let vertex_index = tr_readable::Readable::read(reader).unwrap();
-            let texture_index = tr_readable::Readable::read(reader).unwrap();
-            Ok(Sprite {
-                vertex_index,
-                texture_index,
-            })
-        }
-    }
+    #[automatically_derived]
     impl ::core::clone::Clone for Sprite {
+        #[inline]
         fn clone(&self) -> Sprite {
+            let _: ::core::clone::AssertParamIsClone<u16>;
             *self
         }
     }
+    #[automatically_derived]
     impl ::core::marker::Copy for Sprite {}
+    #[repr(C)]
     pub struct Portal {
-        /// Index into rooms
+        /// Index into Level.rooms
         pub adjoining_room_index: u16,
         pub normal: I16Vec3,
-        /// Relative to Room
+        /// Relative to room
         pub vertices: [I16Vec3; 4],
     }
-    impl tr_readable::Readable for Portal {
-        fn read<R: std::io::Read>(reader: &mut R) -> std::io::Result<Self> {
-            let adjoining_room_index = tr_readable::Readable::read(reader).unwrap();
-            let normal = tr_readable::Readable::read(reader).unwrap();
-            let vertices = tr_readable::Readable::read(reader).unwrap();
-            Ok(Portal {
-                adjoining_room_index,
-                normal,
-                vertices,
-            })
-        }
-    }
+    #[automatically_derived]
     impl ::core::clone::Clone for Portal {
+        #[inline]
         fn clone(&self) -> Portal {
+            let _: ::core::clone::AssertParamIsClone<u16>;
+            let _: ::core::clone::AssertParamIsClone<I16Vec3>;
+            let _: ::core::clone::AssertParamIsClone<[I16Vec3; 4]>;
             *self
         }
     }
+    #[automatically_derived]
     impl ::core::marker::Copy for Portal {}
-    impl<T> ::bitfield::BitRange<T> for SectorMaterialAndBox
-    where
-        u16: ::bitfield::BitRange<T>,
-    {
-        fn bit_range(&self, msb: usize, lsb: usize) -> T {
-            self.0.bit_range(msb, lsb)
-        }
-    }
-    impl<T> ::bitfield::BitRangeMut<T> for SectorMaterialAndBox
-    where
-        u16: ::bitfield::BitRangeMut<T>,
-    {
-        fn set_bit_range(&mut self, msb: usize, lsb: usize, value: T) {
-            self.0.set_bit_range(msb, lsb, value);
-        }
-    }
-    pub struct SectorMaterialAndBox(pub u16);
-    impl tr_readable::Readable for SectorMaterialAndBox {
-        fn read<R: std::io::Read>(reader: &mut R) -> std::io::Result<Self> {
-            let field0 = tr_readable::Readable::read(reader).unwrap();
-            Ok(SectorMaterialAndBox(field0))
-        }
-    }
-    impl ::core::clone::Clone for SectorMaterialAndBox {
-        fn clone(&self) -> SectorMaterialAndBox {
-            *self
-        }
-    }
-    impl ::core::marker::Copy for SectorMaterialAndBox {}
-    impl SectorMaterialAndBox {
-        /// Footstep sound
-        pub fn material(&self) -> u16 {
-            use ::bitfield::BitRange;
-            let raw_value: u16 = self.bit_range(3, 0);
-            ::bitfield::Into::into(raw_value)
-        }
-        /// Index into BoxData.boxes
-        pub fn box_index(&self) -> u16 {
-            use ::bitfield::BitRange;
-            let raw_value: u16 = self.bit_range(14, 4);
-            ::bitfield::Into::into(raw_value)
-        }
-    }
+    #[repr(C)]
     pub struct Sector {
-        /// Index into floor_data
+        /// Index into Level.floor_data
         pub floor_data_index: u16,
-        pub material_and_box: SectorMaterialAndBox,
-        /// Index into rooms
+        /// Index into BoxData.boxes
+        pub box_index: Option<NonMaxU16>,
+        /// Index into Level.rooms
         pub room_below_id: Option<NonMaxU8>,
         pub floor: i8,
-        /// Index into rooms
+        /// Index into Level.rooms
         pub room_above_index: Option<NonMaxU8>,
         pub ceiling: i8,
     }
-    impl tr_readable::Readable for Sector {
-        fn read<R: std::io::Read>(reader: &mut R) -> std::io::Result<Self> {
-            let floor_data_index = tr_readable::Readable::read(reader).unwrap();
-            let material_and_box = tr_readable::Readable::read(reader).unwrap();
-            let room_below_id = tr_readable::Readable::read(reader).unwrap();
-            let floor = tr_readable::Readable::read(reader).unwrap();
-            let room_above_index = tr_readable::Readable::read(reader).unwrap();
-            let ceiling = tr_readable::Readable::read(reader).unwrap();
-            Ok(Sector {
-                floor_data_index,
-                material_and_box,
-                room_below_id,
-                floor,
-                room_above_index,
-                ceiling,
-            })
-        }
-    }
+    #[automatically_derived]
     impl ::core::clone::Clone for Sector {
+        #[inline]
         fn clone(&self) -> Sector {
+            let _: ::core::clone::AssertParamIsClone<u16>;
+            let _: ::core::clone::AssertParamIsClone<Option<NonMaxU16>>;
+            let _: ::core::clone::AssertParamIsClone<Option<NonMaxU8>>;
+            let _: ::core::clone::AssertParamIsClone<i8>;
+            let _: ::core::clone::AssertParamIsClone<Option<NonMaxU8>>;
             *self
         }
     }
+    #[automatically_derived]
     impl ::core::marker::Copy for Sector {}
     pub struct Sectors {
         pub num_sectors: U16Vec2,
         pub sectors: Box<[Sector]>,
     }
+    #[automatically_derived]
     impl ::core::clone::Clone for Sectors {
+        #[inline]
         fn clone(&self) -> Sectors {
             Sectors {
                 num_sectors: ::core::clone::Clone::clone(&self.num_sectors),
@@ -260,63 +162,52 @@ pub mod tr1 {
             }
         }
     }
-    impl Readable for Sectors {
-        fn read<R: Read>(reader: &mut R) -> Result<Self> {
-            let num_sectors = U16Vec2::read(reader)?;
-            let sectors = read_boxed_slice(
-                reader,
-                num_sectors.element_product() as usize,
-            )?;
-            Ok(Self { num_sectors, sectors })
+    impl Readable2 for Sectors {
+        unsafe fn read<R: Read>(reader: &mut R, this: *mut Self) -> Result<()> {
+            read_flat(reader, &raw mut (*this).num_sectors)?;
+            let len = (*this).num_sectors.element_product() as usize;
+            read_boxed_slice_flat(reader, &raw mut (*this).sectors, len)?;
+            Ok(())
         }
     }
+    #[repr(C)]
     pub struct Light {
-        pub pos: IVec3,
+        pub pos: NoAlign<IVec3>,
         pub brightness: u16,
-        pub fallout: u32,
+        pub fallout: NoAlign<u32>,
     }
-    impl tr_readable::Readable for Light {
-        fn read<R: std::io::Read>(reader: &mut R) -> std::io::Result<Self> {
-            let pos = tr_readable::Readable::read(reader).unwrap();
-            let brightness = tr_readable::Readable::read(reader).unwrap();
-            let fallout = tr_readable::Readable::read(reader).unwrap();
-            Ok(Light { pos, brightness, fallout })
-        }
-    }
+    #[automatically_derived]
     impl ::core::clone::Clone for Light {
+        #[inline]
         fn clone(&self) -> Light {
+            let _: ::core::clone::AssertParamIsClone<NoAlign<IVec3>>;
+            let _: ::core::clone::AssertParamIsClone<u16>;
+            let _: ::core::clone::AssertParamIsClone<NoAlign<u32>>;
             *self
         }
     }
+    #[automatically_derived]
     impl ::core::marker::Copy for Light {}
+    #[repr(C)]
     pub struct RoomStaticMesh {
         /// World coords
-        pub pos: IVec3,
-        /// Units are 1/65536th of a rotation
+        pub pos: NoAlign<IVec3>,
+        /// Units are 1/65536 of a rotation
         pub rotation: u16,
-        pub color: u16,
-        /// Id into LevelData.static_meshes
+        pub light: u16,
+        /// Matched to StaticMesh.id in Level.static_meshes
         pub static_mesh_id: u16,
     }
-    impl tr_readable::Readable for RoomStaticMesh {
-        fn read<R: std::io::Read>(reader: &mut R) -> std::io::Result<Self> {
-            let pos = tr_readable::Readable::read(reader).unwrap();
-            let rotation = tr_readable::Readable::read(reader).unwrap();
-            let color = tr_readable::Readable::read(reader).unwrap();
-            let static_mesh_id = tr_readable::Readable::read(reader).unwrap();
-            Ok(RoomStaticMesh {
-                pos,
-                rotation,
-                color,
-                static_mesh_id,
-            })
-        }
-    }
+    #[automatically_derived]
     impl ::core::clone::Clone for RoomStaticMesh {
+        #[inline]
         fn clone(&self) -> RoomStaticMesh {
+            let _: ::core::clone::AssertParamIsClone<NoAlign<IVec3>>;
+            let _: ::core::clone::AssertParamIsClone<u16>;
             *self
         }
     }
+    #[automatically_derived]
     impl ::core::marker::Copy for RoomStaticMesh {}
     impl<T> ::bitfield::BitRange<T> for RoomFlags
     where
@@ -335,17 +226,15 @@ pub mod tr1 {
         }
     }
     pub struct RoomFlags(pub u16);
-    impl tr_readable::Readable for RoomFlags {
-        fn read<R: std::io::Read>(reader: &mut R) -> std::io::Result<Self> {
-            let field0 = tr_readable::Readable::read(reader).unwrap();
-            Ok(RoomFlags(field0))
-        }
-    }
+    #[automatically_derived]
     impl ::core::clone::Clone for RoomFlags {
+        #[inline]
         fn clone(&self) -> RoomFlags {
+            let _: ::core::clone::AssertParamIsClone<u16>;
             *self
         }
     }
+    #[automatically_derived]
     impl ::core::marker::Copy for RoomFlags {}
     impl RoomFlags {
         pub fn water(&self) -> bool {
@@ -355,75 +244,125 @@ pub mod tr1 {
     }
     pub struct Room {
         /// World coord
+        #[flat]
         pub x: i32,
         /// World coord
+        #[flat]
         pub z: i32,
+        #[flat]
         pub y_bottom: i32,
+        #[flat]
         pub y_top: i32,
-        pub vertices: Box<[RoomVertex]>,
-        /// `vertex_indices` index into Room.vertices
-        pub quads: Box<[TexturedQuad]>,
-        /// `vertex_indices` index into Room.vertices
-        pub tris: Box<[TexturedTri]>,
-        pub sprites: Box<[Sprite]>,
+        #[flat]
+        #[list(u32)]
+        pub geom_data: Box<[u16]>,
+        #[flat]
+        #[list(u16)]
         pub portals: Box<[Portal]>,
+        #[delegate]
         pub sectors: Sectors,
+        #[flat]
         pub ambient_light: u16,
+        #[flat]
+        #[list(u16)]
         pub lights: Box<[Light]>,
+        #[flat]
+        #[list(u16)]
         pub room_static_meshes: Box<[RoomStaticMesh]>,
-        /// Index into LevelData.rooms
+        /// Index into Level.rooms
+        #[flat]
         pub flip_room_index: Option<NonMaxU16>,
+        #[flat]
         pub flags: RoomFlags,
     }
-    impl tr_readable::Readable for Room {
-        fn read<R: std::io::Read>(reader: &mut R) -> std::io::Result<Self> {
-            let x = tr_readable::Readable::read(reader).unwrap();
-            let z = tr_readable::Readable::read(reader).unwrap();
-            let y_bottom = tr_readable::Readable::read(reader).unwrap();
-            let y_top = tr_readable::Readable::read(reader).unwrap();
-            tr_readable::skip(reader, 4)?;
-            let vertices = tr_readable::read_list::<_, _, u16>(reader).unwrap();
-            let quads = tr_readable::read_list::<_, _, u16>(reader).unwrap();
-            let tris = tr_readable::read_list::<_, _, u16>(reader).unwrap();
-            let sprites = tr_readable::read_list::<_, _, u16>(reader).unwrap();
-            let portals = tr_readable::read_list::<_, _, u16>(reader).unwrap();
-            let sectors = tr_readable::Readable::read(reader).unwrap();
-            let ambient_light = tr_readable::Readable::read(reader).unwrap();
-            let lights = tr_readable::read_list::<_, _, u16>(reader).unwrap();
-            let room_static_meshes = tr_readable::read_list::<_, _, u16>(reader)
-                .unwrap();
-            let flip_room_index = tr_readable::Readable::read(reader).unwrap();
-            let flags = tr_readable::Readable::read(reader).unwrap();
-            Ok(Room {
-                x,
-                z,
-                y_bottom,
-                y_top,
-                vertices,
-                quads,
-                tris,
-                sprites,
-                portals,
-                sectors,
-                ambient_light,
-                lights,
-                room_static_meshes,
-                flip_room_index,
-                flags,
-            })
+    impl tr_readable::Readable2 for Room {
+        unsafe fn read<R: std::io::Read>(
+            reader: &mut R,
+            this: *mut Self,
+        ) -> std::io::Result<()> {
+            const _: () = unsafe {
+                let i = std::mem::MaybeUninit::<Room>::uninit();
+                if !((&raw const (*i.as_ptr()).x)
+                    .add(1)
+                    .byte_offset_from(&raw const (*i.as_ptr()).z) == 0)
+                {
+                    {
+                        ::core::panicking::panic_fmt(
+                            format_args!("adjacent flat fields not contiguous: #f1, #f2"),
+                        );
+                    }
+                }
+                if !((&raw const (*i.as_ptr()).z)
+                    .add(1)
+                    .byte_offset_from(&raw const (*i.as_ptr()).y_bottom) == 0)
+                {
+                    {
+                        ::core::panicking::panic_fmt(
+                            format_args!("adjacent flat fields not contiguous: #f1, #f2"),
+                        );
+                    }
+                }
+                if !((&raw const (*i.as_ptr()).y_bottom)
+                    .add(1)
+                    .byte_offset_from(&raw const (*i.as_ptr()).y_top) == 0)
+                {
+                    {
+                        ::core::panicking::panic_fmt(
+                            format_args!("adjacent flat fields not contiguous: #f1, #f2"),
+                        );
+                    }
+                }
+            };
+            tr_readable::read_range_flat(
+                reader,
+                &raw mut (*this).x,
+                (&raw mut (*this).y_top).add(1),
+            )?;
+            let mut len = tr_readable::read_len::<_, u32>(reader)?;
+            tr_readable::read_boxed_slice_flat(reader, &raw mut (*this).geom_data, len)?;
+            let mut len = tr_readable::read_len::<_, u16>(reader)?;
+            tr_readable::read_boxed_slice_flat(reader, &raw mut (*this).portals, len)?;
+            tr_readable::Readable2::read(reader, &raw mut (*this).sectors)?;
+            tr_readable::read_flat(reader, &raw mut (*this).ambient_light)?;
+            let mut len = tr_readable::read_len::<_, u16>(reader)?;
+            tr_readable::read_boxed_slice_flat(reader, &raw mut (*this).lights, len)?;
+            let mut len = tr_readable::read_len::<_, u16>(reader)?;
+            tr_readable::read_boxed_slice_flat(
+                reader,
+                &raw mut (*this).room_static_meshes,
+                len,
+            )?;
+            const _: () = unsafe {
+                let i = std::mem::MaybeUninit::<Room>::uninit();
+                if !((&raw const (*i.as_ptr()).flip_room_index)
+                    .add(1)
+                    .byte_offset_from(&raw const (*i.as_ptr()).flags) == 0)
+                {
+                    {
+                        ::core::panicking::panic_fmt(
+                            format_args!("adjacent flat fields not contiguous: #f1, #f2"),
+                        );
+                    }
+                }
+            };
+            tr_readable::read_range_flat(
+                reader,
+                &raw mut (*this).flip_room_index,
+                (&raw mut (*this).flags).add(1),
+            )?;
+            Ok(())
         }
     }
+    #[automatically_derived]
     impl ::core::clone::Clone for Room {
+        #[inline]
         fn clone(&self) -> Room {
             Room {
                 x: ::core::clone::Clone::clone(&self.x),
                 z: ::core::clone::Clone::clone(&self.z),
                 y_bottom: ::core::clone::Clone::clone(&self.y_bottom),
                 y_top: ::core::clone::Clone::clone(&self.y_top),
-                vertices: ::core::clone::Clone::clone(&self.vertices),
-                quads: ::core::clone::Clone::clone(&self.quads),
-                tris: ::core::clone::Clone::clone(&self.tris),
-                sprites: ::core::clone::Clone::clone(&self.sprites),
+                geom_data: ::core::clone::Clone::clone(&self.geom_data),
                 portals: ::core::clone::Clone::clone(&self.portals),
                 sectors: ::core::clone::Clone::clone(&self.sectors),
                 ambient_light: ::core::clone::Clone::clone(&self.ambient_light),
@@ -436,8 +375,9 @@ pub mod tr1 {
             }
         }
     }
+    #[repr(C)]
     pub struct Animation {
-        /// Byte offset into frame_data
+        /// Byte offset into Level.frame_data
         pub frame_byte_offset: u32,
         /// 30ths of a second
         pub frame_duration: u8,
@@ -452,449 +392,246 @@ pub mod tr1 {
         pub next_anim: u16,
         pub next_frame: u16,
         pub num_state_changes: u16,
-        /// Id? into state_changes
         pub state_change_id: u16,
         pub num_anim_commands: u16,
-        /// Id? into anim_commands
         pub anim_command_id: u16,
     }
-    impl tr_readable::Readable for Animation {
-        fn read<R: std::io::Read>(reader: &mut R) -> std::io::Result<Self> {
-            let frame_byte_offset = tr_readable::Readable::read(reader).unwrap();
-            let frame_duration = tr_readable::Readable::read(reader).unwrap();
-            let num_frames = tr_readable::Readable::read(reader).unwrap();
-            let state = tr_readable::Readable::read(reader).unwrap();
-            let speed = tr_readable::Readable::read(reader).unwrap();
-            let accel = tr_readable::Readable::read(reader).unwrap();
-            let frame_start = tr_readable::Readable::read(reader).unwrap();
-            let frame_end = tr_readable::Readable::read(reader).unwrap();
-            let next_anim = tr_readable::Readable::read(reader).unwrap();
-            let next_frame = tr_readable::Readable::read(reader).unwrap();
-            let num_state_changes = tr_readable::Readable::read(reader).unwrap();
-            let state_change_id = tr_readable::Readable::read(reader).unwrap();
-            let num_anim_commands = tr_readable::Readable::read(reader).unwrap();
-            let anim_command_id = tr_readable::Readable::read(reader).unwrap();
-            Ok(Animation {
-                frame_byte_offset,
-                frame_duration,
-                num_frames,
-                state,
-                speed,
-                accel,
-                frame_start,
-                frame_end,
-                next_anim,
-                next_frame,
-                num_state_changes,
-                state_change_id,
-                num_anim_commands,
-                anim_command_id,
-            })
-        }
-    }
+    #[automatically_derived]
     impl ::core::clone::Clone for Animation {
+        #[inline]
         fn clone(&self) -> Animation {
+            let _: ::core::clone::AssertParamIsClone<u32>;
+            let _: ::core::clone::AssertParamIsClone<u8>;
+            let _: ::core::clone::AssertParamIsClone<u16>;
             *self
         }
     }
+    #[automatically_derived]
     impl ::core::marker::Copy for Animation {}
+    #[repr(C)]
     pub struct StateChange {
         pub state: u16,
         pub num_anim_dispatches: u16,
-        /// Id? into LevelData.anim_dispatches
         pub anim_dispatch_id: u16,
     }
-    impl tr_readable::Readable for StateChange {
-        fn read<R: std::io::Read>(reader: &mut R) -> std::io::Result<Self> {
-            let state = tr_readable::Readable::read(reader).unwrap();
-            let num_anim_dispatches = tr_readable::Readable::read(reader).unwrap();
-            let anim_dispatch_id = tr_readable::Readable::read(reader).unwrap();
-            Ok(StateChange {
-                state,
-                num_anim_dispatches,
-                anim_dispatch_id,
-            })
-        }
-    }
+    #[automatically_derived]
     impl ::core::clone::Clone for StateChange {
+        #[inline]
         fn clone(&self) -> StateChange {
+            let _: ::core::clone::AssertParamIsClone<u16>;
             *self
         }
     }
+    #[automatically_derived]
     impl ::core::marker::Copy for StateChange {}
+    #[repr(C)]
     pub struct AnimDispatch {
         pub low_frame: u16,
         pub high_frame: u16,
-        /// Id? into LevelData.animations
         pub next_anim_id: u16,
-        /// Id? into LevelData.frames
         pub next_frame_id: u16,
     }
-    impl tr_readable::Readable for AnimDispatch {
-        fn read<R: std::io::Read>(reader: &mut R) -> std::io::Result<Self> {
-            let low_frame = tr_readable::Readable::read(reader).unwrap();
-            let high_frame = tr_readable::Readable::read(reader).unwrap();
-            let next_anim_id = tr_readable::Readable::read(reader).unwrap();
-            let next_frame_id = tr_readable::Readable::read(reader).unwrap();
-            Ok(AnimDispatch {
-                low_frame,
-                high_frame,
-                next_anim_id,
-                next_frame_id,
-            })
-        }
-    }
+    #[automatically_derived]
     impl ::core::clone::Clone for AnimDispatch {
+        #[inline]
         fn clone(&self) -> AnimDispatch {
+            let _: ::core::clone::AssertParamIsClone<u16>;
             *self
         }
     }
+    #[automatically_derived]
     impl ::core::marker::Copy for AnimDispatch {}
+    #[repr(C)]
     pub struct Model {
-        pub id: u32,
+        pub id: NoAlign<u32>,
         pub num_meshes: u16,
-        /// Id into meshes
-        pub mesh_id: u16,
-        /// Offset into mesh_node_data
-        pub mesh_node_offset: u32,
-        /// Byte offset into frames
-        pub frame_byte_offset: u32,
-        /// Index into animations
+        /// Index into Level.mesh_offsets
+        pub mesh_offset_index: u16,
+        /// Offset into Level.mesh_node_data
+        pub mesh_node_offset: NoAlign<u32>,
+        /// Byte offset into Level.frame_data
+        pub frame_byte_offset: NoAlign<u32>,
+        /// Index into Level.animations
         pub anim_index: Option<NonMaxU16>,
     }
-    impl tr_readable::Readable for Model {
-        fn read<R: std::io::Read>(reader: &mut R) -> std::io::Result<Self> {
-            let id = tr_readable::Readable::read(reader).unwrap();
-            let num_meshes = tr_readable::Readable::read(reader).unwrap();
-            let mesh_id = tr_readable::Readable::read(reader).unwrap();
-            let mesh_node_offset = tr_readable::Readable::read(reader).unwrap();
-            let frame_byte_offset = tr_readable::Readable::read(reader).unwrap();
-            let anim_index = tr_readable::Readable::read(reader).unwrap();
-            Ok(Model {
-                id,
-                num_meshes,
-                mesh_id,
-                mesh_node_offset,
-                frame_byte_offset,
-                anim_index,
-            })
-        }
-    }
+    #[automatically_derived]
     impl ::core::clone::Clone for Model {
+        #[inline]
         fn clone(&self) -> Model {
+            let _: ::core::clone::AssertParamIsClone<NoAlign<u32>>;
+            let _: ::core::clone::AssertParamIsClone<u16>;
+            let _: ::core::clone::AssertParamIsClone<NoAlign<u32>>;
+            let _: ::core::clone::AssertParamIsClone<NoAlign<u32>>;
+            let _: ::core::clone::AssertParamIsClone<Option<NonMaxU16>>;
             *self
         }
     }
+    #[automatically_derived]
     impl ::core::marker::Copy for Model {}
+    #[repr(C)]
     pub struct BoundBox {
         pub x: MinMax<i16>,
         pub y: MinMax<i16>,
         pub z: MinMax<i16>,
     }
-    impl tr_readable::Readable for BoundBox {
-        fn read<R: std::io::Read>(reader: &mut R) -> std::io::Result<Self> {
-            let x = tr_readable::Readable::read(reader).unwrap();
-            let y = tr_readable::Readable::read(reader).unwrap();
-            let z = tr_readable::Readable::read(reader).unwrap();
-            Ok(BoundBox { x, y, z })
-        }
-    }
+    #[automatically_derived]
     impl ::core::clone::Clone for BoundBox {
+        #[inline]
         fn clone(&self) -> BoundBox {
+            let _: ::core::clone::AssertParamIsClone<MinMax<i16>>;
+            let _: ::core::clone::AssertParamIsClone<MinMax<i16>>;
+            let _: ::core::clone::AssertParamIsClone<MinMax<i16>>;
             *self
         }
     }
+    #[automatically_derived]
     impl ::core::marker::Copy for BoundBox {}
+    #[repr(C)]
     pub struct StaticMesh {
         pub id: u32,
-        /// Id into LevelData.meshes
-        pub mesh_id: u16,
+        /// Index into Level.mesh_offsets
+        pub mesh_offset_index: u16,
         pub visibility: BoundBox,
         pub collision: BoundBox,
         pub flags: u16,
     }
-    impl tr_readable::Readable for StaticMesh {
-        fn read<R: std::io::Read>(reader: &mut R) -> std::io::Result<Self> {
-            let id = tr_readable::Readable::read(reader).unwrap();
-            let mesh_id = tr_readable::Readable::read(reader).unwrap();
-            let visibility = tr_readable::Readable::read(reader).unwrap();
-            let collision = tr_readable::Readable::read(reader).unwrap();
-            let flags = tr_readable::Readable::read(reader).unwrap();
-            Ok(StaticMesh {
-                id,
-                mesh_id,
-                visibility,
-                collision,
-                flags,
-            })
-        }
-    }
+    #[automatically_derived]
     impl ::core::clone::Clone for StaticMesh {
+        #[inline]
         fn clone(&self) -> StaticMesh {
+            let _: ::core::clone::AssertParamIsClone<u32>;
+            let _: ::core::clone::AssertParamIsClone<u16>;
+            let _: ::core::clone::AssertParamIsClone<BoundBox>;
             *self
         }
     }
+    #[automatically_derived]
     impl ::core::marker::Copy for StaticMesh {}
-    pub enum BlendMode {
-        Opaque,
-        Test,
-        Add,
-    }
-    impl ::core::clone::Clone for BlendMode {
-        fn clone(&self) -> BlendMode {
-            *self
-        }
-    }
-    impl ::core::marker::Copy for BlendMode {}
-    impl Readable for BlendMode {
-        fn read<R: Read>(reader: &mut R) -> Result<Self> {
-            Ok(
-                match reader.read_u16::<LE>()? {
-                    0 => BlendMode::Opaque,
-                    1 => BlendMode::Test,
-                    2 => BlendMode::Add,
-                    _ => {
-                        return Err(
-                            Error::new(ErrorKind::InvalidData, "invalid blend mode"),
-                        );
-                    }
-                },
-            )
-        }
-    }
-    impl<T> ::bitfield::BitRange<T> for ObjectTextureAtlasAndTriangle
-    where
-        u16: ::bitfield::BitRange<T>,
-    {
-        fn bit_range(&self, msb: usize, lsb: usize) -> T {
-            self.0.bit_range(msb, lsb)
-        }
-    }
-    impl<T> ::bitfield::BitRangeMut<T> for ObjectTextureAtlasAndTriangle
-    where
-        u16: ::bitfield::BitRangeMut<T>,
-    {
-        fn set_bit_range(&mut self, msb: usize, lsb: usize, value: T) {
-            self.0.set_bit_range(msb, lsb, value);
-        }
-    }
-    pub struct ObjectTextureAtlasAndTriangle(pub u16);
-    impl tr_readable::Readable for ObjectTextureAtlasAndTriangle {
-        fn read<R: std::io::Read>(reader: &mut R) -> std::io::Result<Self> {
-            let field0 = tr_readable::Readable::read(reader).unwrap();
-            Ok(ObjectTextureAtlasAndTriangle(field0))
-        }
-    }
-    impl ::core::clone::Clone for ObjectTextureAtlasAndTriangle {
-        fn clone(&self) -> ObjectTextureAtlasAndTriangle {
-            *self
-        }
-    }
-    impl ::core::marker::Copy for ObjectTextureAtlasAndTriangle {}
-    impl ObjectTextureAtlasAndTriangle {
-        /// Index into images
-        pub fn atlas_index(&self) -> u16 {
-            use ::bitfield::BitRange;
-            let raw_value: u16 = self.bit_range(14, 0);
-            ::bitfield::Into::into(raw_value)
-        }
-        pub fn triangle(&self) -> bool {
-            use ::bitfield::Bit;
-            self.bit(15)
-        }
-    }
+    #[repr(C)]
     pub struct ObjectTexture {
-        pub blend_mode: BlendMode,
-        pub atlas_and_triangle: ObjectTextureAtlasAndTriangle,
-        /// Units are 1/256th of a pixel
-        pub vertices: [U16Vec2; 4],
+        pub blend_mode: u16,
+        /// Index into Level.atlases
+        pub atlas_index: u16,
+        /// Units are 1/256 of a pixel
+        pub uvs: [U16Vec2; 4],
     }
-    impl tr_readable::Readable for ObjectTexture {
-        fn read<R: std::io::Read>(reader: &mut R) -> std::io::Result<Self> {
-            let blend_mode = tr_readable::Readable::read(reader).unwrap();
-            let atlas_and_triangle = tr_readable::Readable::read(reader).unwrap();
-            let vertices = tr_readable::Readable::read(reader).unwrap();
-            Ok(ObjectTexture {
-                blend_mode,
-                atlas_and_triangle,
-                vertices,
-            })
-        }
-    }
+    #[automatically_derived]
     impl ::core::clone::Clone for ObjectTexture {
+        #[inline]
         fn clone(&self) -> ObjectTexture {
+            let _: ::core::clone::AssertParamIsClone<u16>;
+            let _: ::core::clone::AssertParamIsClone<[U16Vec2; 4]>;
             *self
         }
     }
+    #[automatically_derived]
     impl ::core::marker::Copy for ObjectTexture {}
+    #[repr(C)]
     pub struct SpriteTexture {
-        /// Index into images
+        /// Index into Level.atlases
         pub atlas_index: u16,
         pub pos: U8Vec2,
         pub size: U16Vec2,
         pub world_bounds: [I16Vec2; 2],
     }
-    impl tr_readable::Readable for SpriteTexture {
-        fn read<R: std::io::Read>(reader: &mut R) -> std::io::Result<Self> {
-            let atlas_index = tr_readable::Readable::read(reader).unwrap();
-            let pos = tr_readable::Readable::read(reader).unwrap();
-            let size = tr_readable::Readable::read(reader).unwrap();
-            let world_bounds = tr_readable::Readable::read(reader).unwrap();
-            Ok(SpriteTexture {
-                atlas_index,
-                pos,
-                size,
-                world_bounds,
-            })
-        }
-    }
+    #[automatically_derived]
     impl ::core::clone::Clone for SpriteTexture {
+        #[inline]
         fn clone(&self) -> SpriteTexture {
+            let _: ::core::clone::AssertParamIsClone<u16>;
+            let _: ::core::clone::AssertParamIsClone<U8Vec2>;
+            let _: ::core::clone::AssertParamIsClone<U16Vec2>;
+            let _: ::core::clone::AssertParamIsClone<[I16Vec2; 2]>;
             *self
         }
     }
+    #[automatically_derived]
     impl ::core::marker::Copy for SpriteTexture {}
+    #[repr(C)]
     pub struct SpriteSequence {
         pub id: u32,
         pub neg_length: i16,
-        /// Index into sprite_textures
+        /// Index into Level.sprite_textures
         pub sprite_index: u16,
     }
-    impl tr_readable::Readable for SpriteSequence {
-        fn read<R: std::io::Read>(reader: &mut R) -> std::io::Result<Self> {
-            let id = tr_readable::Readable::read(reader).unwrap();
-            let neg_length = tr_readable::Readable::read(reader).unwrap();
-            let sprite_index = tr_readable::Readable::read(reader).unwrap();
-            Ok(SpriteSequence {
-                id,
-                neg_length,
-                sprite_index,
-            })
-        }
-    }
+    #[automatically_derived]
     impl ::core::clone::Clone for SpriteSequence {
+        #[inline]
         fn clone(&self) -> SpriteSequence {
+            let _: ::core::clone::AssertParamIsClone<u32>;
+            let _: ::core::clone::AssertParamIsClone<i16>;
+            let _: ::core::clone::AssertParamIsClone<u16>;
             *self
         }
     }
+    #[automatically_derived]
     impl ::core::marker::Copy for SpriteSequence {}
+    #[repr(C)]
     pub struct Camera {
         /// World coords
         pub pos: IVec3,
-        /// Index into LevelData.rooms
+        /// Index into Level.rooms
         pub room_index: u16,
         pub flags: u16,
     }
-    impl tr_readable::Readable for Camera {
-        fn read<R: std::io::Read>(reader: &mut R) -> std::io::Result<Self> {
-            let pos = tr_readable::Readable::read(reader).unwrap();
-            let room_index = tr_readable::Readable::read(reader).unwrap();
-            let flags = tr_readable::Readable::read(reader).unwrap();
-            Ok(Camera { pos, room_index, flags })
-        }
-    }
+    #[automatically_derived]
     impl ::core::clone::Clone for Camera {
+        #[inline]
         fn clone(&self) -> Camera {
+            let _: ::core::clone::AssertParamIsClone<IVec3>;
+            let _: ::core::clone::AssertParamIsClone<u16>;
             *self
         }
     }
+    #[automatically_derived]
     impl ::core::marker::Copy for Camera {}
+    #[repr(C)]
     pub struct SoundSource {
         /// World coords
         pub pos: IVec3,
         pub sound_id: u16,
         pub flags: u16,
     }
-    impl tr_readable::Readable for SoundSource {
-        fn read<R: std::io::Read>(reader: &mut R) -> std::io::Result<Self> {
-            let pos = tr_readable::Readable::read(reader).unwrap();
-            let sound_id = tr_readable::Readable::read(reader).unwrap();
-            let flags = tr_readable::Readable::read(reader).unwrap();
-            Ok(SoundSource {
-                pos,
-                sound_id,
-                flags,
-            })
-        }
-    }
+    #[automatically_derived]
     impl ::core::clone::Clone for SoundSource {
+        #[inline]
         fn clone(&self) -> SoundSource {
+            let _: ::core::clone::AssertParamIsClone<IVec3>;
+            let _: ::core::clone::AssertParamIsClone<u16>;
             *self
         }
     }
+    #[automatically_derived]
     impl ::core::marker::Copy for SoundSource {}
-    impl<T> ::bitfield::BitRange<T> for OverlapIndex
-    where
-        u16: ::bitfield::BitRange<T>,
-    {
-        fn bit_range(&self, msb: usize, lsb: usize) -> T {
-            self.0.bit_range(msb, lsb)
-        }
-    }
-    impl<T> ::bitfield::BitRangeMut<T> for OverlapIndex
-    where
-        u16: ::bitfield::BitRangeMut<T>,
-    {
-        fn set_bit_range(&mut self, msb: usize, lsb: usize, value: T) {
-            self.0.set_bit_range(msb, lsb, value);
-        }
-    }
-    pub struct OverlapIndex(pub u16);
-    impl tr_readable::Readable for OverlapIndex {
-        fn read<R: std::io::Read>(reader: &mut R) -> std::io::Result<Self> {
-            let field0 = tr_readable::Readable::read(reader).unwrap();
-            Ok(OverlapIndex(field0))
-        }
-    }
-    impl ::core::clone::Clone for OverlapIndex {
-        fn clone(&self) -> OverlapIndex {
-            *self
-        }
-    }
-    impl ::core::marker::Copy for OverlapIndex {}
-    impl OverlapIndex {
-        pub fn index(&self) -> u16 {
-            use ::bitfield::BitRange;
-            let raw_value: u16 = self.bit_range(13, 0);
-            ::bitfield::Into::into(raw_value)
-        }
-        pub fn blocked(&self) -> bool {
-            use ::bitfield::Bit;
-            self.bit(14)
-        }
-        pub fn blockable(&self) -> bool {
-            use ::bitfield::Bit;
-            self.bit(15)
-        }
-    }
+    #[repr(C)]
     pub struct TrBox {
         /// Sectors
         pub z: MinMax<u32>,
         pub x: MinMax<u32>,
         pub y: i16,
-        pub overlap: OverlapIndex,
+        pub overlap: u16,
     }
-    impl tr_readable::Readable for TrBox {
-        fn read<R: std::io::Read>(reader: &mut R) -> std::io::Result<Self> {
-            let z = tr_readable::Readable::read(reader).unwrap();
-            let x = tr_readable::Readable::read(reader).unwrap();
-            let y = tr_readable::Readable::read(reader).unwrap();
-            let overlap = tr_readable::Readable::read(reader).unwrap();
-            Ok(TrBox { z, x, y, overlap })
-        }
-    }
+    #[automatically_derived]
     impl ::core::clone::Clone for TrBox {
+        #[inline]
         fn clone(&self) -> TrBox {
+            let _: ::core::clone::AssertParamIsClone<MinMax<u32>>;
+            let _: ::core::clone::AssertParamIsClone<MinMax<u32>>;
+            let _: ::core::clone::AssertParamIsClone<i16>;
+            let _: ::core::clone::AssertParamIsClone<u16>;
             *self
         }
     }
+    #[automatically_derived]
     impl ::core::marker::Copy for TrBox {}
     pub struct BoxData {
         pub boxes: Box<[TrBox]>,
         pub overlap_data: Box<[u16]>,
         pub zone_data: Box<[u16]>,
     }
+    #[automatically_derived]
     impl ::core::clone::Clone for BoxData {
+        #[inline]
         fn clone(&self) -> BoxData {
             BoxData {
                 boxes: ::core::clone::Clone::clone(&self.boxes),
@@ -903,444 +640,348 @@ pub mod tr1 {
             }
         }
     }
-    impl Readable for BoxData {
-        fn read<R: Read>(reader: &mut R) -> Result<Self> {
-            let boxes = read_list::<_, _, u32>(reader)?;
-            let overlap_data = read_list::<_, _, u32>(reader)?;
-            let zone_data = read_boxed_slice(reader, boxes.len() * ZONE_MULT)?;
-            Ok(Self {
-                boxes,
-                overlap_data,
-                zone_data,
-            })
+    impl Readable2 for BoxData {
+        unsafe fn read<R: Read>(reader: &mut R, this: *mut Self) -> Result<()> {
+            let boxes_len = read_len::<_, u32>(reader)?;
+            read_boxed_slice_flat(reader, &raw mut (*this).boxes, boxes_len)?;
+            let overlaps_len = read_len::<_, u32>(reader)?;
+            read_boxed_slice_flat(reader, &raw mut (*this).overlap_data, overlaps_len)?;
+            read_boxed_slice_flat(
+                reader,
+                &raw mut (*this).zone_data,
+                boxes_len * ZONE_MULT,
+            )?;
+            Ok(())
         }
     }
+    #[repr(C)]
     pub struct Entity {
-        /// Id into models or sprite_textures
+        /// Matched to Model.id in Level.models
         pub model_id: u16,
-        /// Index into rooms
+        /// Index into Level.rooms
         pub room_index: u16,
         /// World coords
-        pub pos: IVec3,
+        pub pos: NoAlign<IVec3>,
         /// Units are 1/65536th of a rotation
         pub rotation: u16,
         /// If None, use mesh light
         pub brightness: Option<NonMaxU16>,
         pub flags: u16,
     }
-    impl tr_readable::Readable for Entity {
-        fn read<R: std::io::Read>(reader: &mut R) -> std::io::Result<Self> {
-            let model_id = tr_readable::Readable::read(reader).unwrap();
-            let room_index = tr_readable::Readable::read(reader).unwrap();
-            let pos = tr_readable::Readable::read(reader).unwrap();
-            let rotation = tr_readable::Readable::read(reader).unwrap();
-            let brightness = tr_readable::Readable::read(reader).unwrap();
-            let flags = tr_readable::Readable::read(reader).unwrap();
-            Ok(Entity {
-                model_id,
-                room_index,
-                pos,
-                rotation,
-                brightness,
-                flags,
-            })
-        }
-    }
+    #[automatically_derived]
     impl ::core::clone::Clone for Entity {
+        #[inline]
         fn clone(&self) -> Entity {
+            let _: ::core::clone::AssertParamIsClone<u16>;
+            let _: ::core::clone::AssertParamIsClone<NoAlign<IVec3>>;
+            let _: ::core::clone::AssertParamIsClone<Option<NonMaxU16>>;
             *self
         }
     }
+    #[automatically_derived]
     impl ::core::marker::Copy for Entity {}
-    pub struct Color3 {
-        pub r: u8,
-        pub g: u8,
-        pub b: u8,
-    }
-    impl tr_readable::Readable for Color3 {
-        fn read<R: std::io::Read>(reader: &mut R) -> std::io::Result<Self> {
-            let r = tr_readable::Readable::read(reader).unwrap();
-            let g = tr_readable::Readable::read(reader).unwrap();
-            let b = tr_readable::Readable::read(reader).unwrap();
-            Ok(Color3 { r, g, b })
-        }
-    }
-    impl ::core::clone::Clone for Color3 {
-        fn clone(&self) -> Color3 {
-            *self
-        }
-    }
-    impl ::core::marker::Copy for Color3 {}
+    #[repr(C)]
     pub struct CinematicFrame {
         pub target: I16Vec3,
         pub pos: I16Vec3,
         pub fov: i16,
         pub roll: i16,
     }
-    impl tr_readable::Readable for CinematicFrame {
-        fn read<R: std::io::Read>(reader: &mut R) -> std::io::Result<Self> {
-            let target = tr_readable::Readable::read(reader).unwrap();
-            let pos = tr_readable::Readable::read(reader).unwrap();
-            let fov = tr_readable::Readable::read(reader).unwrap();
-            let roll = tr_readable::Readable::read(reader).unwrap();
-            Ok(CinematicFrame {
-                target,
-                pos,
-                fov,
-                roll,
-            })
-        }
-    }
+    #[automatically_derived]
     impl ::core::clone::Clone for CinematicFrame {
+        #[inline]
         fn clone(&self) -> CinematicFrame {
+            let _: ::core::clone::AssertParamIsClone<I16Vec3>;
+            let _: ::core::clone::AssertParamIsClone<i16>;
             *self
         }
     }
+    #[automatically_derived]
     impl ::core::marker::Copy for CinematicFrame {}
+    #[repr(C)]
     pub struct SoundDetails {
-        /// Index into sample_indices
+        /// Index into Level.sample_indices
         pub sample_index: u16,
         pub volume: u16,
         pub chance: u16,
         pub details: u16,
     }
-    impl tr_readable::Readable for SoundDetails {
-        fn read<R: std::io::Read>(reader: &mut R) -> std::io::Result<Self> {
-            let sample_index = tr_readable::Readable::read(reader).unwrap();
-            let volume = tr_readable::Readable::read(reader).unwrap();
-            let chance = tr_readable::Readable::read(reader).unwrap();
-            let details = tr_readable::Readable::read(reader).unwrap();
-            Ok(SoundDetails {
-                sample_index,
-                volume,
-                chance,
-                details,
-            })
-        }
-    }
+    #[automatically_derived]
     impl ::core::clone::Clone for SoundDetails {
+        #[inline]
         fn clone(&self) -> SoundDetails {
+            let _: ::core::clone::AssertParamIsClone<u16>;
             *self
         }
     }
+    #[automatically_derived]
     impl ::core::marker::Copy for SoundDetails {}
     pub struct Level {
+        #[flat]
         pub version: u32,
-        pub images: Box<[[u8; NUM_PIXELS]]>,
+        #[flat]
+        #[list(u32)]
+        pub atlases: Box<[[u8; NUM_PIXELS]]>,
+        #[flat]
+        pub unused: u32,
+        #[delegate]
+        #[list(u16)]
         pub rooms: Box<[Room]>,
+        #[flat]
+        #[list(u32)]
         pub floor_data: Box<[u16]>,
+        #[flat]
+        #[list(u32)]
         pub mesh_data: Box<[u16]>,
+        /// Byte offsets into Level.mesh_data
+        #[flat]
+        #[list(u32)]
         pub mesh_offsets: Box<[u32]>,
+        #[flat]
+        #[list(u32)]
         pub animations: Box<[Animation]>,
+        #[flat]
+        #[list(u32)]
         pub state_changes: Box<[StateChange]>,
+        #[flat]
+        #[list(u32)]
         pub anim_dispatches: Box<[AnimDispatch]>,
+        #[flat]
+        #[list(u32)]
         pub anim_commands: Box<[u16]>,
+        #[flat]
+        #[list(u32)]
         pub mesh_node_data: Box<[u32]>,
+        #[flat]
+        #[list(u32)]
         pub frame_data: Box<[u16]>,
+        #[flat]
+        #[list(u32)]
         pub models: Box<[Model]>,
+        #[flat]
+        #[list(u32)]
         pub static_meshes: Box<[StaticMesh]>,
+        #[flat]
+        #[list(u32)]
         pub object_textures: Box<[ObjectTexture]>,
+        #[flat]
+        #[list(u32)]
         pub sprite_textures: Box<[SpriteTexture]>,
+        #[flat]
+        #[list(u32)]
         pub sprite_sequences: Box<[SpriteSequence]>,
+        #[flat]
+        #[list(u32)]
         pub cameras: Box<[Camera]>,
+        #[flat]
+        #[list(u32)]
         pub sound_sources: Box<[SoundSource]>,
+        #[delegate]
         pub box_data: BoxData,
+        #[flat]
+        #[list(u32)]
         pub animated_textures: Box<[u16]>,
+        #[flat]
+        #[list(u32)]
         pub entities: Box<[Entity]>,
+        #[flat]
+        #[boxed]
         pub light_map: Box<[[u8; PALETTE_SIZE]; LIGHT_MAP_SIZE]>,
-        pub palette: Box<[Color3; PALETTE_SIZE]>,
+        #[flat]
+        #[boxed]
+        pub palette: Box<[[u8; COLOR_SIZE]; PALETTE_SIZE]>,
+        #[flat]
+        #[list(u16)]
         pub cinematic_frames: Box<[CinematicFrame]>,
+        #[flat]
+        #[list(u16)]
         pub demo_data: Box<[u8]>,
+        #[flat]
+        #[boxed]
         pub sound_map: Box<[u16; SOUND_MAP_SIZE]>,
+        #[flat]
+        #[list(u32)]
         pub sound_details: Box<[SoundDetails]>,
+        #[flat]
+        #[list(u32)]
         pub sample_data: Box<[u8]>,
+        #[flat]
+        #[list(u32)]
         pub sample_indices: Box<[u32]>,
     }
-    impl tr_readable::Readable for Level {
-        fn read<R: std::io::Read>(reader: &mut R) -> std::io::Result<Self> {
-            let version = tr_readable::Readable::read(reader).unwrap();
-            let images = tr_readable::read_list_flat::<_, _, u32>(reader).unwrap();
-            tr_readable::skip(reader, 4)?;
-            let rooms = tr_readable::read_list::<_, _, u16>(reader).unwrap();
-            let floor_data = tr_readable::read_list::<_, _, u32>(reader).unwrap();
-            let mesh_data = tr_readable::read_list::<_, _, u32>(reader).unwrap();
-            let mesh_offsets = tr_readable::read_list::<_, _, u32>(reader).unwrap();
-            let animations = tr_readable::read_list::<_, _, u32>(reader).unwrap();
-            let state_changes = tr_readable::read_list::<_, _, u32>(reader).unwrap();
-            let anim_dispatches = tr_readable::read_list::<_, _, u32>(reader).unwrap();
-            let anim_commands = tr_readable::read_list::<_, _, u32>(reader).unwrap();
-            let mesh_node_data = tr_readable::read_list::<_, _, u32>(reader).unwrap();
-            let frame_data = tr_readable::read_list::<_, _, u32>(reader).unwrap();
-            let models = tr_readable::read_list::<_, _, u32>(reader).unwrap();
-            let static_meshes = tr_readable::read_list::<_, _, u32>(reader).unwrap();
-            let object_textures = tr_readable::read_list::<_, _, u32>(reader).unwrap();
-            let sprite_textures = tr_readable::read_list::<_, _, u32>(reader).unwrap();
-            let sprite_sequences = tr_readable::read_list::<_, _, u32>(reader).unwrap();
-            let cameras = tr_readable::read_list::<_, _, u32>(reader).unwrap();
-            let sound_sources = tr_readable::read_list::<_, _, u32>(reader).unwrap();
-            let box_data = tr_readable::Readable::read(reader).unwrap();
-            let animated_textures = tr_readable::read_list::<_, _, u32>(reader).unwrap();
-            let entities = tr_readable::read_list::<_, _, u32>(reader).unwrap();
-            let light_map = tr_readable::read_boxed_array_flat(reader).unwrap();
-            let palette = tr_readable::Readable::read(reader).unwrap();
-            let cinematic_frames = tr_readable::read_list::<_, _, u16>(reader).unwrap();
-            let demo_data = tr_readable::read_list::<_, _, u16>(reader).unwrap();
-            let sound_map = tr_readable::Readable::read(reader).unwrap();
-            let sound_details = tr_readable::read_list::<_, _, u32>(reader).unwrap();
-            let sample_data = tr_readable::read_list::<_, _, u32>(reader).unwrap();
-            let sample_indices = tr_readable::read_list::<_, _, u32>(reader).unwrap();
-            Ok(Level {
-                version,
-                images,
-                rooms,
-                floor_data,
-                mesh_data,
-                mesh_offsets,
-                animations,
-                state_changes,
-                anim_dispatches,
-                anim_commands,
-                mesh_node_data,
-                frame_data,
-                models,
-                static_meshes,
-                object_textures,
-                sprite_textures,
-                sprite_sequences,
-                cameras,
-                sound_sources,
-                box_data,
-                animated_textures,
-                entities,
-                light_map,
-                palette,
-                cinematic_frames,
-                demo_data,
-                sound_map,
-                sound_details,
-                sample_data,
-                sample_indices,
-            })
+    impl tr_readable::Readable2 for Level {
+        unsafe fn read<R: std::io::Read>(
+            reader: &mut R,
+            this: *mut Self,
+        ) -> std::io::Result<()> {
+            tr_readable::read_flat(reader, &raw mut (*this).version)?;
+            let mut len = tr_readable::read_len::<_, u32>(reader)?;
+            tr_readable::read_boxed_slice_flat(reader, &raw mut (*this).atlases, len)?;
+            tr_readable::read_flat(reader, &raw mut (*this).unused)?;
+            let mut len = tr_readable::read_len::<_, u16>(reader)?;
+            tr_readable::read_boxed_slice_delegate(reader, &raw mut (*this).rooms, len)?;
+            let mut len = tr_readable::read_len::<_, u32>(reader)?;
+            tr_readable::read_boxed_slice_flat(
+                reader,
+                &raw mut (*this).floor_data,
+                len,
+            )?;
+            let mut len = tr_readable::read_len::<_, u32>(reader)?;
+            tr_readable::read_boxed_slice_flat(reader, &raw mut (*this).mesh_data, len)?;
+            let mut len = tr_readable::read_len::<_, u32>(reader)?;
+            tr_readable::read_boxed_slice_flat(
+                reader,
+                &raw mut (*this).mesh_offsets,
+                len,
+            )?;
+            let mut len = tr_readable::read_len::<_, u32>(reader)?;
+            tr_readable::read_boxed_slice_flat(
+                reader,
+                &raw mut (*this).animations,
+                len,
+            )?;
+            let mut len = tr_readable::read_len::<_, u32>(reader)?;
+            tr_readable::read_boxed_slice_flat(
+                reader,
+                &raw mut (*this).state_changes,
+                len,
+            )?;
+            let mut len = tr_readable::read_len::<_, u32>(reader)?;
+            tr_readable::read_boxed_slice_flat(
+                reader,
+                &raw mut (*this).anim_dispatches,
+                len,
+            )?;
+            let mut len = tr_readable::read_len::<_, u32>(reader)?;
+            tr_readable::read_boxed_slice_flat(
+                reader,
+                &raw mut (*this).anim_commands,
+                len,
+            )?;
+            let mut len = tr_readable::read_len::<_, u32>(reader)?;
+            tr_readable::read_boxed_slice_flat(
+                reader,
+                &raw mut (*this).mesh_node_data,
+                len,
+            )?;
+            let mut len = tr_readable::read_len::<_, u32>(reader)?;
+            tr_readable::read_boxed_slice_flat(
+                reader,
+                &raw mut (*this).frame_data,
+                len,
+            )?;
+            let mut len = tr_readable::read_len::<_, u32>(reader)?;
+            tr_readable::read_boxed_slice_flat(reader, &raw mut (*this).models, len)?;
+            let mut len = tr_readable::read_len::<_, u32>(reader)?;
+            tr_readable::read_boxed_slice_flat(
+                reader,
+                &raw mut (*this).static_meshes,
+                len,
+            )?;
+            let mut len = tr_readable::read_len::<_, u32>(reader)?;
+            tr_readable::read_boxed_slice_flat(
+                reader,
+                &raw mut (*this).object_textures,
+                len,
+            )?;
+            let mut len = tr_readable::read_len::<_, u32>(reader)?;
+            tr_readable::read_boxed_slice_flat(
+                reader,
+                &raw mut (*this).sprite_textures,
+                len,
+            )?;
+            let mut len = tr_readable::read_len::<_, u32>(reader)?;
+            tr_readable::read_boxed_slice_flat(
+                reader,
+                &raw mut (*this).sprite_sequences,
+                len,
+            )?;
+            let mut len = tr_readable::read_len::<_, u32>(reader)?;
+            tr_readable::read_boxed_slice_flat(reader, &raw mut (*this).cameras, len)?;
+            let mut len = tr_readable::read_len::<_, u32>(reader)?;
+            tr_readable::read_boxed_slice_flat(
+                reader,
+                &raw mut (*this).sound_sources,
+                len,
+            )?;
+            tr_readable::Readable2::read(reader, &raw mut (*this).box_data)?;
+            let mut len = tr_readable::read_len::<_, u32>(reader)?;
+            tr_readable::read_boxed_slice_flat(
+                reader,
+                &raw mut (*this).animated_textures,
+                len,
+            )?;
+            let mut len = tr_readable::read_len::<_, u32>(reader)?;
+            tr_readable::read_boxed_slice_flat(reader, &raw mut (*this).entities, len)?;
+            tr_readable::read_boxed_flat(reader, &raw mut (*this).light_map)?;
+            tr_readable::read_boxed_flat(reader, &raw mut (*this).palette)?;
+            let mut len = tr_readable::read_len::<_, u16>(reader)?;
+            tr_readable::read_boxed_slice_flat(
+                reader,
+                &raw mut (*this).cinematic_frames,
+                len,
+            )?;
+            let mut len = tr_readable::read_len::<_, u16>(reader)?;
+            tr_readable::read_boxed_slice_flat(reader, &raw mut (*this).demo_data, len)?;
+            tr_readable::read_boxed_flat(reader, &raw mut (*this).sound_map)?;
+            let mut len = tr_readable::read_len::<_, u32>(reader)?;
+            tr_readable::read_boxed_slice_flat(
+                reader,
+                &raw mut (*this).sound_details,
+                len,
+            )?;
+            let mut len = tr_readable::read_len::<_, u32>(reader)?;
+            tr_readable::read_boxed_slice_flat(
+                reader,
+                &raw mut (*this).sample_data,
+                len,
+            )?;
+            let mut len = tr_readable::read_len::<_, u32>(reader)?;
+            tr_readable::read_boxed_slice_flat(
+                reader,
+                &raw mut (*this).sample_indices,
+                len,
+            )?;
+            Ok(())
         }
     }
-    pub enum MeshLighting {
-        Normals(Box<[I16Vec3]>),
-        Lights(Box<[u16]>),
+    pub struct RoomGeom<'a> {
+        pub vertices: &'a [RoomVertex],
+        pub quads: &'a [Quad],
+        pub tris: &'a [Tri],
+        pub sprites: &'a [Sprite],
     }
-    impl ::core::clone::Clone for MeshLighting {
-        fn clone(&self) -> MeshLighting {
-            match self {
-                MeshLighting::Normals(__self_0) => {
-                    MeshLighting::Normals(::core::clone::Clone::clone(__self_0))
+    impl Room {
+        pub fn xz2(&self) -> IVec2 {
+            IVec2::new(self.x, self.z)
+        }
+        pub fn xz3(&self) -> IVec3 {
+            IVec3::new(self.x, 0, self.z)
+        }
+        pub fn get_geom_data(&self) -> RoomGeom {
+            let verts_start = 1;
+            let verts_end = verts_start
+                + self.geom_data[0] as usize * (size_of::<RoomVertex>() / 2);
+            let quads_start = verts_end + 1;
+            let quads_end = quads_start
+                + self.geom_data[verts_end] as usize * (size_of::<Quad>() / 2);
+            let tris_start = quads_end + 1;
+            let tris_end = tris_start
+                + self.geom_data[quads_end] as usize * (size_of::<Tri>() / 2);
+            let sprites_start = tris_end + 1;
+            let sprites_end = sprites_start
+                + self.geom_data[tris_end] as usize * (size_of::<Sprite>() / 2);
+            unsafe {
+                RoomGeom {
+                    vertices: reinterpret::slice(
+                        &self.geom_data[verts_start..verts_end],
+                    ),
+                    quads: reinterpret::slice(&self.geom_data[quads_start..quads_end]),
+                    tris: reinterpret::slice(&self.geom_data[tris_start..tris_end]),
+                    sprites: reinterpret::slice(
+                        &self.geom_data[sprites_start..sprites_end],
+                    ),
                 }
-                MeshLighting::Lights(__self_0) => {
-                    MeshLighting::Lights(::core::clone::Clone::clone(__self_0))
-                }
-            }
-        }
-    }
-    impl Readable for MeshLighting {
-        fn read<R: Read>(reader: &mut R) -> Result<Self> {
-            Ok(
-                match reader.read_i16::<LE>()? {
-                    num if num > 0 => {
-                        Self::Normals(read_boxed_slice(reader, num as usize)?)
-                    }
-                    num => Self::Lights(read_boxed_slice(reader, (-num) as usize)?),
-                },
-            )
-        }
-    }
-    pub struct Mesh {
-        pub center: I16Vec3,
-        pub radius: i32,
-        /// Relative to RoomStaticMesh.pos if static mesh
-        pub vertices: Box<[I16Vec3]>,
-        pub lighting: MeshLighting,
-        pub textured_quads: Box<[TexturedQuad]>,
-        pub textured_tris: Box<[TexturedTri]>,
-        pub solid_quads: Box<[SolidQuad]>,
-        pub solid_tris: Box<[SolidTri]>,
-    }
-    impl tr_readable::Readable for Mesh {
-        fn read<R: std::io::Read>(reader: &mut R) -> std::io::Result<Self> {
-            let center = tr_readable::Readable::read(reader).unwrap();
-            let radius = tr_readable::Readable::read(reader).unwrap();
-            let vertices = tr_readable::read_list::<_, _, u16>(reader).unwrap();
-            let lighting = tr_readable::Readable::read(reader).unwrap();
-            let textured_quads = tr_readable::read_list::<_, _, u16>(reader).unwrap();
-            let textured_tris = tr_readable::read_list::<_, _, u16>(reader).unwrap();
-            let solid_quads = tr_readable::read_list::<_, _, u16>(reader).unwrap();
-            let solid_tris = tr_readable::read_list::<_, _, u16>(reader).unwrap();
-            Ok(Mesh {
-                center,
-                radius,
-                vertices,
-                lighting,
-                textured_quads,
-                textured_tris,
-                solid_quads,
-                solid_tris,
-            })
-        }
-    }
-    impl ::core::clone::Clone for Mesh {
-        fn clone(&self) -> Mesh {
-            Mesh {
-                center: ::core::clone::Clone::clone(&self.center),
-                radius: ::core::clone::Clone::clone(&self.radius),
-                vertices: ::core::clone::Clone::clone(&self.vertices),
-                lighting: ::core::clone::Clone::clone(&self.lighting),
-                textured_quads: ::core::clone::Clone::clone(&self.textured_quads),
-                textured_tris: ::core::clone::Clone::clone(&self.textured_tris),
-                solid_quads: ::core::clone::Clone::clone(&self.solid_quads),
-                solid_tris: ::core::clone::Clone::clone(&self.solid_tris),
-            }
-        }
-    }
-    impl<T> ::bitfield::BitRange<T> for MeshNodeFlags
-    where
-        u32: ::bitfield::BitRange<T>,
-    {
-        fn bit_range(&self, msb: usize, lsb: usize) -> T {
-            self.0.bit_range(msb, lsb)
-        }
-    }
-    impl<T> ::bitfield::BitRangeMut<T> for MeshNodeFlags
-    where
-        u32: ::bitfield::BitRangeMut<T>,
-    {
-        fn set_bit_range(&mut self, msb: usize, lsb: usize, value: T) {
-            self.0.set_bit_range(msb, lsb, value);
-        }
-    }
-    pub struct MeshNodeFlags(pub u32);
-    impl tr_readable::Readable for MeshNodeFlags {
-        fn read<R: std::io::Read>(reader: &mut R) -> std::io::Result<Self> {
-            let field0 = tr_readable::Readable::read(reader).unwrap();
-            Ok(MeshNodeFlags(field0))
-        }
-    }
-    impl ::core::clone::Clone for MeshNodeFlags {
-        fn clone(&self) -> MeshNodeFlags {
-            *self
-        }
-    }
-    impl ::core::marker::Copy for MeshNodeFlags {}
-    impl MeshNodeFlags {
-        pub fn pop(&self) -> bool {
-            use ::bitfield::Bit;
-            self.bit(0)
-        }
-        pub fn push(&self) -> bool {
-            use ::bitfield::Bit;
-            self.bit(1)
-        }
-    }
-    pub struct MeshNode {
-        pub flags: MeshNodeFlags,
-        /// Relative to parent
-        pub offset: IVec3,
-    }
-    impl ::core::clone::Clone for MeshNode {
-        fn clone(&self) -> MeshNode {
-            *self
-        }
-    }
-    impl ::core::marker::Copy for MeshNode {}
-    pub enum Axis {
-        X,
-        Y,
-        Z,
-    }
-    impl ::core::clone::Clone for Axis {
-        fn clone(&self) -> Axis {
-            *self
-        }
-    }
-    impl ::core::marker::Copy for Axis {}
-    pub enum FrameRotation {
-        Single(Axis, u16),
-        /// All values are
-        All(U16Vec3),
-    }
-    impl ::core::clone::Clone for FrameRotation {
-        fn clone(&self) -> FrameRotation {
-            *self
-        }
-    }
-    impl ::core::marker::Copy for FrameRotation {}
-    pub struct Frame {
-        pub bound_box: MinMax<I16Vec3>,
-        pub offset: I16Vec3,
-        pub rotations: Vec<FrameRotation>,
-    }
-    impl ::core::clone::Clone for Frame {
-        fn clone(&self) -> Frame {
-            Frame {
-                bound_box: ::core::clone::Clone::clone(&self.bound_box),
-                offset: ::core::clone::Clone::clone(&self.offset),
-                rotations: ::core::clone::Clone::clone(&self.rotations),
-            }
-        }
-    }
-    impl Level {
-        pub fn get_mesh(&self, mesh_id: u16) -> Mesh {
-            let mesh_bytes = unsafe { reinterpret::slice(&self.mesh_data) };
-            let mesh_bytes = &mesh_bytes[self.mesh_offsets[mesh_id as usize] as usize..];
-            Mesh::read(&mut Cursor::new(mesh_bytes)).expect("parse Mesh from mesh_data")
-        }
-        /// Should be called with Model.num_meshes - 1
-        pub fn get_mesh_nodes(
-            &self,
-            mesh_node_offset: u32,
-            num_meshes: u16,
-        ) -> &[MeshNode] {
-            let lo = mesh_node_offset as usize;
-            let hi = lo + num_meshes as usize * 4;
-            unsafe { reinterpret::slice(&self.mesh_node_data[lo..hi]) }
-        }
-        pub fn get_frame(
-            &self,
-            single_rot_mask: u16,
-            frame_byte_offset: u32,
-            num_meshes: u16,
-        ) -> Frame {
-            let frame_offset = frame_byte_offset as usize / 2;
-            let &(bound_box, offset) = unsafe {
-                reinterpret::slice_to_ref(&self.frame_data[frame_offset..][..9])
-            };
-            let mut rotations = Vec::with_capacity(num_meshes as usize);
-            let mut frame_offset = frame_offset + 9;
-            for _ in 0..num_meshes {
-                let word = self.frame_data[frame_offset];
-                let (rot, advance) = match word >> 14 {
-                    0 => {
-                        let word2 = self.frame_data[frame_offset + 1];
-                        let rot = U16Vec3 {
-                            x: (word >> 4) & 1023,
-                            y: ((word & 15) << 6) | (word2 >> 10),
-                            z: word2 & 1023,
-                        };
-                        (FrameRotation::All(rot), 2)
-                    }
-                    axis => {
-                        let axis = match axis {
-                            1 => Axis::X,
-                            2 => Axis::Y,
-                            _ => Axis::Z,
-                        };
-                        let rot = word & single_rot_mask;
-                        (FrameRotation::Single(axis, rot), 1)
-                    }
-                };
-                frame_offset += advance;
-                rotations.push(rot);
-            }
-            Frame {
-                bound_box,
-                offset,
-                rotations,
             }
         }
     }

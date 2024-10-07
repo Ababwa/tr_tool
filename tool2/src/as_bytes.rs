@@ -1,17 +1,5 @@
-use glam::{IVec2, Mat4};
+use glam::{I16Vec3, IVec3, IVec4, Mat4, U16Vec2};
 use tr_model::tr1;
-
-use crate::PaddedQuad;
-
-pub trait IntoValIter<T> {
-	fn into_val_iter(self) -> <Vec<T> as IntoIterator>::IntoIter;
-}
-
-impl<T> IntoValIter<T> for Box<[T]> {
-	fn into_val_iter(self) -> <Vec<T> as IntoIterator>::IntoIter {
-		self.into_vec().into_iter()
-	}
-}
 
 pub trait AsBytes {
 	fn as_bytes(&self) -> &[u8];
@@ -31,9 +19,18 @@ impl<T: ReinterpretAsBytes> AsBytes for [T] {
 	}
 }
 
+impl<T: ReinterpretAsBytes, const N: usize> ReinterpretAsBytes for [T; N] {}
+
+impl ReinterpretAsBytes for bool {}
+impl ReinterpretAsBytes for u8 {}
 impl ReinterpretAsBytes for u32 {}
+impl ReinterpretAsBytes for U16Vec2 {}
+impl ReinterpretAsBytes for I16Vec3 {}
+impl ReinterpretAsBytes for IVec3 {}
+impl ReinterpretAsBytes for IVec4 {}
 impl ReinterpretAsBytes for Mat4 {}
-impl ReinterpretAsBytes for IVec2 {}
-impl ReinterpretAsBytes for PaddedQuad {}
 impl ReinterpretAsBytes for tr1::RoomVertex {}
+impl ReinterpretAsBytes for tr1::Quad {}
+impl ReinterpretAsBytes for tr1::Tri {}
 impl ReinterpretAsBytes for tr1::ObjectTexture {}
+impl ReinterpretAsBytes for tr1::Color6Bit {}
