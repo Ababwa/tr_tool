@@ -1,3 +1,8 @@
+/**
+Allows splitting a `Vec` into a head slice and growable tail.
+
+Attempts to grow beyond the capacity of the vector will panic.
+*/
 pub struct VecTail<'a, T> {
 	vec: &'a mut Vec<T>,
 	start: usize,

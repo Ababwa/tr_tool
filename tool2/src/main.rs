@@ -8,19 +8,31 @@ mod gui;
 mod make;
 mod keys;
 mod vec_tail;
+mod render_model;
+mod double_end_cursor;
+mod multi_cursor;
 
 use std::{
 	collections::HashMap, f32::consts::{FRAC_PI_2, FRAC_PI_4, PI, TAU}, fs::File, mem::{size_of, MaybeUninit}, time::Duration
 };
+use double_end_cursor::DoubleEndBuffer;
 use keys::{KeyGroup, KeyStates};
 use egui_file_dialog::FileDialog;
 use as_bytes::AsBytes;
 use glam::{DVec2, EulerRot, IVec3, Mat4, UVec2, Vec3, Vec3Swizzles};
 use gui::Gui;
+use render_model::{FaceBuffers, FaceArray, FaceInstance, Faces, Mesh, ModelRef};
 use shared::min_max::{MinMax, VecMinMaxFromIterator};
 use tr_model::{tr1, Readable};
 use wgpu::{
-	util::{DeviceExt, TextureDataOrder}, BindGroup, BindGroupLayout, BindingResource, BindingType, Buffer, BufferUsages, Color, ColorTargetState, ColorWrites, CommandEncoder, CompareFunction, DepthBiasState, DepthStencilState, Device, Extent3d, Face, FragmentState, FrontFace, LoadOp, MultisampleState, Operations, PipelineLayoutDescriptor, PrimitiveState, PrimitiveTopology, Queue, RenderPass, RenderPassColorAttachment, RenderPassDepthStencilAttachment, RenderPassDescriptor, RenderPipeline, RenderPipelineDescriptor, ShaderModule, ShaderStages, StencilState, StoreOp, TextureDescriptor, TextureDimension, TextureFormat, TextureSampleType, TextureUsages, TextureView, TextureViewDescriptor, TextureViewDimension, VertexFormat, VertexState, VertexStepMode
+	util::{DeviceExt, TextureDataOrder}, BindGroup, BindGroupLayout, BindingResource, BindingType, Buffer,
+	BufferUsages, Color, ColorTargetState, ColorWrites, CommandEncoder, CompareFunction, DepthBiasState,
+	DepthStencilState, Device, Extent3d, Face, FragmentState, FrontFace, LoadOp, MultisampleState,
+	Operations, PipelineLayoutDescriptor, PrimitiveState, PrimitiveTopology, Queue,
+	RenderPassColorAttachment, RenderPassDepthStencilAttachment, RenderPassDescriptor, RenderPipeline,
+	RenderPipelineDescriptor, ShaderModule, ShaderStages, StencilState, StoreOp, TextureDescriptor,
+	TextureDimension, TextureFormat, TextureSampleType, TextureUsages, TextureView, TextureViewDescriptor,
+	TextureViewDimension, VertexFormat, VertexState, VertexStepMode,
 };
 use winit::{
 	event::{ElementState, MouseButton, MouseScrollDelta}, event_loop::EventLoopWindowTarget,
@@ -37,50 +49,17 @@ struct ActionMap {
 	boost: KeyGroup,
 }
 
-struct Mesh {
-	verts_bind_group: BindGroup,
-	textured_quads_bind_group: BindGroup,
-	textured_tris_bind_group: BindGroup,
-	solid_quads_bind_group: BindGroup,
-	solid_tris_bind_group: BindGroup,
-	num_textured_quads: u32,
-	num_textured_tris: u32,
-	num_solid_quads: u32,
-	num_solid_tris: u32,
-}
-
-struct PlacedMesh {
-	transform_bind_group: BindGroup,
-	mesh_index: usize,
-}
-
-struct Entity {
-	meshes: Vec<PlacedMesh>,
-}
-
-struct Room {
-	transform_bind_group: BindGroup,
-	verts_bind_group: BindGroup,
-	quads_bind_group: BindGroup,
-	tris_bind_group: BindGroup,
-	num_quads: u32,
-	num_tris: u32,
-	static_meshes: Vec<PlacedMesh>,
-	entities: Vec<Entity>,
-}
-
 struct TrTool {
 	modifiers: ModifiersState,
 	_file_dialog: FileDialog,
 	error: Option<String>,
 	depth_view: TextureView,
-	vertex_buf: Buffer,
-	transform_buf: Buffer,
+	transform_buffer: Buffer,
+	face_vertex_index_buffer: Buffer,
+	face_buffers: FaceBuffers,
 	textured_pipeline: RenderPipeline,
 	solid_pipeline: RenderPipeline,
-	level_bind_group: BindGroup,
-	meshes: Vec<Mesh>,
-	rooms: Vec<Room>,
+	bind_group: BindGroup,
 	mouse_control: bool,
 	pos: Vec3,
 	yaw: f32,
@@ -120,7 +99,7 @@ fn window<R, F: FnOnce(&mut egui::Ui) -> R>(ctx: &egui::Context, title: &str, co
 impl TrTool {
 	fn update_transform(&self, window_size: UVec2, queue: &Queue) {
 		let transform = get_transform(window_size, self.pos, self.yaw, self.pitch);
-		queue.write_buffer(&self.transform_buf, 0, transform.as_bytes());
+		queue.write_buffer(&self.transform_buffer, 0, transform.as_bytes());
 	}
 	
 	fn frame_update(&mut self, window_size: UVec2, queue: &Queue, delta_time: Duration) {
@@ -143,29 +122,6 @@ impl TrTool {
 			self.update_transform(window_size, queue);
 		}
 	}
-	
-	
-}
-
-fn draw_mesh<'a>(
-	textured_pipeline: &'a RenderPipeline, solid_pipeline: &'a RenderPipeline, meshes: &'a [Mesh],
-	rpass: &mut RenderPass<'a>, placed_mesh: &'a PlacedMesh,
-) {
-	rpass.set_bind_group(1, &placed_mesh.transform_bind_group, &[]);
-	let mesh = &meshes[placed_mesh.mesh_index];
-	rpass.set_bind_group(2, &mesh.verts_bind_group, &[]);
-	
-	rpass.set_pipeline(textured_pipeline);
-	rpass.set_bind_group(3, &mesh.textured_quads_bind_group, &[]);
-	rpass.draw(0..NUM_QUAD_VERTS, 0..mesh.num_textured_quads);
-	rpass.set_bind_group(3, &mesh.textured_tris_bind_group, &[]);
-	rpass.draw(0..NUM_TRI_VERTS, 0..mesh.num_textured_tris);
-	
-	rpass.set_pipeline(solid_pipeline);
-	rpass.set_bind_group(3, &mesh.solid_quads_bind_group, &[]);
-	rpass.draw(0..NUM_QUAD_VERTS, 0..mesh.num_solid_quads);
-	rpass.set_bind_group(3, &mesh.solid_tris_bind_group, &[]);
-	rpass.draw(0..NUM_TRI_VERTS, 0..mesh.num_solid_tris);
 }
 
 impl Gui for TrTool {
@@ -250,29 +206,21 @@ impl Gui for TrTool {
 			timestamp_writes: None,
 			occlusion_query_set: None,
 		});
+		rpass.set_bind_group(0, &self.bind_group, &[]);
+		rpass.set_vertex_buffer(0, self.face_vertex_index_buffer.slice(..));
+		
 		rpass.set_pipeline(&self.textured_pipeline);
-		rpass.set_bind_group(0, &self.level_bind_group, &[]);
-		rpass.set_vertex_buffer(0, self.vertex_buf.slice(..));
-		for room in &self.rooms {
-			rpass.set_bind_group(1, &room.transform_bind_group, &[]);
-			rpass.set_bind_group(2, &room.verts_bind_group, &[]);
-			
-			rpass.set_pipeline(&self.textured_pipeline);
-			rpass.set_bind_group(3, &room.quads_bind_group, &[]);
-			rpass.draw(0..NUM_QUAD_VERTS, 0..room.num_quads);
-			rpass.set_bind_group(3, &room.tris_bind_group, &[]);
-			rpass.draw(0..NUM_TRI_VERTS, 0..room.num_tris);
-			
-			for static_mesh in &room.static_meshes {
-				draw_mesh(&self.textured_pipeline, &self.solid_pipeline, &self.meshes, &mut rpass, static_mesh);
-			}
-			
-			for entity in &room.entities {
-				for mesh in &entity.meshes {
-					draw_mesh(&self.textured_pipeline, &self.solid_pipeline, &self.meshes, &mut rpass, mesh);
-				}
-			}
-		}
+		rpass.set_vertex_buffer(1, self.face_buffers.textured_quads.buffer.slice(..));
+		rpass.draw(0..NUM_QUAD_VERTS, 0..self.face_buffers.textured_quads.len);
+		rpass.set_vertex_buffer(1, self.face_buffers.textured_tris.buffer.slice(..));
+		rpass.draw(0..NUM_TRI_VERTS, 0..self.face_buffers.textured_tris.len);
+		
+		rpass.set_pipeline(&self.solid_pipeline);
+		rpass.set_vertex_buffer(1, self.face_buffers.solid_quads.buffer.slice(..));
+		rpass.draw(0..NUM_QUAD_VERTS, 0..self.face_buffers.solid_quads.len);
+		rpass.set_vertex_buffer(1, self.face_buffers.solid_tris.buffer.slice(..));
+		rpass.draw(0..NUM_TRI_VERTS, 0..self.face_buffers.solid_tris.len);
+		
 		if self.print {
 			println!("render time: {}us", last_render_time.as_micros());
 			self.print = false;
@@ -302,18 +250,8 @@ fn yaw_pitch(v: Vec3) -> (f32, f32) {
 	((-v.x).atan2(-v.z), v.y.atan2(v.xz().length()))
 }
 
-const OBJ_TEX_BUF_LEN: usize = 816;
-const OBJ_TEX_BUF_SIZE: usize = OBJ_TEX_BUF_LEN * size_of::<tr1::ObjectTexture>();
-const PALETTE_SIZE: usize = tr1::PALETTE_LEN * size_of::<tr1::Color6Bit>();
-const VERT_BUF_SIZE: usize = 16384;
-const FACE_BUF_SIZE: usize = 16384;
-
 fn room_pos(room: &tr1::Room) -> IVec3 {
 	IVec3::new(room.x, 0, room.z)
-}
-
-fn room_transform(room: &tr1::Room) -> Mat4 {
-	Mat4::from_translation(room_pos(room).as_vec3())
 }
 
 fn get_rotation(rot: tr1::FrameRotation) -> Mat4 {
@@ -321,14 +259,8 @@ fn get_rotation(rot: tr1::FrameRotation) -> Mat4 {
 	Mat4::from_rotation_y(y) * Mat4::from_rotation_x(x) * Mat4::from_rotation_z(z)
 }
 
-#[derive(Clone, Copy)]
-enum ModelRef<'a> {
-	Model(&'a tr1::Model),
-	SpriteSequence(&'a tr1::SpriteSequence),
-}
-
 fn make_pipeline(
-	device: &Device, bind_group_layouts: &[&BindGroupLayout], module: &ShaderModule, vs_entry: &str,
+	device: &Device, bind_group_layout: &BindGroupLayout, module: &ShaderModule, vs_entry: &str,
 	fs_entry: &str,
 ) -> RenderPipeline {
 	device.create_render_pipeline(
@@ -337,7 +269,7 @@ fn make_pipeline(
 			layout: Some(&device.create_pipeline_layout(
 				&PipelineLayoutDescriptor {
 					label: None,
-					bind_group_layouts,
+					bind_group_layouts: &[bind_group_layout],
 					push_constant_ranges: &[],
 				},
 			)),
@@ -351,6 +283,12 @@ fn make_pipeline(
 							VertexStepMode::Vertex,
 							&[
 								VertexFormat::Uint32,
+							],
+						),
+						(
+							VertexStepMode::Instance,
+							&[
+								VertexFormat::Uint32x3,
 							],
 						),
 					],
@@ -387,14 +325,34 @@ fn make_pipeline(
 	)
 }
 
+const PALETTE_SIZE: usize = tr1::PALETTE_LEN * size_of::<tr1::Color6Bit>();
+const DATA_SIZE: usize = 1048576;
+const QUAD_FACE_SIZE: u8 = 5;
+const TRI_FACE_SIZE: u8 = 4;
+const ROOM_VERTEX_SIZE: u8 = 4;
+const MESH_VERTEX_SIZE: u8 = 3;
+
+fn write_get_u16_offset(data: &mut DoubleEndBuffer, bytes: &[u8]) -> u32 {
+	assert!(bytes.len() % 2 == 0, "write must be a multiple of 2");
+	let offset = (data.start_pos() / 2) as u32;
+	data.write_start(bytes);
+	offset
+}
+
+fn write_face_array<const N: usize>(data: &mut DoubleEndBuffer, faces: &[tr1::Face<N>]) -> FaceArray {
+	FaceArray {
+		offset: write_get_u16_offset(data, faces.as_bytes()),
+		len: faces.len() as u32,
+	}
+}
+
 fn make_gui(window_size: UVec2, device: &Device, queue: &Queue) -> TrTool {
-	//pipeline
-	let level_layout = make::bind_group_layout(
+	//pipelines
+	let bind_group_layout = make::bind_group_layout(
 		device,
 		&[
+			(make::storage_layout_entry(DATA_SIZE), ShaderStages::VERTEX),//data 1MB
 			(make::uniform_layout_entry(size_of::<Mat4>()), ShaderStages::VERTEX),//transform
-			(make::uniform_layout_entry(OBJ_TEX_BUF_SIZE), ShaderStages::VERTEX),//obj_texs1
-			(make::uniform_layout_entry(OBJ_TEX_BUF_SIZE), ShaderStages::VERTEX),//obj_texs2
 			(make::uniform_layout_entry(PALETTE_SIZE), ShaderStages::FRAGMENT),//palette
 			(
 				BindingType::Texture {
@@ -406,45 +364,11 @@ fn make_gui(window_size: UVec2, device: &Device, queue: &Queue) -> TrTool {
 			),//atlases
 		],
 	);
-	let mesh_transform_layout = make::bind_group_layout(
-		device, &[(make::uniform_layout_entry(size_of::<Mat4>()), ShaderStages::VERTEX)],
-	);
-	let verts_layout = make::bind_group_layout(
-		device,
-		&[
-			(make::uniform_layout_entry(size_of::<u32>()), ShaderStages::VERTEX),//vert_size
-			(make::uniform_layout_entry(VERT_BUF_SIZE), ShaderStages::VERTEX),//verts
-		],
-	);
-	let faces_layout = make::bind_group_layout(
-		device,
-		&[
-			(make::uniform_layout_entry(size_of::<u32>()), ShaderStages::VERTEX),//face_size
-			(make::uniform_layout_entry(FACE_BUF_SIZE), ShaderStages::VERTEX),//faces
-		],
-	);
-	let bind_group_layouts = [
-		&level_layout,
-		&mesh_transform_layout,
-		&verts_layout,
-		&faces_layout,
-	];
-	let shader = shader!(device, "shader/mesh.wgsl");
-	let textured_pipeline = make_pipeline(
-		device, &bind_group_layouts, &shader, "textured_vs_main", "textured_fs_main",
-	);
-	let solid_pipeline = make_pipeline(
-		device, &bind_group_layouts, &shader, "solid_vs_main", "solid_fs_main",
-	);
-	
-	//constant value buffers
-	let [u32_3_buf, u32_4_buf, u32_5_buf] = [3, 4, 5].map(|val: u32| {
-		make::buffer(device, val.as_bytes(), BufferUsages::UNIFORM)
-	});
-	let room_vert_size_buf = &u32_4_buf;
-	let mesh_vert_size_buf = &u32_3_buf;
-	let quad_face_size_buf = &u32_5_buf;
-	let tri_face_size_buf = &u32_4_buf;
+	let shader = shader!(device, "shader/mesh copy.wgsl");
+	let [textured_pipeline, solid_pipeline] = [
+		("textured_vs_main", "textured_fs_main"),
+		("solid_vs_main", "solid_fs_main"),
+	].map(|(vs_entry, fs_entry)| make_pipeline(device, &bind_group_layout, &shader, vs_entry, fs_entry));
 	
 	//read level
 	let level_path = r"C:\Program Files (x86)\Steam\steamapps\common\Tomb Raider (I)\extracted\DATA\LEVEL1.PHD";
@@ -455,7 +379,132 @@ fn make_gui(window_size: UVec2, device: &Device, queue: &Queue) -> TrTool {
 		level.assume_init_ref()
 	};
 	
+	//data
+	let mut data = DoubleEndBuffer::new(DATA_SIZE);
+	data.write_start(level.object_textures.as_bytes());
+	let mut transform_index = 0;
+	let mut faces = Faces::default();
+	
+	//add mesh faces to data, map tr mesh offets to meshes indices
+	let mut meshes = vec![];
+	let mut mesh_offset_map = HashMap::new();
+	for &mesh_offset in level.mesh_offsets.iter() {
+		mesh_offset_map.entry(mesh_offset).or_insert_with(|| {
+			let mesh = level.get_mesh(mesh_offset);
+			let index = meshes.len();
+			meshes.push(Mesh {
+				vertices_offset: write_get_u16_offset(&mut data, mesh.vertices.as_bytes()),
+				textured_quads: write_face_array(&mut data, mesh.textured_quads),
+				textured_tris: write_face_array(&mut data, mesh.textured_tris),
+				solid_quads: write_face_array(&mut data, mesh.solid_quads),
+				solid_tris: write_face_array(&mut data, mesh.solid_tris),
+			});
+			index
+		});
+	}
+	
+	//map static mesh ids to static mesh refs
+	let mut static_mesh_id_map = HashMap::new();
+	for static_mesh in level.static_meshes.iter() {
+		static_mesh_id_map.insert(static_mesh.id as u16, static_mesh);
+	}
+	
+	//rooms
+	for room in level.rooms.iter() {
+		let tr1::RoomGeom { vertices, quads, tris, .. } = room.get_geom_data();
+		let vertices_offset = write_get_u16_offset(&mut data, vertices.as_bytes());
+		for (face_list, bytes, num_faces, face_size) in [
+			(&mut faces.textured_quads, quads.as_bytes(), quads.len(), QUAD_FACE_SIZE),
+			(&mut faces.textured_tris, tris.as_bytes(), tris.len(), TRI_FACE_SIZE),
+		] {
+			let faces_offset = write_get_u16_offset(&mut data, bytes);
+			for face_index in 0..num_faces as u32 {
+				face_list.push(FaceInstance {
+					face_offset: faces_offset + face_index * face_size as u32,
+					vertices_offset,
+					transform_index,
+					face_size,
+					vertex_size: ROOM_VERTEX_SIZE,
+				});
+			}
+		}
+		let transform = Mat4::from_translation(room_pos(room).as_vec3());
+		data.write_end(transform.as_bytes());
+		transform_index += 1;
+		for room_static_mesh in room.room_static_meshes.iter() {
+			let mesh = &meshes[
+				mesh_offset_map[
+					&level.mesh_offsets[
+						static_mesh_id_map[&room_static_mesh.static_mesh_id].mesh_offset_index as usize
+					]
+				]
+			];
+			faces.add_mesh(mesh, transform_index);
+			let transform = Mat4::from_translation({room_static_mesh.pos}.as_vec3())
+				* Mat4::from_rotation_y(room_static_mesh.angle as f32 / 65536.0 * TAU);
+			data.write_end(transform.as_bytes());
+			transform_index += 1;
+		}
+	}
+	
+	//map model and sprite sequence ids to model and sprite sequence refs
+	let mut model_id_map = HashMap::new();
+	for model in level.models.iter() {
+		model_id_map.insert(model.id as u16, ModelRef::Model(model));
+	}
+	for sprite_sequence in level.sprite_sequences.iter() {
+		model_id_map.insert(sprite_sequence.id as u16, ModelRef::SpriteSequence(sprite_sequence));
+	}
+	
+	//entities
+	// for entity in level.entities.iter() {
+	// 	match model_id_map[&entity.model_id] {
+	// 		ModelRef::Model(model) => {
+	// 			let entity_transform = Mat4::from_translation({entity.pos}.as_vec3())
+	// 				* Mat4::from_rotation_y(entity.angle as f32 / 65536.0 * TAU);
+	// 			let frame = level.get_frame(model.frame_byte_offset);
+	// 			let mut last_transform = Mat4::from_translation(frame.offset.as_vec3())
+	// 				* get_rotation(frame.rotations[0]);
+				
+	// 			let mesh_index = mesh_offset_map[&level.mesh_offsets[model.mesh_offset_index as usize]];
+	// 			meshes.push(PlacedMesh { transform_bind_group, mesh_index });
+				
+	// 			data.write_end((entity_transform * last_transform).as_bytes());
+	// 			transform_index += 1;
+				
+	// 			let mut parent_stack = vec![];
+	// 			let mesh_nodes = level.get_mesh_nodes(model.mesh_node_offset, model.num_meshes - 1);
+	// 			for mesh_node_index in 0..mesh_nodes.len() {
+	// 				let mesh_node = &mesh_nodes[mesh_node_index];
+	// 				let parent = if mesh_node.flags.pop() {
+	// 					parent_stack.pop().expect("parent stack empty")
+	// 				} else {
+	// 					last_transform
+	// 				};
+	// 				if mesh_node.flags.push() {
+	// 					parent_stack.push(parent);
+	// 				}
+	// 				last_transform = parent
+	// 					* Mat4::from_translation(mesh_node.offset.as_vec3())
+	// 					* get_rotation(frame.rotations[mesh_node_index + 1]);
+	// 				let transform_bind_group = make::bind_group_single_uniform(
+	// 					device, &mesh_transform_layout, (entity_transform * last_transform).as_bytes(),
+	// 				);
+	// 				let mesh_index = mesh_offset_map[
+	// 					&level.mesh_offsets[model.mesh_offset_index as usize + mesh_node_index + 1]
+	// 				];
+	// 				meshes.push(PlacedMesh { transform_bind_group, mesh_index });
+	// 			}
+	// 			rooms[entity.room_index as usize].entities.push(Entity { meshes });
+	// 		},
+	// 		ModelRef::SpriteSequence(sprite_sequence) => _ = sprite_sequence,
+	// 	}
+	// }
+	
 	//level bind group
+	let data = data.take_buffer();
+	std::fs::write("data0", &data[..DATA_SIZE / 2]).unwrap();
+	let data_buffer = make::buffer(device, &data, BufferUsages::STORAGE);
 	let MinMax { min, max } = level
 		.rooms[0]
 		.get_geom_data()
@@ -467,17 +516,10 @@ fn make_gui(window_size: UVec2, device: &Device, queue: &Queue) -> TrTool {
 	let (yaw, pitch) = yaw_pitch((max - min).as_vec3());
 	let pos = (min.as_ivec3() + room_pos(&level.rooms[0])).as_vec3();
 	let transform = get_transform(window_size, pos, yaw, pitch);
-	let transform_buf = make::buffer(
+	let transform_buffer = make::buffer(
 		device, transform.as_bytes(), BufferUsages::UNIFORM | BufferUsages::COPY_DST,
 	);
-	let obj_tex1_len = level.object_textures.len().min(OBJ_TEX_BUF_LEN);
-	let obj_tex_buf1 = make::buffer_fixed(
-		device, OBJ_TEX_BUF_SIZE, level.object_textures[..obj_tex1_len].as_bytes(), BufferUsages::UNIFORM,
-	);
-	let obj_tex_buf2 = make::buffer_fixed(
-		device, OBJ_TEX_BUF_SIZE, level.object_textures[obj_tex1_len..].as_bytes(), BufferUsages::UNIFORM,
-	);
-	let palette_buf = make::buffer(device, level.palette.as_bytes(), BufferUsages::UNIFORM);
+	let palette_buffer = make::buffer(device, level.palette.as_bytes(), BufferUsages::UNIFORM);
 	let atlases_texture = device.create_texture_with_data(
 		queue,
 		&TextureDescriptor {
@@ -498,190 +540,16 @@ fn make_gui(window_size: UVec2, device: &Device, queue: &Queue) -> TrTool {
 		level.atlases.as_bytes(),
 	);
 	let atlases_texture_view = atlases_texture.create_view(&TextureViewDescriptor::default());
-	let level_bind_group = make::bind_group(
+	let bind_group = make::bind_group(
 		device,
-		&level_layout,
+		&bind_group_layout,
 		&[
-			transform_buf.as_entire_binding(),
-			obj_tex_buf1.as_entire_binding(),
-			obj_tex_buf2.as_entire_binding(),
-			palette_buf.as_entire_binding(),
+			data_buffer.as_entire_binding(),
+			transform_buffer.as_entire_binding(),
+			palette_buffer.as_entire_binding(),
 			BindingResource::TextureView(&atlases_texture_view),
 		],
 	);
-	
-	//create meshes, map tr mesh offets to meshes indices
-	let mut meshes = vec![];
-	let mut mesh_offset_map = HashMap::new();
-	for &mesh_offset in level.mesh_offsets.iter() {
-		mesh_offset_map.entry(mesh_offset).or_insert_with(|| {
-			let mesh = level.get_mesh(mesh_offset);
-			let [
-				verts_buf,
-				textured_quads_buf,
-				textured_tris_buf,
-				solid_quads_buf,
-				solid_tris_buf,
-			] = [
-				(VERT_BUF_SIZE, mesh.vertices.as_bytes()),
-				(FACE_BUF_SIZE, mesh.textured_quads.as_bytes()),
-				(FACE_BUF_SIZE, mesh.textured_tris.as_bytes()),
-				(FACE_BUF_SIZE, mesh.solid_quads.as_bytes()),
-				(FACE_BUF_SIZE, mesh.solid_tris.as_bytes()),
-			].map(|(size, contents)| make::buffer_fixed(device, size, contents, BufferUsages::UNIFORM));
-			let [
-				verts_bind_group,
-				textured_quads_bind_group,
-				textured_tris_bind_group,
-				solid_quads_bind_group,
-				solid_tris_bind_group,
-			] = [
-				(&verts_layout, &[mesh_vert_size_buf, &verts_buf]),
-				(&faces_layout, &[quad_face_size_buf, &textured_quads_buf]),
-				(&faces_layout, &[tri_face_size_buf, &textured_tris_buf]),
-				(&faces_layout, &[quad_face_size_buf, &solid_quads_buf]),
-				(&faces_layout, &[tri_face_size_buf, &solid_tris_buf]),
-			].map(|(layout, bufs)| {
-				let entries = bufs.map(|buf| buf.as_entire_binding());
-				make::bind_group(device, layout, &entries)
-			});
-			let mesh_bind_groups = Mesh {
-				verts_bind_group,
-				textured_quads_bind_group,
-				textured_tris_bind_group,
-				solid_quads_bind_group,
-				solid_tris_bind_group,
-				num_textured_quads: mesh.textured_quads.len() as u32,
-				num_textured_tris: mesh.textured_tris.len() as u32,
-				num_solid_quads: mesh.solid_quads.len() as u32,
-				num_solid_tris: mesh.solid_tris.len() as u32,
-			};
-			let index = meshes.len();
-			meshes.push(mesh_bind_groups);
-			index
-		});
-	}
-	
-	//map static mesh ids to static mesh refs
-	let mut static_mesh_id_map = HashMap::new();
-	for static_mesh in level.static_meshes.iter() {
-		static_mesh_id_map.insert(static_mesh.id as u16, static_mesh);
-	}
-	
-	//map model and sprite sequence ids to model and sprite sequence refs
-	let mut model_id_map = HashMap::new();
-	for model in level.models.iter() {
-		model_id_map.insert(model.id as u16, ModelRef::Model(model));
-	}
-	for sprite_sequence in level.sprite_sequences.iter() {
-		model_id_map.insert(sprite_sequence.id as u16, ModelRef::SpriteSequence(sprite_sequence));
-	}
-	
-	//rooms
-	let mut rooms = level.rooms.iter().map(|room| {
-		let tr1::RoomGeom { vertices, quads, tris, .. } = room.get_geom_data();
-		let transform_bind_group = make::bind_group_single_uniform(
-			device, &mesh_transform_layout, room_transform(room).as_bytes(),
-		);
-		let [verts_bind_group, quads_bind_group, tris_bind_group] = [
-			(VERT_BUF_SIZE, vertices.as_bytes(), &verts_layout, room_vert_size_buf),
-			(FACE_BUF_SIZE, quads.as_bytes(), &faces_layout, quad_face_size_buf),
-			(FACE_BUF_SIZE, tris.as_bytes(), &faces_layout, tri_face_size_buf),
-		].map(|(size, contents, layout, size_buf)| {
-			let geom_buf = make::buffer_fixed(device, size, contents, BufferUsages::UNIFORM);
-			let entries = [size_buf, &geom_buf].map(|buf| buf.as_entire_binding());
-			make::bind_group(device, layout, &entries)
-		});
-		let static_meshes = room.room_static_meshes.iter().map(|room_static_mesh| {
-			let transform = Mat4::from_translation({room_static_mesh.pos}.as_vec3())
-				* Mat4::from_rotation_y(room_static_mesh.angle as f32 / 65536.0 * TAU);
-			let transform_bind_group = make::bind_group_single_uniform(
-				device, &mesh_transform_layout, transform.as_bytes(),
-			);
-			let mesh_index = mesh_offset_map[
-				&level.mesh_offsets[
-					static_mesh_id_map[&room_static_mesh.static_mesh_id].mesh_offset_index as usize
-				]
-			];
-			PlacedMesh { transform_bind_group, mesh_index }
-		}).collect::<Vec<_>>();
-		Room {
-			transform_bind_group,
-			verts_bind_group,
-			quads_bind_group,
-			tris_bind_group,
-			num_quads: quads.len() as u32,
-			num_tris: tris.len() as u32,
-			static_meshes,
-			entities: vec![],
-		}
-	}).collect::<Vec<_>>();
-	
-	//entities
-	for entity in level.entities.iter() {
-		match model_id_map[&entity.model_id] {
-			ModelRef::Model(model) => {
-				let mut meshes = Vec::with_capacity(model.num_meshes as usize);
-				let entity_transform = Mat4::from_translation({entity.pos}.as_vec3())
-					* Mat4::from_rotation_y(entity.angle as f32 / 65536.0 * TAU);
-				let frame = level.get_frame(model.frame_byte_offset);
-				
-				let mut last_transform = Mat4::from_translation(frame.offset.as_vec3())
-					* get_rotation(frame.rotations[0]);
-				let transform_bind_group = make::bind_group_single_uniform(
-					device, &mesh_transform_layout, (entity_transform * last_transform).as_bytes(),
-				);
-				let mesh_index = mesh_offset_map[&level.mesh_offsets[model.mesh_offset_index as usize]];
-				meshes.push(PlacedMesh { transform_bind_group, mesh_index });
-				
-				let mut parent_stack = vec![];
-				let mesh_nodes = level.get_mesh_nodes(model.mesh_node_offset, model.num_meshes - 1);
-				for mesh_node_index in 0..mesh_nodes.len() {
-					let mesh_node = &mesh_nodes[mesh_node_index];
-					let parent = if mesh_node.flags.pop() {
-						parent_stack.pop().expect("parent stack empty")
-					} else {
-						last_transform
-					};
-					if mesh_node.flags.push() {
-						parent_stack.push(parent);
-					}
-					last_transform = parent
-						* Mat4::from_translation(mesh_node.offset.as_vec3())
-						* get_rotation(frame.rotations[mesh_node_index + 1]);
-					let transform_bind_group = make::bind_group_single_uniform(
-						device, &mesh_transform_layout, (entity_transform * last_transform).as_bytes(),
-					);
-					let mesh_index = mesh_offset_map[
-						&level.mesh_offsets[model.mesh_offset_index as usize + mesh_node_index + 1]
-					];
-					meshes.push(PlacedMesh { transform_bind_group, mesh_index });
-				}
-				rooms[entity.room_index as usize].entities.push(Entity { meshes });
-			},
-			ModelRef::SpriteSequence(sprite_sequence) => _ = sprite_sequence,
-		}
-	}
-	
-	// let num_transforms = rooms.iter().map(|room| 1 + room.static_meshes.len() + room.entities.iter().map(|entity| entity.meshes.len()).sum::<usize>()).sum::<usize>();
-	// println!("num transforms: {}", num_transforms);
-	
-	let room_faces = rooms.iter().map(|room| room.num_quads + room.num_tris).sum::<u32>();
-	let mesh_faces = meshes.iter().map(|mesh| mesh.num_textured_quads + mesh.num_textured_tris + mesh.num_solid_quads + mesh.num_solid_tris).sum::<u32>();
-	println!("faces: {} + {} = {}", room_faces, mesh_faces, room_faces + mesh_faces);
-	
-	/*
-	textured
-		room
-			quads
-			tris
-		mesh
-			quads
-			tris
-	solid
-		quads
-		tris
-	*/
 	
 	let action_map = ActionMap {
 		forward: KeyGroup::new(&[KeyCode::KeyW, KeyCode::ArrowUp]),
@@ -692,18 +560,18 @@ fn make_gui(window_size: UVec2, device: &Device, queue: &Queue) -> TrTool {
 		down: KeyGroup::new(&[KeyCode::KeyE, KeyCode::PageDown]),
 		boost: KeyGroup::new(&[KeyCode::ShiftLeft, KeyCode::ShiftRight]),
 	};
+	
 	TrTool {
 		modifiers: ModifiersState::empty(),
 		_file_dialog: FileDialog::new().initial_directory(r"C:\Program Files (x86)\Steam\steamapps\common\Tomb Raider (I)\extracted\DATA".into()),
 		error: None,
 		depth_view: make::depth_view(device, window_size),
-		vertex_buf: make::buffer(device, FACE_VERT_INDICES.as_bytes(), BufferUsages::VERTEX),
-		transform_buf,
+		face_vertex_index_buffer: make::buffer(device, FACE_VERT_INDICES.as_bytes(), BufferUsages::VERTEX),
+		transform_buffer,
 		textured_pipeline,
 		solid_pipeline,
-		level_bind_group,
-		rooms,
-		meshes,
+		bind_group,
+		face_buffers: faces.into_buffers(device),
 		mouse_control: false,
 		pos,
 		yaw,

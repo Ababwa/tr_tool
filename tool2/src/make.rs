@@ -14,12 +14,6 @@ pub fn buffer(device: &Device, contents: &[u8], usage: BufferUsages) -> Buffer {
 	device.create_buffer_init(&BufferInitDescriptor { label: None, contents, usage })
 }
 
-pub fn buffer_fixed(device: &Device, size: usize, contents: &[u8], usage: BufferUsages) -> Buffer {
-	let mut buf = vec![0; size];
-	buf[..contents.len()].copy_from_slice(contents);
-	buffer(device, &buf, usage)
-}
-
 pub fn shader(device: &Device, shader_source: &str) -> ShaderModule {
 	device.create_shader_module(ShaderModuleDescriptor {
 		label: None,
@@ -27,12 +21,20 @@ pub fn shader(device: &Device, shader_source: &str) -> ShaderModule {
 	})
 }
 
-pub fn uniform_layout_entry(size: usize) -> BindingType {
+pub fn layout_entry(ty: BufferBindingType, size: usize) -> BindingType {
 	BindingType::Buffer {
-		ty: BufferBindingType::Uniform,
+		ty,
 		has_dynamic_offset: false,
 		min_binding_size: NonZeroU64::new(size as u64),
 	}
+}
+
+pub fn uniform_layout_entry(size: usize) -> BindingType {
+	layout_entry(BufferBindingType::Uniform, size)
+}
+
+pub fn storage_layout_entry(size: usize) -> BindingType {
+	layout_entry(BufferBindingType::Storage { read_only: true }, size)
 }
 
 pub fn bind_group_layout(device: &Device, entries: &[(BindingType, ShaderStages)]) -> BindGroupLayout {
@@ -64,11 +66,6 @@ pub fn bind_group(device: &Device, layout: &BindGroupLayout, entries: &[BindingR
 			.map(|(index, resource)| BindGroupEntry { binding: index as u32, resource })
 			.collect::<Vec<_>>(),
 	})
-}
-
-pub fn bind_group_single_uniform(device: &Device, layout: &BindGroupLayout, contents: &[u8]) -> BindGroup {
-	let buffer = buffer(device, contents, BufferUsages::UNIFORM);
-	bind_group(device, layout, &[buffer.as_entire_binding()])
 }
 
 pub fn depth_view(device: &Device, window_size: UVec2) -> TextureView {

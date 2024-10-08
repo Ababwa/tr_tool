@@ -30,7 +30,6 @@ struct Tri {
 mapping:
 {
 	---align 4
-	transforms_offset: u32,
 	object_textures: [ObjectTexture],
 	---align 2
 	room_vertices: [RoomVert],
@@ -75,11 +74,13 @@ struct PositionTexture {
 	texture_index: u32,
 }
 
+const TRANSFORM_OFFSET: u32 = 524288;
+
 /*
 face:
 {
 	face_offset: u32,
-	vertex_array_offset: u32,
+	vertices_offset: u32,
 	transform_index: u16,
 	face_size: u8,
 	vertex_size: u8,
@@ -88,12 +89,12 @@ face:
 fn get_position_texture(face: vec3u, face_vertex_index: u32) -> PositionTexture {
 	//unpack face
 	let face_offset = face.x;
-	let vertex_array_offset = face.y;
+	let vertices_offset = face.y;
 	let transform_index = face.z & 0xFFFF;
-	let face_size = (face.z >> 16) & 0xFF
+	let face_size = (face.z >> 16) & 0xFF;
 	let vertex_size = face.z >> 24;
 	//transform
-	let transform_offset = data[0][0] + (transform_index * 4);
+	let transform_offset = 65532 - (transform_index * 4);
 	let mesh_transform = mat4x4f(
 		bitcast<vec4f>(data[transform_offset]),
 		bitcast<vec4f>(data[transform_offset + 1]),
@@ -102,7 +103,7 @@ fn get_position_texture(face: vec3u, face_vertex_index: u32) -> PositionTexture 
 	);
 	//position
 	let vertex_index = get_data_u16(face_offset + face_vertex_index);
-	let vertex_offset = vertex_array_offset + (vertex_index * vertex_size);
+	let vertex_offset = vertices_offset + (vertex_index * vertex_size);
 	let vertex_unsigned = vec3u(
 		get_data_u16(vertex_offset),
 		get_data_u16(vertex_offset + 1),
@@ -110,7 +111,7 @@ fn get_position_texture(face: vec3u, face_vertex_index: u32) -> PositionTexture 
 	);
 	let vertex_relative = vec3i(vertex_unsigned << vec3u(16)) >> vec3u(16);//interpret lower 16 as i16
 	let vertex_absolute = mesh_transform * vec4f(vec3f(vertex_relative), 1.0);
-	let position = global_transoform * vertex_absolute;
+	let position = global_transform * vertex_absolute;
 	//texture
 	let texture_index = get_data_u16(face_offset + face_size - 1);
 	return PositionTexture(position, texture_index);
@@ -119,23 +120,23 @@ fn get_position_texture(face: vec3u, face_vertex_index: u32) -> PositionTexture 
 struct TexturedVTF {
 	@builtin(position) position: vec4f,
 	@location(0) blend_mode: u32,
-	@location(1) atlas_idx: u32,
+	@location(1) atlas_index: u32,
 	@location(2) uv: vec2f,
 }
 
 @vertex
 fn textured_vs_main(
-	@location(0) face: vec3u,//instance
-	@location(1) face_vertex_index: u32,//vertex
+	@location(0) face_vertex_index: u32,//vertex
+	@location(1) face: vec3u,//instance
 ) -> TexturedVTF {
 	let position_texture = get_position_texture(face, face_vertex_index);
 	let position = position_texture.position;
 	let object_texture_index = position_texture.texture_index;
 	let object_texture_offset = object_texture_index * 5;//5 = size of ObjectTexture in u32s
-	let blend_atlas_packed = get_data_u32(1 + object_texture_offset);//1+ to skip transforms_offset
+	let blend_atlas_packed = get_data_u32(object_texture_offset);
 	let blend_mode = blend_atlas_packed & 0xFFFF;
 	let atlas_index = blend_atlas_packed >> 16;
-	let uv_packed = get_data_u32(1 + object_texture_offset + 1 + face_vert_idx);
+	let uv_packed = get_data_u32(object_texture_offset + 1 + face_vertex_index);
 	let uv_subpixel = vec2u(uv_packed & 0xFFFF, uv_packed >> 16);
 	let uv = vec2f((uv_subpixel + 128) / 256);//round to nearest whole pixel
 	return TexturedVTF(position, blend_mode, atlas_index, uv);
@@ -148,8 +149,8 @@ struct SolidVTF {
 
 @vertex
 fn solid_vs_main(
-	@location(0) face: vec3u,//instance
-	@location(1) face_vertex_index: u32,//vertex
+	@location(0) face_vertex_index: u32,//vertex
+	@location(1) face: vec3u,//instance
 ) -> SolidVTF {
 	let position_texture = get_position_texture(face, face_vertex_index);
 	let position = position_texture.position;
@@ -181,8 +182,8 @@ fn get_color_u8(offset: u32) -> u32 {
 	return (palette[offset / 16][(offset / 4) % 4] >> ((offset % 4) * 8)) & 0xFF;
 }
 
-fn get_color(color_idx: u32) -> vec4f {
-	var offset = color_idx * 3;
+fn get_color(color_index: u32) -> vec4f {
+	var offset = color_index * 3;
 	var color_rgb_6bit = vec3u(
 		get_color_u8(offset),
 		get_color_u8(offset + 1),
@@ -199,15 +200,15 @@ const BLEND_MODE_TEST: u32 = 1;
 
 @fragment
 fn textured_fs_main(vtf: TexturedVTF) -> @location(0) vec4f {
-	var color_idx = textureLoad(atlases, vec2i(vtf.uv), vtf.atlas_idx, 0).x;
-	if vtf.blend_mode == BLEND_MODE_TEST && color_idx == 0 {
+	var color_index = textureLoad(atlases, vec2i(vtf.uv), vtf.atlas_index, 0).x;
+	if vtf.blend_mode == BLEND_MODE_TEST && color_index == 0 {
 		discard;
 	} else {
-		return get_color(color_idx);
+		return get_color(color_index);
 	}
 }
 
 @fragment
 fn solid_fs_main(vtf: SolidVTF) -> @location(0) vec4f {
-	return get_color(vtf.color_idx);
+	return get_color(vtf.color_index);
 }
