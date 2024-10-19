@@ -8,20 +8,21 @@ mod gui;
 mod make;
 mod keys;
 mod vec_tail;
-mod render_model;
-mod double_end_cursor;
+mod data_writer;
+mod face_writer;
 mod multi_cursor;
 
 use std::{
-	collections::HashMap, f32::consts::{FRAC_PI_2, FRAC_PI_4, PI, TAU}, fs::File, mem::{size_of, MaybeUninit}, time::Duration
+	collections::HashMap, f32::consts::{FRAC_PI_2, FRAC_PI_4, PI, TAU}, fs::File,
+	mem::{size_of, MaybeUninit}, ops::Range, time::Duration,
 };
-use double_end_cursor::DoubleEndBuffer;
+use data_writer::{FaceArrayRef, DataWriter, DATA_SIZE};
+use face_writer::FaceWriter;
 use keys::{KeyGroup, KeyStates};
 use egui_file_dialog::FileDialog;
 use as_bytes::AsBytes;
 use glam::{DVec2, EulerRot, IVec3, Mat4, UVec2, Vec3, Vec3Swizzles};
 use gui::Gui;
-use render_model::{FaceBuffers, FaceArray, FaceInstance, Faces, Mesh, ModelRef};
 use shared::min_max::{MinMax, VecMinMaxFromIterator};
 use tr_model::{tr1, Readable};
 use wgpu::{
@@ -38,6 +39,13 @@ use winit::{
 	event::{ElementState, MouseButton, MouseScrollDelta}, event_loop::EventLoopWindowTarget,
 	keyboard::{KeyCode, ModifiersState}, window::{CursorGrabMode, Icon, Window},
 };
+
+struct FaceRanges {
+	textured_quads: Range<u32>,
+	textured_tris: Range<u32>,
+	solid_quads: Range<u32>,
+	solid_tris: Range<u32>,
+}
 
 struct ActionMap {
 	forward: KeyGroup,
@@ -56,7 +64,8 @@ struct TrTool {
 	depth_view: TextureView,
 	transform_buffer: Buffer,
 	face_vertex_index_buffer: Buffer,
-	face_buffers: FaceBuffers,
+	face_instance_buffer: Buffer,
+	face_ranges: FaceRanges,
 	textured_pipeline: RenderPipeline,
 	solid_pipeline: RenderPipeline,
 	bind_group: BindGroup,
@@ -208,18 +217,15 @@ impl Gui for TrTool {
 		});
 		rpass.set_bind_group(0, &self.bind_group, &[]);
 		rpass.set_vertex_buffer(0, self.face_vertex_index_buffer.slice(..));
+		rpass.set_vertex_buffer(1, self.face_instance_buffer.slice(..));
 		
 		rpass.set_pipeline(&self.textured_pipeline);
-		rpass.set_vertex_buffer(1, self.face_buffers.textured_quads.buffer.slice(..));
-		rpass.draw(0..NUM_QUAD_VERTS, 0..self.face_buffers.textured_quads.len);
-		rpass.set_vertex_buffer(1, self.face_buffers.textured_tris.buffer.slice(..));
-		rpass.draw(0..NUM_TRI_VERTS, 0..self.face_buffers.textured_tris.len);
+		rpass.draw(0..NUM_QUAD_VERTS, self.face_ranges.textured_quads.clone());
+		rpass.draw(0..NUM_TRI_VERTS, self.face_ranges.textured_tris.clone());
 		
 		rpass.set_pipeline(&self.solid_pipeline);
-		rpass.set_vertex_buffer(1, self.face_buffers.solid_quads.buffer.slice(..));
-		rpass.draw(0..NUM_QUAD_VERTS, 0..self.face_buffers.solid_quads.len);
-		rpass.set_vertex_buffer(1, self.face_buffers.solid_tris.buffer.slice(..));
-		rpass.draw(0..NUM_TRI_VERTS, 0..self.face_buffers.solid_tris.len);
+		rpass.draw(0..NUM_QUAD_VERTS, self.face_ranges.solid_quads.clone());
+		rpass.draw(0..NUM_TRI_VERTS, self.face_ranges.solid_tris.clone());
 		
 		if self.print {
 			println!("render time: {}us", last_render_time.as_micros());
@@ -279,18 +285,8 @@ fn make_pipeline(
 				buffers: &make::vertex_buffer_layouts(
 					&mut vec![],
 					&[
-						(
-							VertexStepMode::Vertex,
-							&[
-								VertexFormat::Uint32,
-							],
-						),
-						(
-							VertexStepMode::Instance,
-							&[
-								VertexFormat::Uint32x3,
-							],
-						),
+						(VertexStepMode::Vertex, &[VertexFormat::Uint32]),
+						(VertexStepMode::Instance, &[VertexFormat::Uint32]),
 					],
 				),
 			},
@@ -326,24 +322,18 @@ fn make_pipeline(
 }
 
 const PALETTE_SIZE: usize = tr1::PALETTE_LEN * size_of::<tr1::Color6Bit>();
-const DATA_SIZE: usize = 1048576;
-const QUAD_FACE_SIZE: u8 = 5;
-const TRI_FACE_SIZE: u8 = 4;
-const ROOM_VERTEX_SIZE: u8 = 4;
-const MESH_VERTEX_SIZE: u8 = 3;
 
-fn write_get_u16_offset(data: &mut DoubleEndBuffer, bytes: &[u8]) -> u32 {
-	assert!(bytes.len() % 2 == 0, "write must be a multiple of 2");
-	let offset = (data.start_pos() / 2) as u32;
-	data.write_start(bytes);
-	offset
+struct MeshFaceArrayRefs {
+	textured_quads: FaceArrayRef<tr1::MeshTexturedQuad>,
+	textured_tris: FaceArrayRef<tr1::MeshTexturedTri>,
+	solid_quads: FaceArrayRef<tr1::MeshSolidQuad>,
+	solid_tris: FaceArrayRef<tr1::MeshSolidTri>,
 }
 
-fn write_face_array<const N: usize>(data: &mut DoubleEndBuffer, faces: &[tr1::Face<N>]) -> FaceArray {
-	FaceArray {
-		offset: write_get_u16_offset(data, faces.as_bytes()),
-		len: faces.len() as u32,
-	}
+#[derive(Clone, Copy)]
+enum ModelRef<'a> {
+	Model(&'a tr1::Model),
+	SpriteSequence(&'a tr1::SpriteSequence),
 }
 
 fn make_gui(window_size: UVec2, device: &Device, queue: &Queue) -> TrTool {
@@ -351,7 +341,7 @@ fn make_gui(window_size: UVec2, device: &Device, queue: &Queue) -> TrTool {
 	let bind_group_layout = make::bind_group_layout(
 		device,
 		&[
-			(make::storage_layout_entry(DATA_SIZE), ShaderStages::VERTEX),//data 1MB
+			(make::storage_layout_entry(DATA_SIZE), ShaderStages::VERTEX),//data
 			(make::uniform_layout_entry(size_of::<Mat4>()), ShaderStages::VERTEX),//transform
 			(make::uniform_layout_entry(PALETTE_SIZE), ShaderStages::FRAGMENT),//palette
 			(
@@ -364,7 +354,7 @@ fn make_gui(window_size: UVec2, device: &Device, queue: &Queue) -> TrTool {
 			),//atlases
 		],
 	);
-	let shader = shader!(device, "shader/mesh copy.wgsl");
+	let shader = shader!(device, "shader/mesh.wgsl");
 	let [textured_pipeline, solid_pipeline] = [
 		("textured_vs_main", "textured_fs_main"),
 		("solid_vs_main", "solid_fs_main"),
@@ -379,72 +369,10 @@ fn make_gui(window_size: UVec2, device: &Device, queue: &Queue) -> TrTool {
 		level.assume_init_ref()
 	};
 	
-	//data
-	let mut data = DoubleEndBuffer::new(DATA_SIZE);
-	data.write_start(level.object_textures.as_bytes());
-	let mut transform_index = 0;
-	let mut faces = Faces::default();
-	
-	//add mesh faces to data, map tr mesh offets to meshes indices
-	let mut meshes = vec![];
-	let mut mesh_offset_map = HashMap::new();
-	for &mesh_offset in level.mesh_offsets.iter() {
-		mesh_offset_map.entry(mesh_offset).or_insert_with(|| {
-			let mesh = level.get_mesh(mesh_offset);
-			let index = meshes.len();
-			meshes.push(Mesh {
-				vertices_offset: write_get_u16_offset(&mut data, mesh.vertices.as_bytes()),
-				textured_quads: write_face_array(&mut data, mesh.textured_quads),
-				textured_tris: write_face_array(&mut data, mesh.textured_tris),
-				solid_quads: write_face_array(&mut data, mesh.solid_quads),
-				solid_tris: write_face_array(&mut data, mesh.solid_tris),
-			});
-			index
-		});
-	}
-	
 	//map static mesh ids to static mesh refs
 	let mut static_mesh_id_map = HashMap::new();
 	for static_mesh in level.static_meshes.iter() {
 		static_mesh_id_map.insert(static_mesh.id as u16, static_mesh);
-	}
-	
-	//rooms
-	for room in level.rooms.iter() {
-		let tr1::RoomGeom { vertices, quads, tris, .. } = room.get_geom_data();
-		let vertices_offset = write_get_u16_offset(&mut data, vertices.as_bytes());
-		for (face_list, bytes, num_faces, face_size) in [
-			(&mut faces.textured_quads, quads.as_bytes(), quads.len(), QUAD_FACE_SIZE),
-			(&mut faces.textured_tris, tris.as_bytes(), tris.len(), TRI_FACE_SIZE),
-		] {
-			let faces_offset = write_get_u16_offset(&mut data, bytes);
-			for face_index in 0..num_faces as u32 {
-				face_list.push(FaceInstance {
-					face_offset: faces_offset + face_index * face_size as u32,
-					vertices_offset,
-					transform_index,
-					face_size,
-					vertex_size: ROOM_VERTEX_SIZE,
-				});
-			}
-		}
-		let transform = Mat4::from_translation(room_pos(room).as_vec3());
-		data.write_end(transform.as_bytes());
-		transform_index += 1;
-		for room_static_mesh in room.room_static_meshes.iter() {
-			let mesh = &meshes[
-				mesh_offset_map[
-					&level.mesh_offsets[
-						static_mesh_id_map[&room_static_mesh.static_mesh_id].mesh_offset_index as usize
-					]
-				]
-			];
-			faces.add_mesh(mesh, transform_index);
-			let transform = Mat4::from_translation({room_static_mesh.pos}.as_vec3())
-				* Mat4::from_rotation_y(room_static_mesh.angle as f32 / 65536.0 * TAU);
-			data.write_end(transform.as_bytes());
-			transform_index += 1;
-		}
 	}
 	
 	//map model and sprite sequence ids to model and sprite sequence refs
@@ -456,55 +384,98 @@ fn make_gui(window_size: UVec2, device: &Device, queue: &Queue) -> TrTool {
 		model_id_map.insert(sprite_sequence.id as u16, ModelRef::SpriteSequence(sprite_sequence));
 	}
 	
+	//data
+	let mut data = DataWriter::new();
+	data.write_object_textures(&level.object_textures);
+	let mut faces = FaceWriter::new();
+	
+	//write meshes to data, map tr mesh offets to meshes indices
+	let mut meshes = Vec::<MeshFaceArrayRefs>::new();
+	let mut mesh_offset_map = HashMap::new();
+	for &mesh_offset in level.mesh_offsets.iter() {
+		mesh_offset_map.entry(mesh_offset).or_insert_with(|| {
+			let mesh = level.get_mesh(mesh_offset);
+			let index = meshes.len();
+			let vertex_array_offset = data.write_vertex_array(mesh.vertices);
+			meshes.push(MeshFaceArrayRefs {
+				textured_quads: data.write_face_array(mesh.textured_quads, vertex_array_offset),
+				textured_tris: data.write_face_array(mesh.textured_tris, vertex_array_offset),
+				solid_quads: data.write_face_array(mesh.solid_quads, vertex_array_offset),
+				solid_tris: data.write_face_array(mesh.solid_tris, vertex_array_offset),
+			});
+			index
+		});
+	}
+	
+	//rooms
+	for room in level.rooms.iter() {
+		let tr1::RoomGeom { vertices, quads, tris, .. } = room.get_geom_data();
+		let vertex_array_offset = data.write_vertex_array(vertices);
+		let quads_ref = data.write_face_array(quads, vertex_array_offset);
+		let tris_ref = data.write_face_array(tris, vertex_array_offset);
+		let transform = Mat4::from_translation(room_pos(room).as_vec3());
+		let transform_index = data.write_transform(&transform);
+		faces.write_face_instance_array(quads_ref, transform_index);
+		faces.write_face_instance_array(tris_ref, transform_index);
+		for room_static_mesh in room.room_static_meshes.iter() {
+			let mesh = &meshes[
+				mesh_offset_map[
+					&level.mesh_offsets[
+						static_mesh_id_map[&room_static_mesh.static_mesh_id].mesh_offset_index as usize
+					]
+				]
+			];
+			let transform = Mat4::from_translation({room_static_mesh.pos}.as_vec3())
+				* Mat4::from_rotation_y(room_static_mesh.angle as f32 / 65536.0 * TAU);
+			let transform_index = data.write_transform(&transform);
+			faces.write_mesh(mesh, transform_index);
+		}
+	}
+	
 	//entities
-	// for entity in level.entities.iter() {
-	// 	match model_id_map[&entity.model_id] {
-	// 		ModelRef::Model(model) => {
-	// 			let entity_transform = Mat4::from_translation({entity.pos}.as_vec3())
-	// 				* Mat4::from_rotation_y(entity.angle as f32 / 65536.0 * TAU);
-	// 			let frame = level.get_frame(model.frame_byte_offset);
-	// 			let mut last_transform = Mat4::from_translation(frame.offset.as_vec3())
-	// 				* get_rotation(frame.rotations[0]);
-				
-	// 			let mesh_index = mesh_offset_map[&level.mesh_offsets[model.mesh_offset_index as usize]];
-	// 			meshes.push(PlacedMesh { transform_bind_group, mesh_index });
-				
-	// 			data.write_end((entity_transform * last_transform).as_bytes());
-	// 			transform_index += 1;
-				
-	// 			let mut parent_stack = vec![];
-	// 			let mesh_nodes = level.get_mesh_nodes(model.mesh_node_offset, model.num_meshes - 1);
-	// 			for mesh_node_index in 0..mesh_nodes.len() {
-	// 				let mesh_node = &mesh_nodes[mesh_node_index];
-	// 				let parent = if mesh_node.flags.pop() {
-	// 					parent_stack.pop().expect("parent stack empty")
-	// 				} else {
-	// 					last_transform
-	// 				};
-	// 				if mesh_node.flags.push() {
-	// 					parent_stack.push(parent);
-	// 				}
-	// 				last_transform = parent
-	// 					* Mat4::from_translation(mesh_node.offset.as_vec3())
-	// 					* get_rotation(frame.rotations[mesh_node_index + 1]);
-	// 				let transform_bind_group = make::bind_group_single_uniform(
-	// 					device, &mesh_transform_layout, (entity_transform * last_transform).as_bytes(),
-	// 				);
-	// 				let mesh_index = mesh_offset_map[
-	// 					&level.mesh_offsets[model.mesh_offset_index as usize + mesh_node_index + 1]
-	// 				];
-	// 				meshes.push(PlacedMesh { transform_bind_group, mesh_index });
-	// 			}
-	// 			rooms[entity.room_index as usize].entities.push(Entity { meshes });
-	// 		},
-	// 		ModelRef::SpriteSequence(sprite_sequence) => _ = sprite_sequence,
-	// 	}
-	// }
+	for entity in level.entities.iter() {
+		let entity_transform = Mat4::from_translation({entity.pos}.as_vec3())
+			* Mat4::from_rotation_y(entity.angle as f32 / 65536.0 * TAU);
+		match model_id_map[&entity.model_id] {
+			ModelRef::Model(model) => {
+				let frame = level.get_frame(model.frame_byte_offset);
+				let mut last_transform = Mat4::from_translation(frame.offset.as_vec3())
+					* get_rotation(frame.rotations[0]);
+				let mesh = &meshes[
+					mesh_offset_map[&level.mesh_offsets[model.mesh_offset_index as usize]]
+				];
+				let transform_index = data.write_transform(&(entity_transform * last_transform));
+				faces.write_mesh(mesh, transform_index);
+				let mut parent_stack = vec![];
+				let mesh_nodes = level.get_mesh_nodes(model.mesh_node_offset, model.num_meshes - 1);
+				for mesh_node_index in 0..mesh_nodes.len() {
+					let mesh_node = &mesh_nodes[mesh_node_index];
+					let parent = if mesh_node.flags.pop() {
+						parent_stack.pop().expect("parent stack empty")
+					} else {
+						last_transform
+					};
+					if mesh_node.flags.push() {
+						parent_stack.push(parent);
+					}
+					let mesh = &meshes[
+						mesh_offset_map[
+							&level.mesh_offsets[model.mesh_offset_index as usize + mesh_node_index + 1]
+						]
+					];
+					last_transform = parent
+						* Mat4::from_translation(mesh_node.offset.as_vec3())
+						* get_rotation(frame.rotations[mesh_node_index + 1]);
+					let transform_index = data.write_transform(&(entity_transform * last_transform));
+					faces.write_mesh(mesh, transform_index);
+				}
+			},
+			ModelRef::SpriteSequence(sprite_sequence) => _ = sprite_sequence,
+		}
+	}
 	
 	//level bind group
-	let data = data.take_buffer();
-	std::fs::write("data0", &data[..DATA_SIZE / 2]).unwrap();
-	let data_buffer = make::buffer(device, &data, BufferUsages::STORAGE);
+	let data_buffer = make::buffer(device, &data.into_buffer(), BufferUsages::STORAGE);
 	let MinMax { min, max } = level
 		.rooms[0]
 		.get_geom_data()
@@ -551,6 +522,8 @@ fn make_gui(window_size: UVec2, device: &Device, queue: &Queue) -> TrTool {
 		],
 	);
 	
+	let (face_ranges, face_instances) = faces.into_ranges();
+	
 	let action_map = ActionMap {
 		forward: KeyGroup::new(&[KeyCode::KeyW, KeyCode::ArrowUp]),
 		backward: KeyGroup::new(&[KeyCode::KeyS, KeyCode::ArrowDown]),
@@ -567,11 +540,12 @@ fn make_gui(window_size: UVec2, device: &Device, queue: &Queue) -> TrTool {
 		error: None,
 		depth_view: make::depth_view(device, window_size),
 		face_vertex_index_buffer: make::buffer(device, FACE_VERT_INDICES.as_bytes(), BufferUsages::VERTEX),
+		face_instance_buffer: make::buffer(device, face_instances.as_bytes(), BufferUsages::VERTEX),
+		face_ranges,
 		transform_buffer,
 		textured_pipeline,
 		solid_pipeline,
 		bind_group,
-		face_buffers: faces.into_buffers(device),
 		mouse_control: false,
 		pos,
 		yaw,

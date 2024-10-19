@@ -2,7 +2,7 @@ use winit::keyboard::KeyCode;
 
 const KEY_GROUP_MAX: usize = 2;
 
-///Space-efficient list of key codes
+/// Space-efficient list of key codes.
 #[derive(Clone, Copy)]
 pub struct KeyGroup {
 	key_codes: [KeyCode; KEY_GROUP_MAX],

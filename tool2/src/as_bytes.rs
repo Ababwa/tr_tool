@@ -1,3 +1,4 @@
+use std::{mem::size_of, slice::from_raw_parts};
 use glam::{I16Vec3, IVec3, IVec4, Mat4, U16Vec2};
 use tr_model::tr1;
 
@@ -9,13 +10,17 @@ pub trait ReinterpretAsBytes {}
 
 impl<T: ReinterpretAsBytes> AsBytes for T {
 	fn as_bytes(&self) -> &[u8] {
-		unsafe { reinterpret::ref_to_slice(self) }
+		unsafe {
+			from_raw_parts((self as *const T).cast(), size_of::<T>())
+		}
 	}
 }
 
 impl<T: ReinterpretAsBytes> AsBytes for [T] {
 	fn as_bytes(&self) -> &[u8] {
-		unsafe { reinterpret::slice(self) }
+		unsafe {
+			from_raw_parts(self.as_ptr().cast(), self.len() * size_of::<T>())
+		}
 	}
 }
 
@@ -31,4 +36,9 @@ impl ReinterpretAsBytes for Mat4 {}
 impl ReinterpretAsBytes for tr1::RoomVertex {}
 impl ReinterpretAsBytes for tr1::ObjectTexture {}
 impl ReinterpretAsBytes for tr1::Color6Bit {}
-impl<const N: usize> ReinterpretAsBytes for tr1::Face<N> {}
+impl ReinterpretAsBytes for tr1::RoomQuad {}
+impl ReinterpretAsBytes for tr1::RoomTri {}
+impl ReinterpretAsBytes for tr1::MeshTexturedQuad {}
+impl ReinterpretAsBytes for tr1::MeshTexturedTri {}
+impl ReinterpretAsBytes for tr1::MeshSolidQuad {}
+impl ReinterpretAsBytes for tr1::MeshSolidTri {}

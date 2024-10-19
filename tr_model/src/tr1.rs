@@ -30,19 +30,23 @@ pub struct RoomVertex {
 	pub light: u16,
 }
 
-#[repr(C)]
-#[derive(Clone, Copy)]
-pub struct Face<const N: usize> {
-	/// If room face, index into `Room.vertices`.
-	/// If mesh face, index into `Mesh.vertices`.
-	pub vertex_indices: [u16; N],
-	/// If textured, index into `Level.object_textures`.
-	/// If solid, index into `Level.palette`.
-	pub texture_index: u16,
+macro_rules! decl_face_type {
+	($name:ident, $num_indices:literal, $texture_field:ident) => {
+		#[repr(C)]
+		#[derive(Clone, Copy)]
+		pub struct $name {
+			pub vertex_indices: [u16; $num_indices],
+			pub $texture_field: u16,
+		}
+	};
 }
 
-pub type Quad = Face<4>;
-pub type Tri = Face<3>;
+decl_face_type!(RoomQuad, 4, object_texture_index);
+decl_face_type!(RoomTri, 3, object_texture_index);
+decl_face_type!(MeshTexturedQuad, 4, object_texture_index);
+decl_face_type!(MeshTexturedTri, 3, object_texture_index);
+decl_face_type!(MeshSolidQuad, 4, color_index);
+decl_face_type!(MeshSolidTri, 3, color_index);
 
 #[repr(C)]
 #[derive(Clone, Copy)]
@@ -373,8 +377,8 @@ pub struct Sprite {
 #[derive(Clone, Copy)]
 pub struct RoomGeom<'a> {
 	pub vertices: &'a [RoomVertex],
-	pub quads: &'a [Quad],
-	pub tris: &'a [Tri],
+	pub quads: &'a [RoomQuad],
+	pub tris: &'a [RoomTri],
 	pub sprites: &'a [Sprite],
 }
 
@@ -406,10 +410,10 @@ pub struct Mesh<'a> {
 	/// If entity mesh, relative to `Entity.pos`.
 	pub vertices: &'a [I16Vec3],
 	pub lighting: MeshLighting<'a>,
-	pub textured_quads: &'a [Quad],
-	pub textured_tris: &'a [Tri],
-	pub solid_quads: &'a [Quad],
-	pub solid_tris: &'a [Tri],
+	pub textured_quads: &'a [MeshTexturedQuad],
+	pub textured_tris: &'a [MeshTexturedTri],
+	pub solid_quads: &'a [MeshSolidQuad],
+	pub solid_tris: &'a [MeshSolidTri],
 }
 
 #[repr(C)]
