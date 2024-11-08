@@ -37,7 +37,6 @@ macro_rules! impl_to_vec {
 	($type:ty, $output:ty, $x:ident, $y:ident) => {
 		impl ToVec for $type {
 			type Output = $output;
-			
 			fn to_vec(self) -> Self::Output {
 				Self::Output::new(self.$x, self.$y)
 			}
@@ -52,35 +51,32 @@ fn sb_surface(window: &Window, size: UVec2) -> softbuffer::Surface<&Window, &Win
 	let mut surface = softbuffer::Surface::new(
 		&softbuffer::Context::new(window).expect("sb context"), window,
 	).expect("sb surface");
-	surface
-		.resize(
-			NonZeroU32::new(size.x).expect("nonzero window width"),
-			NonZeroU32::new(size.y).expect("nonzero window height"),
-		)
-		.expect("sb resize");
+	surface.resize(
+		NonZeroU32::new(size.x).expect("nonzero window width"),
+		NonZeroU32::new(size.y).expect("nonzero window height"),
+	).expect("sb resize");
 	surface
 }
 
 pub trait Gui {
 	fn resize(&mut self, window_size: UVec2, device: &Device, queue: &Queue);
 	fn modifiers(&mut self, modifers: ModifiersState);
-	fn key(
-		&mut self, window_size: UVec2, device: &Device, queue: &Queue, target: &EventLoopWindowTarget<()>,
-		keycode: KeyCode, state: ElementState, repeat: bool,
-	);
 	fn mouse_button(&mut self, window: &Window, button: MouseButton, state: ElementState);
-	fn mouse_moved(&mut self, window_size: UVec2, queue: &Queue, delta: DVec2);
-	fn mouse_wheel(&mut self, queue: &Queue, delta: MouseScrollDelta);
-	fn render(
-		&mut self, window_size: UVec2, queue: &Queue, encoder: &mut CommandEncoder, view: &TextureView,
-		delta_time: Duration, last_render_time: Duration,
+	fn mouse_moved(&mut self, delta: DVec2);
+	fn mouse_wheel(&mut self, delta: MouseScrollDelta);
+	fn gui(&mut self, device: &Device, queue: &Queue, ctx: &egui::Context);
+	fn key(
+		&mut self, window: &Window, target: &EventLoopWindowTarget<()>, key_code: KeyCode,
+		state: ElementState, repeat: bool,
 	);
-	fn gui(&mut self, window_size: UVec2, device: &Device, queue: &Queue, ctx: &egui::Context);
+	fn render(
+		&mut self, queue: &Queue, encoder: &mut CommandEncoder, view: &TextureView, delta_time: Duration,
+		last_render_time: Duration,
+	);
 }
 
-pub fn run<T: Into<String>, G: Gui, F: FnOnce(UVec2, &Device, &Queue) -> G>(
-	title: T, window_icon: Icon, taskbar_icon: Icon, make_gui: F,
-) {
+pub fn run<T, G, F>(title: T, window_icon: Icon, taskbar_icon: Icon, make_gui: F)
+where T: Into<String>, G: Gui, F: FnOnce(&Device, UVec2) -> G {
 	env_logger::init();
 	let event_loop = EventLoop::new().expect("new event loop");
 	let window = WindowBuilder::new()
@@ -138,94 +134,88 @@ pub fn run<T: Into<String>, G: Gui, F: FnOnce(UVec2, &Device, &Queue) -> G>(
 	let mut egui_input_state = egui_winit::State::new(
 		egui_ctx.clone(), egui_ctx.viewport_id(), &window, None, None,
 	);
-	let mut egui_renderer = egui_wgpu::Renderer::new(&device, TextureFormat::Bgra8UnormSrgb, None, 1);
-	let mut gui = make_gui(window_size, &device, &queue);
+	let mut egui_renderer = egui_wgpu::Renderer::new(&device, TextureFormat::Bgra8Unorm, None, 1);
+	let mut gui = make_gui(&device, window_size);
 	tx.send(()).expect("signal painter");
 	painter.join().expect("join painter");
 	let mut last_frame = Instant::now();
 	let mut last_render_time = Duration::ZERO;
-	let result = event_loop.run(|event, target| match event {
+	event_loop.run(|event, target| match event {
 		Event::DeviceEvent { event: DeviceEvent::MouseMotion { delta: (x, y) }, .. } => {
-			gui.mouse_moved(window_size, &queue, dvec2(x, y));
+			gui.mouse_moved(dvec2(x, y));
 		},
-		Event::WindowEvent { event, .. } => {
-			if !egui_input_state.on_window_event(&window, &event).consumed {
-				match event {
-					WindowEvent::CloseRequested => target.exit(),
-					WindowEvent::ModifiersChanged(modifiers) => gui.modifiers(modifiers.state()),
-					WindowEvent::MouseInput { button, state, .. } => {
-						gui.mouse_button(&window, button, state);
-					},
-					WindowEvent::MouseWheel { delta, .. } => gui.mouse_wheel(&queue, delta),
-					WindowEvent::KeyboardInput {
-						event: KeyEvent { repeat, physical_key: PhysicalKey::Code(keycode), state, .. },
+		Event::WindowEvent { event, .. } => if !egui_input_state.on_window_event(&window, &event).consumed {
+			match event {
+				WindowEvent::CloseRequested => target.exit(),
+				WindowEvent::ModifiersChanged(modifiers) => gui.modifiers(modifiers.state()),
+				WindowEvent::MouseInput { button, state, .. } => gui.mouse_button(&window, button, state),
+				WindowEvent::MouseWheel { delta, .. } => gui.mouse_wheel(delta),
+				WindowEvent::KeyboardInput {
+					event: KeyEvent { repeat, physical_key: PhysicalKey::Code(key_code), state, .. },
+					..
+				} => gui.key(&window, target, key_code, state, repeat),
+				WindowEvent::Resized(new_size) => {
+					window_size = new_size.to_vec();
+					config.width = window_size.x;
+					config.height = window_size.y;
+					surface.configure(&device, &config);
+					gui.resize(window_size, &device, &queue);
+				},
+				WindowEvent::RedrawRequested => {
+					let start = Instant::now();
+					let delta_time = start - last_frame;
+					let mut encoder = device.create_command_encoder(&CommandEncoderDescriptor::default());
+					let frame = surface.get_current_texture().expect("get current texture");
+					let view = &frame.texture.create_view(&TextureViewDescriptor::default());
+					
+					gui.render(&queue, &mut encoder, view, delta_time, last_render_time);
+					
+					let egui_input = egui_input_state.take_egui_input(&window);
+					let egui::FullOutput {
+						platform_output,
+						textures_delta: egui::TexturesDelta { set, free },
+						shapes,
+						pixels_per_point,
 						..
-					} => gui.key(window_size, &device, &queue, target, keycode, state, repeat),
-					WindowEvent::Resized(new_size) => {
-						window_size = new_size.to_vec();
-						config.width = window_size.x;
-						config.height = window_size.y;
-						surface.configure(&device, &config);
-						gui.resize(window_size, &device, &queue);
-					},
-					WindowEvent::RedrawRequested => {
-						let start = Instant::now();
-						let delta_time = start - last_frame;
-						let mut encoder = device.create_command_encoder(
-							&CommandEncoderDescriptor::default(),
-						);
-						let frame = surface.get_current_texture().expect("get current texture");
-						let view = &frame.texture.create_view(&TextureViewDescriptor::default());
-						gui.render(window_size, &queue, &mut encoder, view, delta_time, last_render_time);
-						let egui_input = egui_input_state.take_egui_input(&window);
-						let egui::FullOutput {
-							platform_output,
-							textures_delta: egui::TexturesDelta { set, free },
-							shapes,
-							pixels_per_point,
-							..
-						} = egui_ctx.run(egui_input, |ctx| gui.gui(window_size, &device, &queue, ctx));
-						let screen_desc = egui_wgpu::ScreenDescriptor {
-							size_in_pixels: window_size.into(),
-							pixels_per_point,
-						};
-						egui_input_state.handle_platform_output(&window, platform_output);
-						for (id, delta) in &set {
-							egui_renderer.update_texture(&device, &queue, *id, delta);
-						}
-						let egui_tris = egui_ctx.tessellate(shapes, pixels_per_point);
-						egui_renderer.update_buffers(
-							&device, &queue, &mut encoder, &egui_tris, &screen_desc,
-						);
-						let mut rpass = encoder.begin_render_pass(&RenderPassDescriptor {
-							label: None,
-							color_attachments: &[
-								Some(RenderPassColorAttachment {
-									view,
-									resolve_target: None,
-									ops: Operations { load: LoadOp::Load, store: StoreOp::Store },
-								}),
-							],
-							depth_stencil_attachment: None,
-							timestamp_writes: None,
-							occlusion_query_set: None,
-						});
-						egui_renderer.render(&mut rpass, &egui_tris, &screen_desc);
-						drop(rpass);
-						for id in &free {
-							egui_renderer.free_texture(id);
-						}
-						queue.submit([encoder.finish()]);
-						frame.present();
-						window.request_redraw();
-						last_frame = start;
-						last_render_time = Instant::now() - start;
-					},
-					_ => {},
-				}
+					} = egui_ctx.run(egui_input, |ctx| gui.gui(&device, &queue, ctx));
+					let screen_desc = egui_wgpu::ScreenDescriptor {
+						size_in_pixels: window_size.into(),
+						pixels_per_point,
+					};
+					egui_input_state.handle_platform_output(&window, platform_output);
+					for (id, delta) in &set {
+						egui_renderer.update_texture(&device, &queue, *id, delta);
+					}
+					let egui_tris = egui_ctx.tessellate(shapes, pixels_per_point);
+					egui_renderer.update_buffers(&device, &queue, &mut encoder, &egui_tris, &screen_desc);
+					let mut rpass = encoder.begin_render_pass(&RenderPassDescriptor {
+						label: None,
+						color_attachments: &[
+							Some(RenderPassColorAttachment {
+								view,
+								resolve_target: None,
+								ops: Operations { load: LoadOp::Load, store: StoreOp::Store },
+							}),
+						],
+						depth_stencil_attachment: None,
+						timestamp_writes: None,
+						occlusion_query_set: None,
+					});
+					egui_renderer.render(&mut rpass, &egui_tris, &screen_desc);
+					drop(rpass);
+					for id in &free {
+						egui_renderer.free_texture(id);
+					}
+					
+					queue.submit([encoder.finish()]);
+					frame.present();
+					window.request_redraw();
+					last_frame = start;
+					last_render_time = Instant::now() - start;
+				},
+				_ => {},
 			}
 		},
 		_ => {},
-	});
-	result.expect("run event loop");
+	}).expect("run event loop");
 }

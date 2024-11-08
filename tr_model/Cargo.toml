@@ -8,6 +8,5 @@ bitfield = "0.14.0"
 compress = "0.2.1"
 glam = { workspace = true }
 glam-traits = { workspace = true }
-nonmax = { workspace = true }
 shared = { workspace = true }
 tr_readable = { path = "../tr_readable" }

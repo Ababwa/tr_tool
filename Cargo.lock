@@ -925,15 +925,15 @@ dependencies = [
 
 [[package]]
 name = "glam"
-version = "0.27.0"
+version = "0.29.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "9e05e7e6723e3455f4818c7b26e855439f7546cf617ef669d1adedb8669e5cb9"
+checksum = "c28091a37a5d09b555cb6628fd954da299b536433834f5b8e59eba78e0cbbf8a"
 
 [[package]]
 name = "glam-traits"
-version = "0.1.4"
+version = "0.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f77c93e0b8d1cb45a3f40e200400832e8480e0acbd7a593ae031bf9ce9515400"
+checksum = "a0f728f99f94fd6fca6a24650e3271e05c680cab7e0aafc45401f276efd48528"
 dependencies = [
  "glam",
  "num-traits",
@@ -1365,12 +1365,6 @@ name = "nohash-hasher"
 version = "0.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "2bf50223579dc7cdcfb3bfcacf7069ff68243f8c363f62ffa99cf000a6b9c451"
-
-[[package]]
-name = "nonmax"
-version = "0.5.5"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "610a5acd306ec67f907abe5567859a3c693fb9886eb1f012ab8f2a47bef3db51"
 
 [[package]]
 name = "ntapi"
@@ -1906,11 +1900,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7a66a03ae7c801facd77a29370b4faec201768915ac14a721ba36f20bc9c209b"
 
 [[package]]
-name = "reinterpret"
-version = "0.1.0"
-source = "git+https://github.com/Ababwa/reinterpret.git#b2960dcdfd6e2620106d5df90ca19bf1e3f39d25"
-
-[[package]]
 name = "renderdoc-sys"
 version = "1.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2340,9 +2329,7 @@ dependencies = [
  "glam",
  "glam-traits",
  "image",
- "nonmax",
  "pollster",
- "reinterpret",
  "shared",
  "softbuffer",
  "tr_model",
@@ -2368,7 +2355,6 @@ dependencies = [
  "compress",
  "glam",
  "glam-traits",
- "nonmax",
  "shared",
  "tr_readable",
 ]
@@ -2378,10 +2364,6 @@ name = "tr_readable"
 version = "0.1.0"
 dependencies = [
  "compress",
- "glam",
- "glam-traits",
- "nonmax",
- "reinterpret",
  "tr_derive",
 ]
 

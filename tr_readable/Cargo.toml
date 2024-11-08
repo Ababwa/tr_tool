@@ -5,8 +5,4 @@ edition = "2021"
 
 [dependencies]
 compress = "0.2.1"
-glam = { workspace = true }
-glam-traits = { workspace = true }
-nonmax = { workspace = true }
-reinterpret = { workspace = true }
 tr_derive = { path = "../tr_derive" }

@@ -35,6 +35,7 @@ impl ReinterpretAsBytes for IVec4 {}
 impl ReinterpretAsBytes for Mat4 {}
 impl ReinterpretAsBytes for tr1::RoomVertex {}
 impl ReinterpretAsBytes for tr1::ObjectTexture {}
+impl ReinterpretAsBytes for tr1::SpriteTexture {}
 impl ReinterpretAsBytes for tr1::Color6Bit {}
 impl ReinterpretAsBytes for tr1::RoomQuad {}
 impl ReinterpretAsBytes for tr1::RoomTri {}

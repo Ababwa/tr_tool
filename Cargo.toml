@@ -3,8 +3,6 @@ members = ["tr_model", "tr_derive", "shared", "tool2", "tr_readable"]
 resolver = "2"
 
 [workspace.dependencies]
-glam = "0.27.0"
-glam-traits = { version = "0.1.2", features = ["ext"] }
-nonmax = "0.5.5"
-reinterpret = { git = "https://github.com/Ababwa/reinterpret.git" }
+glam = "0.29.0"
+glam-traits = { version = "0.2.0", features = ["ext"] }
 shared = { path = "shared" }

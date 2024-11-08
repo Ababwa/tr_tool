@@ -1,35 +1,44 @@
 use std::ops::Range;
 use tr_model::tr1;
-use crate::{data_writer::FaceArrayRef, multi_cursor::MultiCursorBuffer, FaceRanges, MeshFaceArrayRefs};
+use crate::{data_writer::FaceArrayRef, multi_cursor::MultiCursorBuffer, FaceOffsets, MeshFaceArrayRefs};
 
-//128 KB
-const FACES_SIZE: usize = 131072;
+//512 KB
+const FACES_SIZE: usize = 524288;
 
-//0..65536, len: 65536 (1/2 buffer)
+//0..262144, len: 262144 (1/2 buffer)
 const TEXTURED_QUADS_CURSOR: usize = 0;
 const TEXTURED_QUADS_OFFSET: usize = 0;
 
-//65536..98304, len: 32768 (1/4 buffer)
+//262144..393216, len: 131072 (1/4 buffer)
 const TEXTURED_TRIS_CURSOR: usize = 1;
-const TEXTURED_TRIS_OFFSET: usize = 65536;
+const TEXTURED_TRIS_OFFSET: usize = 262144;
 
-//98304..114688, len: 16384 (1/8 buffer)
+//393216..458752, len: 65536 (1/8 buffer)
 const SOLID_QUADS_CURSOR: usize = 2;
-const SOLID_QUADS_OFFSET: usize = 98304;
+const SOLID_QUADS_OFFSET: usize = 393216;
 
-//114688..131072, len: 16384 (1/8 buffer)
+//458752..524288, len: 65536 (1/8 buffer)
 const SOLID_TRIS_CURSOR: usize = 3;
-const SOLID_TRIS_OFFSET: usize = 114688;
+const SOLID_TRIS_OFFSET: usize = 458752;
 
-fn face_instance(face_array_index: u32, face_index: u32, transform_index: u32) -> u32 {
-	assert!(face_array_index < 1024, "face_array_index: {}", face_array_index);
-	assert!(face_index < 1024, "face_index: {}", face_index);
-	assert!(transform_index < 1024, "transform_index: {}", transform_index);
-	face_array_index | (face_index << 10) | (transform_index << 20)
+const FACE_INSTANCE_SIZE: u32 = 8;
+
+/*
+face instance:
+0000000000000000TTTTTTTTTTTTTTTTFFFFFFFFFFFFFFFFAAAAAAAAAAAAAAAA
+A: face array index (16 bits)
+F: face index (16 bits)
+T: transform index (16 bits)
+*/
+fn face_instance(face_array_index: u32, face_index: u32, transform_index: u32) -> u64 {
+	assert!(face_array_index < 65536, "face_array_index: {}", face_array_index);
+	assert!(face_index < 65536, "face_index: {}", face_index);
+	assert!(transform_index < 65536, "transform_index: {}", transform_index);
+	face_array_index as u64 | ((face_index as u64) << 16) | ((transform_index as u64) << 32)
 }
 
 fn to_instance_range(byte_range: Range<usize>) -> Range<u32> {
-	byte_range.start as u32 / 4..byte_range.end as u32 / 4
+	byte_range.start as u32 / FACE_INSTANCE_SIZE..byte_range.end as u32 / FACE_INSTANCE_SIZE
 }
 
 mod private {
@@ -63,9 +72,11 @@ impl FaceWriter {
 	where F: Face {
 		let mut face_type_writer = self.mc.get_writer(F::CURSOR);
 		for face_index in 0..face_array_ref.len {
-			face_type_writer.write(
+			if let Err(e) = face_type_writer.write(
 				&face_instance(face_array_ref.index, face_index, transform_index).to_le_bytes(),
-			);
+			) {
+				panic!("write face instance fail: type: {}, msg: {}", F::CURSOR, e);
+			}
 		}
 	}
 	
@@ -76,15 +87,24 @@ impl FaceWriter {
 		self.write_face_instance_array(mesh.solid_tris, transform_index);
 	}
 	
-	pub fn into_ranges(mut self) -> (FaceRanges, Box<[u8]>) {
-		let textured_quads = to_instance_range(self.mc.get_writer(TEXTURED_QUADS_CURSOR).range());
-		let textured_tris = to_instance_range(self.mc.get_writer(TEXTURED_TRIS_CURSOR).range());
-		let solid_quads = to_instance_range(self.mc.get_writer(SOLID_QUADS_CURSOR).range());
-		let solid_tris = to_instance_range(self.mc.get_writer(SOLID_TRIS_CURSOR).range());
-		println!("num textured_quads: {}", textured_quads.clone().count());
-		println!("num textured_tris: {}", textured_tris.clone().count());
-		println!("num solid_quads: {}", solid_quads.clone().count());
-		println!("num solid_tris: {}", solid_tris.clone().count());
-		(FaceRanges { textured_quads, textured_tris, solid_quads, solid_tris }, self.mc.into_buffer())
+	pub fn get_offsets(&self) -> FaceOffsets {
+		FaceOffsets {
+			textured_quads: self.mc.get_pos(TEXTURED_QUADS_CURSOR) as u32 / FACE_INSTANCE_SIZE,
+			textured_tris: self.mc.get_pos(TEXTURED_TRIS_CURSOR) as u32 / FACE_INSTANCE_SIZE,
+			solid_quads: self.mc.get_pos(SOLID_QUADS_CURSOR) as u32 / FACE_INSTANCE_SIZE,
+			solid_tris: self.mc.get_pos(SOLID_TRIS_CURSOR) as u32 / FACE_INSTANCE_SIZE,
+		}
+	}
+	
+	pub fn into_buffer(self) -> Box<[u8]> {
+		let textured_quads = to_instance_range(self.mc.get_range(TEXTURED_QUADS_CURSOR));
+		let textured_tris = to_instance_range(self.mc.get_range(TEXTURED_TRIS_CURSOR));
+		let solid_quads = to_instance_range(self.mc.get_range(SOLID_QUADS_CURSOR));
+		let solid_tris = to_instance_range(self.mc.get_range(SOLID_TRIS_CURSOR));
+		println!("textured quads: {}", textured_quads.clone().count());
+		println!("textured tris: {}", textured_tris.clone().count());
+		println!("solid quads: {}", solid_quads.clone().count());
+		println!("solid tris: {}", solid_tris.clone().count());
+		self.mc.into_buffer()
 	}
 }

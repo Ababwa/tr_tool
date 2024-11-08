@@ -10,13 +10,21 @@ pub const DATA_SIZE: usize = 1048576;
 const GEOM_CURSOR: usize = 0;
 const GEOM_OFFSET: usize = 0;
 
-//524288..786432, len: 262144 (1/4 buffer)
-const TRANSFORM_CURSOR: usize = 1;
-const TRANSFORM_OFFSET: usize = 524288;
+//524288..655360, len: 131072 (1/8 buffer)
+const OBJECT_TEXTURES_CURSOR: usize = 1;
+const OBJECT_TEXTURES_OFFSET: usize = 524288;
 
-//786432..1048576, len: 262144 (1/4 buffer)
-const INDEX_CURSOR: usize = 2;
-const INDEX_OFFSET: usize = 786432;
+//655360..786432, len: 131072 (1/8 buffer)
+const TRANSFORMS_CURSOR: usize = 2;
+const TRANSFORMS_OFFSET: usize = 655360;
+
+//786432..917504, len: 131072 (1/8 buffer)
+const SPRITE_TEXTURES_CURSOR: usize = 3;
+const SPRITE_TEXTURES_OFFSET: usize = 786432;
+
+//917504..1048576, len: 131072 (1/8 buffer)
+const FACE_ARRAY_MAP_CURSOR: usize = 4;
+const FACE_ARRAY_MAP_OFFSET: usize = 917504;
 
 mod private {
 	pub trait Vertex {}
@@ -48,46 +56,63 @@ pub struct DataWriter {
 
 impl DataWriter {
 	pub fn new() -> Self {
-		Self { mc: MultiCursorBuffer::new(DATA_SIZE, &[GEOM_OFFSET, TRANSFORM_OFFSET, INDEX_OFFSET]) }
+		Self {
+			mc: MultiCursorBuffer::new(
+				DATA_SIZE,
+				&[
+					GEOM_OFFSET,
+					OBJECT_TEXTURES_OFFSET,
+					TRANSFORMS_OFFSET,
+					SPRITE_TEXTURES_OFFSET,
+					FACE_ARRAY_MAP_OFFSET,
+				],
+			),
+		}
 	}
 	
 	pub fn write_object_textures(&mut self, object_textures: &[tr1::ObjectTexture]) {
-		self.mc.get_writer(GEOM_CURSOR).write(object_textures.as_bytes());
+		self.mc.get_writer(OBJECT_TEXTURES_CURSOR).write(object_textures.as_bytes()).unwrap();
+	}
+	
+	pub fn write_sprite_textures(&mut self, sprite_textures: &[tr1::SpriteTexture]) {
+		self.mc.get_writer(SPRITE_TEXTURES_CURSOR).write(sprite_textures.as_bytes()).unwrap();
 	}
 	
 	pub fn write_vertex_array<V>(&mut self, vertices: &[V]) -> u32
 	where V: Vertex + ReinterpretAsBytes {
 		let mut geom_writer = self.mc.get_writer(GEOM_CURSOR);
-		let offset = geom_writer.range().end as u32 / 2;
-		geom_writer.write(&(size_of::<V>() as u16 / 2).to_le_bytes());
-		geom_writer.write(vertices.as_bytes());
+		let offset = geom_writer.get_pos() as u32 / 2;
+		geom_writer.write(&(size_of::<V>() as u16 / 2).to_le_bytes()).unwrap();
+		geom_writer.write(vertices.as_bytes()).unwrap();
 		offset
 	}
 	
 	pub fn write_face_array<F>(&mut self, faces: &[F], vertex_array_offset: u32) -> FaceArrayRef<F>
 	where F: Face + ReinterpretAsBytes {
 		let mut geom_writer = self.mc.get_writer(GEOM_CURSOR);
-		let offset = geom_writer.range().end as u32 / 2;
-		geom_writer.write(&vertex_array_offset.to_le_bytes());
-		geom_writer.write(&(size_of::<F>() as u16 / 2).to_le_bytes());
-		geom_writer.write(faces.as_bytes());
-		let mut index_writer = self.mc.get_writer(INDEX_CURSOR);
-		let index = index_writer.slice().len() as u32 / 4;
-		index_writer.write(&offset.to_le_bytes());
-		FaceArrayRef { index, len: faces.len() as u32, u: PhantomData::default() }
+		let offset = geom_writer.get_pos() as u32 / 2;
+		geom_writer.write(&vertex_array_offset.to_le_bytes()).unwrap();
+		geom_writer.write(&(size_of::<F>() as u16 / 2).to_le_bytes()).unwrap();
+		geom_writer.write(faces.as_bytes()).unwrap();
+		let mut face_array_map_writer = self.mc.get_writer(FACE_ARRAY_MAP_CURSOR);
+		let index = face_array_map_writer.get_size() as u32 / 4;
+		face_array_map_writer.write(&offset.to_le_bytes()).unwrap();
+		FaceArrayRef { index, len: faces.len() as u32, u: PhantomData }
 	}
 	
 	pub fn write_transform(&mut self, transform: &Mat4) -> u32 {
-		let mut transform_writer = self.mc.get_writer(TRANSFORM_CURSOR);
-		let index = (transform_writer.slice().len() / size_of::<Mat4>()) as u32;
-		transform_writer.write(transform.as_bytes());
+		let mut transforms_writer = self.mc.get_writer(TRANSFORMS_CURSOR);
+		let index = (transforms_writer.get_size() / size_of::<Mat4>()) as u32;
+		transforms_writer.write(transform.as_bytes()).unwrap();
 		index
 	}
 	
-	pub fn into_buffer(mut self) -> Box<[u8]> {
-		println!("geom bytes: {}", self.mc.get_writer(GEOM_CURSOR).slice().len());
-		println!("transform bytes: {}", self.mc.get_writer(TRANSFORM_CURSOR).slice().len());
-		println!("index bytes: {}", self.mc.get_writer(INDEX_CURSOR).slice().len());
+	pub fn into_buffer(self) -> Box<[u8]> {
+		println!("GEOM bytes: {}", self.mc.get_size(GEOM_CURSOR));
+		println!("OBJECT_TEXTURES bytes: {}", self.mc.get_size(OBJECT_TEXTURES_CURSOR));
+		println!("TRANSFORM bytes: {}", self.mc.get_size(TRANSFORMS_CURSOR));
+		println!("SPRITE_TEXTURES bytes: {}", self.mc.get_size(SPRITE_TEXTURES_CURSOR));
+		println!("FACE_MAP bytes: {}", self.mc.get_size(FACE_ARRAY_MAP_CURSOR));
 		self.mc.into_buffer()
 	}
 }

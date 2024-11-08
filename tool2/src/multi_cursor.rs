@@ -1,4 +1,7 @@
-use std::{alloc::{alloc, handle_alloc_error, Layout}, ops::Range, ptr::slice_from_raw_parts_mut};
+use std::{
+	alloc::{alloc, handle_alloc_error, Layout}, io::{Error, ErrorKind, Result}, ops::Range,
+	ptr::slice_from_raw_parts_mut,
+};
 
 pub struct Writer<'a> {
 	buffer: &'a mut Box<[u8]>,
@@ -7,19 +10,21 @@ pub struct Writer<'a> {
 }
 
 impl<'a> Writer<'a> {
-	/// Range of written bytes. `end` is the index of the next byte to be written.
-	pub fn range(&self) -> Range<usize> {
-		self.range.clone()
+	pub fn get_pos(&self) -> usize {
+		self.range.end
 	}
 	
-	/// Slice of written bytes.
-	pub fn slice(&self) -> &[u8] {
-		&self.buffer[self.range()]
+	pub fn get_size(&self) -> usize {
+		self.range.end - self.range.start
 	}
 	
-	pub fn write(&mut self, bytes: &[u8]) {
-		self.buffer[self.range.end..self.upper_bound][..bytes.len()].copy_from_slice(bytes);
+	pub fn write(&mut self, bytes: &[u8]) -> Result<()> {
+		if self.range.end + bytes.len() > self.upper_bound {
+			return Err(Error::new(ErrorKind::Other, "write out of range"));
+		}
+		self.buffer[self.range.end..][..bytes.len()].copy_from_slice(bytes);
 		self.range.end += bytes.len();
+		Ok(())
 	}
 }
 
@@ -30,7 +35,7 @@ pub struct MultiCursorBuffer {
 }
 
 impl MultiCursorBuffer {
-	/// Returns the index of the cursor.
+	/// Return the index of the cursor.
 	pub fn add_cursor(&mut self, pos: usize) -> usize {
 		assert!(pos <= self.buffer.len(), "cannot add cursor beyond end of buffer");
 		if let Some(last_cursor) = self.ranges.last() {
@@ -57,6 +62,19 @@ impl MultiCursorBuffer {
 		mc
 	}
 	
+	pub fn get_pos(&self, cursor_index: usize) -> usize {
+		self.ranges[cursor_index].end
+	}
+	
+	pub fn get_range(&self, cursor_index: usize) -> Range<usize> {
+		self.ranges[cursor_index].clone()
+	}
+	
+	pub fn get_size(&self, cursor_index: usize) -> usize {
+		let range = &self.ranges[cursor_index];
+		range.end - range.start
+	}
+	
 	pub fn get_writer(&mut self, cursor_index: usize) -> Writer {
 		let upper_bound = self
 			.ranges
@@ -68,7 +86,7 @@ impl MultiCursorBuffer {
 		Writer { buffer, range, upper_bound }
 	}
 	
-	/// Zeroes the gaps between written sections and returns the underlying buffer.
+	/// Zero gaps between written sections and return the underlying buffer.
 	pub fn into_buffer(mut self) -> Box<[u8]> {
 		let mut written = 0;
 		for cursor in &self.ranges {

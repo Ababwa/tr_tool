@@ -14,10 +14,10 @@ pub fn buffer(device: &Device, contents: &[u8], usage: BufferUsages) -> Buffer {
 	device.create_buffer_init(&BufferInitDescriptor { label: None, contents, usage })
 }
 
-pub fn shader(device: &Device, shader_source: &str) -> ShaderModule {
+pub fn shader(device: &Device, source: &str) -> ShaderModule {
 	device.create_shader_module(ShaderModuleDescriptor {
 		label: None,
-		source: ShaderSource::Wgsl(shader_source.into()),
+		source: ShaderSource::Wgsl(source.into()),
 	})
 }
 

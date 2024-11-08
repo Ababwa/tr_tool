@@ -2,7 +2,6 @@ use std::{io::{Read, Result}, mem::transmute, ptr::addr_of_mut, slice};
 use bitfield::bitfield;
 use glam::{I16Vec2, I16Vec3, IVec3, U16Vec2, U16Vec3};
 use glam_traits::ext::U8Vec2;
-use nonmax::{NonMaxU16, NonMaxU8};
 use shared::min_max::MinMax;
 use tr_readable::{read_boxed_slice_flat, read_flat, read_val_flat, Readable};
 use crate::u16_cursor::U16Cursor;
@@ -64,12 +63,12 @@ pub struct Sector {
 	/// Index into `Level.floor_data`.
 	pub floor_data_index: u16,
 	/// Index into `BoxData.boxes`.
-	pub box_index: Option<NonMaxU16>,
+	pub box_index: u16,
 	/// Index into `Level.rooms`.
-	pub room_below_id: Option<NonMaxU8>,
+	pub room_below_id: u8,
 	pub floor: i8,
 	/// Index into `Level.rooms`.
-	pub room_above_index: Option<NonMaxU8>,
+	pub room_above_index: u8,
 	pub ceiling: i8,
 }
 
@@ -130,7 +129,7 @@ pub struct Room {
 	#[flat] #[list(u16)] pub lights: Box<[Light]>,
 	#[flat] #[list(u16)] pub room_static_meshes: Box<[RoomStaticMesh]>,
 	/// Index into `Level.rooms`.
-	#[flat] pub flip_room_index: Option<NonMaxU16>,
+	#[flat] pub alt_room_index: u16,
 	#[flat] pub flags: RoomFlags,
 }
 
@@ -186,7 +185,7 @@ pub struct Model {
 	/// Byte offset into `Level.frame_data`.
 	pub frame_byte_offset: u32,
 	/// Index into `Level.animations`.
-	pub anim_index: Option<NonMaxU16>,
+	pub anim_index: u16,
 }
 
 #[repr(C)]
@@ -295,8 +294,8 @@ pub struct Entity {
 	pub pos: IVec3,
 	/// Units are 1/65536th of a rotation.
 	pub angle: u16,
-	/// If None, use mesh light.
-	pub brightness: Option<NonMaxU16>,
+	/// If max, use mesh light.
+	pub brightness: u16,
 	pub flags: u16,
 }
 
