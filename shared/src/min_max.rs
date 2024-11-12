@@ -1,6 +1,6 @@
 use glam_traits::{GBVec, GVec};
 
-/// Some volume defined by a minimum and maximum
+/// Some volume defined by a minimum and maximum.
 #[repr(C)]
 #[derive(Clone, Copy)]
 pub struct MinMax<T> {

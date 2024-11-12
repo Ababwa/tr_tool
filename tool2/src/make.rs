@@ -2,11 +2,10 @@ use crate::vec_tail::VecTail;
 use glam::UVec2;
 use std::num::NonZeroU64;
 use wgpu::{
-	util::{BufferInitDescriptor, DeviceExt},
-	BindGroup, BindGroupDescriptor, BindGroupEntry, BindGroupLayout, BindGroupLayoutDescriptor,
-	BindGroupLayoutEntry, BindingResource, BindingType, Buffer, BufferBindingType, BufferUsages,
-	Device, Extent3d, ShaderModule, ShaderModuleDescriptor, ShaderSource, ShaderStages,
-	TextureDescriptor, TextureDimension, TextureFormat, TextureUsages, TextureView,
+	util::{BufferInitDescriptor, DeviceExt}, BindGroup, BindGroupDescriptor, BindGroupEntry, BindGroupLayout,
+	BindGroupLayoutDescriptor, BindGroupLayoutEntry, BindingResource, BindingType, Buffer, BufferBindingType,
+	BufferUsages, Device, Extent3d, ShaderModule, ShaderModuleDescriptor, ShaderSource, ShaderStages,
+	Texture, TextureDescriptor, TextureDimension, TextureFormat, TextureUsages, TextureView,
 	TextureViewDescriptor, VertexAttribute, VertexBufferLayout, VertexFormat, VertexStepMode,
 };
 
@@ -68,22 +67,25 @@ pub fn bind_group(device: &Device, layout: &BindGroupLayout, entries: &[BindingR
 	})
 }
 
-pub fn depth_view(device: &Device, window_size: UVec2) -> TextureView {
-	device
-		.create_texture(&TextureDescriptor {
-			label: None,
-			size: Extent3d {
-				width: window_size.x,
-				height: window_size.y,
-				depth_or_array_layers: 1,
-			},
-			mip_level_count: 1,
-			sample_count: 1,
-			dimension: TextureDimension::D2,
-			format: TextureFormat::Depth32Float,
-			usage: TextureUsages::RENDER_ATTACHMENT,
-			view_formats: &[],
-		})
+pub fn texture(device: &Device, size: UVec2, format: TextureFormat, usage: TextureUsages) -> Texture {
+	device.create_texture(&TextureDescriptor {
+		label: None,
+		size: Extent3d {
+			width: size.x,
+			height: size.y,
+			depth_or_array_layers: 1,
+		},
+		mip_level_count: 1,
+		sample_count: 1,
+		dimension: TextureDimension::D2,
+		format,
+		usage,
+		view_formats: &[],
+	})
+}
+
+pub fn depth_view(device: &Device, size: UVec2) -> TextureView {
+	texture(device, size, TextureFormat::Depth32Float, TextureUsages::RENDER_ATTACHMENT)
 		.create_view(&TextureViewDescriptor::default())
 }
 

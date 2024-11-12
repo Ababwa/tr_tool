@@ -9,6 +9,8 @@ pub trait Readable {
 	unsafe fn read<R: Read>(reader: &mut R, this: *mut Self) -> Result<()>;
 }
 
+//impl helpers
+
 unsafe fn boxed_uninit<T>() -> Box<MaybeUninit<T>> {
 	let layout = Layout::new::<T>();
 	let ptr = alloc(layout);
@@ -35,10 +37,9 @@ pub unsafe fn read_flat<R: Read, T>(reader: &mut R, ptr: *mut T) -> Result<()> {
 }
 
 pub unsafe fn read_val_flat<R: Read, T>(reader: &mut R) -> Result<T> {
-	let mut i = MaybeUninit::<T>::uninit();
-	read_flat(reader, i.as_mut_ptr())?;
-	let i = i.assume_init();
-	Ok(i)
+	let mut val = MaybeUninit::<T>::uninit();
+	read_flat(reader, val.as_mut_ptr())?;
+	Ok(val.assume_init())
 }
 
 pub unsafe fn read_range_flat<R: Read, T, U>(reader: &mut R, start: *mut T, end: *mut U) -> Result<()> {

@@ -1,5 +1,5 @@
 use std::{
-	alloc::{alloc, handle_alloc_error, Layout}, io::{Error, ErrorKind, Result}, ops::Range,
+	alloc::{alloc, handle_alloc_error, Layout}, io::{Error, Result}, ops::Range,
 	ptr::slice_from_raw_parts_mut,
 };
 
@@ -20,7 +20,7 @@ impl<'a> Writer<'a> {
 	
 	pub fn write(&mut self, bytes: &[u8]) -> Result<()> {
 		if self.range.end + bytes.len() > self.upper_bound {
-			return Err(Error::new(ErrorKind::Other, "write out of range"));
+			return Err(Error::other("write out of range"));
 		}
 		self.buffer[self.range.end..][..bytes.len()].copy_from_slice(bytes);
 		self.range.end += bytes.len();

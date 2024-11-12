@@ -18,6 +18,8 @@ use winit::{
 	window::{Icon, Window, WindowBuilder},
 };
 
+const TEXTURE_FORMAT: TextureFormat = TextureFormat::Bgra8Unorm;
+
 trait Wait: Future {
 	fn wait(self) -> Self::Output;
 }
@@ -64,10 +66,10 @@ pub trait Gui {
 	fn mouse_button(&mut self, window: &Window, button: MouseButton, state: ElementState);
 	fn mouse_moved(&mut self, delta: DVec2);
 	fn mouse_wheel(&mut self, delta: MouseScrollDelta);
-	fn gui(&mut self, device: &Device, queue: &Queue, ctx: &egui::Context);
+	fn gui(&mut self, window: &Window, device: &Device, queue: &Queue, ctx: &egui::Context);
 	fn key(
-		&mut self, window: &Window, target: &EventLoopWindowTarget<()>, key_code: KeyCode,
-		state: ElementState, repeat: bool,
+		&mut self, window: &Window, device: &Device, queue: &Queue, target: &EventLoopWindowTarget<()>,
+		key_code: KeyCode, state: ElementState, repeat: bool,
 	);
 	fn render(
 		&mut self, queue: &Queue, encoder: &mut CommandEncoder, view: &TextureView, delta_time: Duration,
@@ -128,13 +130,13 @@ where T: Into<String>, G: Gui, F: FnOnce(&Device, UVec2) -> G {
 	let mut config = surface
 		.get_default_config(&adapter, window_size.x, window_size.y)
 		.expect("get default config");
-	config.format = TextureFormat::Bgra8Unorm;
+	config.format = TEXTURE_FORMAT;
 	surface.configure(&device, &config);//250ms
 	let egui_ctx = egui::Context::default();
 	let mut egui_input_state = egui_winit::State::new(
 		egui_ctx.clone(), egui_ctx.viewport_id(), &window, None, None,
 	);
-	let mut egui_renderer = egui_wgpu::Renderer::new(&device, TextureFormat::Bgra8Unorm, None, 1);
+	let mut egui_renderer = egui_wgpu::Renderer::new(&device, TEXTURE_FORMAT, None, 1);
 	let mut gui = make_gui(&device, window_size);
 	tx.send(()).expect("signal painter");
 	painter.join().expect("join painter");
@@ -153,7 +155,7 @@ where T: Into<String>, G: Gui, F: FnOnce(&Device, UVec2) -> G {
 				WindowEvent::KeyboardInput {
 					event: KeyEvent { repeat, physical_key: PhysicalKey::Code(key_code), state, .. },
 					..
-				} => gui.key(&window, target, key_code, state, repeat),
+				} => gui.key(&window, &device, &queue, target, key_code, state, repeat),
 				WindowEvent::Resized(new_size) => {
 					window_size = new_size.to_vec();
 					config.width = window_size.x;
@@ -177,7 +179,7 @@ where T: Into<String>, G: Gui, F: FnOnce(&Device, UVec2) -> G {
 						shapes,
 						pixels_per_point,
 						..
-					} = egui_ctx.run(egui_input, |ctx| gui.gui(&device, &queue, ctx));
+					} = egui_ctx.run(egui_input, |ctx| gui.gui(&window, &device, &queue, ctx));
 					let screen_desc = egui_wgpu::ScreenDescriptor {
 						size_in_pixels: window_size.into(),
 						pixels_per_point,

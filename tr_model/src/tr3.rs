@@ -1,137 +1,151 @@
-use std::io::{Read, Result};
-use byteorder::ReadBytesExt;
 use glam::{I16Vec3, IVec3};
 use tr_readable::Readable;
-use super::{
-	generic::{Animation, Entity, Meshes, ObjectTexture, Room, SoundDetails, TrVersion},
-	shared::{
-		AnimDispatch, BoxDataTr234, Camera, CinematicFrame, Color3, Color4, EntityComponentSkip,
-		FrameData, ImagesTr23, LightMap, MeshComponentTr123, MeshNodeData, Model,
-		RoomVertexLightTr34, SoundDetailsComponentTr345, SoundSource, SpriteSequence,
-		SpriteTexture, StateChange, StaticMesh, PALETTE_SIZE, SOUND_MAP_SIZE_TR234,
-	},
+use crate::{
+	decl_room_geom, tr1::{
+		AnimDispatch, Animation, Camera, CinematicFrame, Color24Bit, MeshNode, Model, ObjectTexture, Portal,
+		RoomFlags, RoomQuad, RoomTri, Sectors, SoundSource, Sprite, SpriteSequence, SpriteTexture,
+		StateChange, StaticMesh, LIGHT_MAP_LEN, PALETTE_LEN,
+	}, tr2::{Atlases, BoxData, Color16Bit, Color32Bit, Entity, Frame, Mesh, SOUND_MAP_LEN},
+	u16_cursor::U16Cursor,
 };
 
-#[derive(Readable, Clone, Copy)]
-#[skip_after(2)]
-pub struct RoomAmbientLight {
-	pub brightness: u16,
+pub mod blend_mode {
+	pub const OPAQUE: u16 = 0;
+	pub const TEST: u16 = 1;
+	pub const ADD: u16 = 2;
 }
 
-#[derive(Readable, Clone, Copy)]
-#[skip_after(2)]
-pub struct SunLight {
-	pub normal: I16Vec3,
+pub mod light_type {
+	pub const SUN: u8 = 0;
+	pub const POINT: u8 = 1;
 }
 
-#[derive(Readable, Clone, Copy)]
-pub struct PointLight {
-	pub intensity: u32,
-	pub falloff: u32,
-}
+//model
 
+#[repr(C)]
 #[derive(Clone, Copy)]
-pub enum LightComponent {
-	Sun(SunLight),
-	Point(PointLight),
-}
-
-#[derive(Clone, Copy)]
-pub struct RoomLight {
-	/// World coords
+pub struct Light {
 	pub pos: IVec3,
-	pub color: Color3,
-	pub component: LightComponent,
+	pub color: Color24Bit,
+	/// One of the light types in the `light_type` module.
+	pub light_type: u8,
+	pub light_data: [u32; 2],
 }
 
-impl Readable for RoomLight {
-	fn read<R: Read>(reader: &mut R) -> Result<Self> {
-		let pos = IVec3::read(reader)?;
-		let color = Color3::read(reader)?;
-		let component = match reader.read_u8()? {
-			0 => LightComponent::Sun(SunLight::read(reader)?),
-			1 => LightComponent::Point(PointLight::read(reader)?),
-			a => panic!("unknown light type: {}", a),
-		};
-		Ok(RoomLight { pos, color, component })
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct RoomStaticMesh {
+	/// World coords.
+	pub pos: IVec3,
+	/// Units are 1/65536 of a rotation.
+	pub angle: u16,
+	pub color: Color16Bit,
+	pub unused: u16,
+	/// Matched to `StaticMesh.id` in `Level.static_meshes`.
+	pub static_mesh_id: u16,
+}
+
+#[derive(Readable, Clone)]
+pub struct Room {
+	/// World coord.
+	#[flat] pub x: i32,
+	/// World coord.
+	#[flat] pub z: i32,
+	#[flat] pub y_bottom: i32,
+	#[flat] pub y_top: i32,
+	#[flat] #[list(u32)] pub geom_data: Box<[u16]>,
+	#[flat] #[list(u16)] pub portals: Box<[Portal]>,
+	#[delegate] pub sectors: Sectors,
+	#[flat] pub ambient_light: u16,
+	#[flat] pub unused1: u16,
+	#[flat] #[list(u16)] pub lights: Box<[Light]>,
+	#[flat] #[list(u16)] pub room_static_meshes: Box<[RoomStaticMesh]>,
+	/// Index into `Level.rooms`.
+	#[flat] pub alt_room_index: u16,
+	#[flat] pub flags: RoomFlags,
+	#[flat] pub water_details: u8,
+	#[flat] pub reverb: u8,
+	#[flat] pub unused2: u8,
+}
+
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct SoundDetails {
+	/// Index into `Level.sample_indices`.
+	pub sample_index: u16,
+	pub volume: u8,
+	pub range: u8,
+	pub chance: u8,
+	pub pitch: u8,
+	pub details: u16,
+}
+
+#[derive(Readable, Clone)]
+pub struct Level {
+	#[flat] pub version: u32,
+	#[flat] #[boxed] pub palette_24bit: Box<[Color24Bit; PALETTE_LEN]>,
+	#[flat] #[boxed] pub palette_32bit: Box<[Color32Bit; PALETTE_LEN]>,
+	#[delegate] pub atlases: Atlases,
+	#[flat] pub unused: u32,
+	#[delegate] #[list(u16)] pub rooms: Box<[Room]>,
+	#[flat] #[list(u32)] pub floor_data: Box<[u16]>,
+	#[flat] #[list(u32)] pub mesh_data: Box<[u16]>,
+	/// Byte offsets into `Level.mesh_data`.
+	#[flat] #[list(u32)] pub mesh_offsets: Box<[u32]>,
+	#[flat] #[list(u32)] pub animations: Box<[Animation]>,
+	#[flat] #[list(u32)] pub state_changes: Box<[StateChange]>,
+	#[flat] #[list(u32)] pub anim_dispatches: Box<[AnimDispatch]>,
+	#[flat] #[list(u32)] pub anim_commands: Box<[u16]>,
+	#[flat] #[list(u32)] pub mesh_node_data: Box<[u32]>,
+	#[flat] #[list(u32)] pub frame_data: Box<[u16]>,
+	#[flat] #[list(u32)] pub models: Box<[Model]>,
+	#[flat] #[list(u32)] pub static_meshes: Box<[StaticMesh]>,
+	#[flat] #[list(u32)] pub sprite_textures: Box<[SpriteTexture]>,
+	#[flat] #[list(u32)] pub sprite_sequences: Box<[SpriteSequence]>,
+	#[flat] #[list(u32)] pub cameras: Box<[Camera]>,
+	#[flat] #[list(u32)] pub sound_sources: Box<[SoundSource]>,
+	#[delegate] pub box_data: BoxData,
+	#[flat] #[list(u32)] pub animated_textures: Box<[u16]>,
+	#[flat] #[list(u32)] pub object_textures: Box<[ObjectTexture]>,
+	#[flat] #[list(u32)] pub entities: Box<[Entity]>,
+	#[flat] #[boxed] pub light_map: Box<[[u8; PALETTE_LEN]; LIGHT_MAP_LEN]>,
+	#[flat] #[list(u16)] pub cinematic_frames: Box<[CinematicFrame]>,
+	#[flat] #[list(u16)] pub demo_data: Box<[u8]>,
+	#[flat] #[boxed] pub sound_map: Box<[u16; SOUND_MAP_LEN]>,
+	#[flat] #[list(u32)] pub sound_details: Box<[SoundDetails]>,
+	#[flat] #[list(u32)] pub sample_indices: Box<[u32]>,
+}
+
+//extraction
+
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct RoomVertex {
+	/// Relative to room
+	pub pos: I16Vec3,
+	pub unused: u16,
+	pub attrs: u16,
+	pub color: Color16Bit,
+}
+
+decl_room_geom!(RoomGeom, RoomVertex, RoomQuad, RoomTri, Sprite);
+
+impl Room {
+	pub fn get_geom(&self) -> RoomGeom {
+		RoomGeom::get(&self.geom_data)
 	}
 }
 
-#[derive(Readable, Clone, Copy)]
-#[skip_after(1)]
-pub struct RoomExtra {
-	pub water_effect: u8,
-	pub reverb: u8,
-}
-
-pub struct Tr3;
-
-impl TrVersion for Tr3 {
-	type AnimationComponent = ();
-	type EntityComponent = EntityComponentSkip;
-	type MeshComponent = MeshComponentTr123;
-	type ObjectTextureComponent = ();
-	type ObjectTextureDetails = ();
-	type RoomAmbientLight = RoomAmbientLight;
-	type RoomExtra = RoomExtra;
-	type RoomLight = RoomLight;
-	type RoomVertexLight = RoomVertexLightTr34;
-	type SoundDetailsComponent = SoundDetailsComponentTr345;
-}
-
-#[derive(Readable)]
-pub struct Level {
-	pub version: u32,
-	pub palette3: Box<[Color3; PALETTE_SIZE]>,
-	pub palette4: Box<[Color4; PALETTE_SIZE]>,
-	pub images: ImagesTr23,
-	#[skip(4)]
-	#[list(u16)]
-	pub rooms: Box<[Room<Tr3>]>,
-	#[list(u32)]
-	pub floor_data: Box<[u16]>,
-	pub meshes: Meshes<Tr3>,
-	#[list(u32)]
-	pub animations: Box<[Animation<Tr3>]>,
-	#[list(u32)]
-	pub state_changes: Box<[StateChange]>,
-	#[list(u32)]
-	pub anim_dispatches: Box<[AnimDispatch]>,
-	#[list(u32)]
-	pub anim_commands: Box<[u16]>,
-	pub mesh_node_data: MeshNodeData,
-	pub frame_data: FrameData,
-	#[list(u32)]
-	pub models: Box<[Model]>,
-	#[list(u32)]
-	pub static_meshes: Box<[StaticMesh]>,
-	#[list(u32)]
-	pub sprite_textures: Box<[SpriteTexture]>,
-	#[list(u32)]
-	pub sprite_sequences: Box<[SpriteSequence]>,
-	#[list(u32)]
-	pub cameras: Box<[Camera]>,
-	#[list(u32)]
-	pub sound_sources: Box<[SoundSource]>,
-	pub box_data: BoxDataTr234,
-	#[list(u32)]
-	pub animated_textures: Box<[u16]>,
-	#[list(u32)]
-	pub object_textures: Box<[ObjectTexture<Tr3>]>,
-	#[list(u32)]
-	pub entities: Box<[Entity<Tr3>]>,
-	pub light_map: LightMap,
-	#[list(u16)]
-	pub cinematic_frames: Box<[CinematicFrame]>,
-	#[list(u16)]
-	pub demo_data: Box<[u8]>,
-	pub sound_map: Box<[u16; SOUND_MAP_SIZE_TR234]>,
-	#[list(u32)]
-	pub sound_details: Box<[SoundDetails<Tr3>]>,
-	#[list(u32)]
-	pub sample_indices: Box<[u32]>,
-}
-
-pub fn read_level<R: Read>(reader: &mut R) -> Result<Level> {
-	Level::read(reader)
+impl Level {
+	pub fn get_mesh(&self, mesh_offset: u32) -> Mesh {
+		Mesh::get(&self.mesh_data, mesh_offset)
+	}
+	
+	pub fn get_mesh_nodes(&self, model: &Model) -> &[MeshNode] {
+		MeshNode::get(&self.mesh_node_data, model)
+	}
+	
+	pub fn get_frame(&self, model: &Model) -> Frame {
+		Frame::get(&self.frame_data, model)
+	}
 }

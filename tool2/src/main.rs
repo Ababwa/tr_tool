@@ -1,36 +1,37 @@
-/*
-`{struct.field}` is used in some places to copy an unaligned field to make it referenceable.
-*/
-
 mod as_bytes;
 mod gui;
 mod make;
 mod keys;
+mod version_traits;
 mod vec_tail;
 mod data_writer;
 mod face_writer;
 mod multi_cursor;
 
 use std::{
-	collections::HashMap, f32::consts::{FRAC_PI_2, FRAC_PI_4, PI, TAU}, fs::File, io::Result,
-	mem::{size_of, take, transmute, MaybeUninit}, ops::Range, path::Path, time::Duration,
+	collections::HashMap, f32::consts::{FRAC_PI_2, FRAC_PI_4, PI, TAU}, fs::File,
+	io::{BufReader, Error, Read, Result, Seek}, mem::{size_of, take, MaybeUninit}, ops::Range,
+	path::PathBuf, time::{Duration, Instant},
 };
 use data_writer::{FaceArrayRef, DataWriter, DATA_SIZE};
 use face_writer::FaceWriter;
+use image::ColorType;
 use keys::{KeyGroup, KeyStates};
 use egui_file_dialog::{DialogState, FileDialog};
 use as_bytes::AsBytes;
-use glam::{DVec2, EulerRot, IVec3, Mat4, UVec2, Vec3, Vec3Swizzles};
+use glam::{DVec2, EulerRot, Mat4, UVec2, Vec3, Vec3Swizzles};
 use gui::Gui;
+use version_traits::{Entity, Frame, Level, Mesh, Room, RoomGeom, RoomStaticMesh, RoomVertex};
 use shared::min_max::{MinMax, VecMinMaxFromIterator};
-use tr_model::{tr1, Readable};
+use tr_model::{tr1, tr2, tr3};
 use wgpu::{
 	util::{DeviceExt, TextureDataOrder}, BindGroup, BindGroupLayout, BindingResource, BindingType, Buffer,
-	BufferUsages, Color, ColorTargetState, ColorWrites, CommandEncoder, CompareFunction, DepthBiasState,
-	DepthStencilState, Device, Extent3d, Face, FragmentState, FrontFace, LoadOp, MultisampleState,
+	BufferDescriptor, BufferUsages, Color, ColorTargetState, ColorWrites, CommandEncoder,
+	CommandEncoderDescriptor, CompareFunction, DepthBiasState, DepthStencilState, Device, Extent3d, Face,
+	FragmentState, FrontFace, ImageCopyBuffer, ImageDataLayout, LoadOp, MaintainBase, MultisampleState,
 	Operations, PipelineLayoutDescriptor, PrimitiveState, PrimitiveTopology, Queue,
 	RenderPassColorAttachment, RenderPassDepthStencilAttachment, RenderPassDescriptor, RenderPipeline,
-	RenderPipelineDescriptor, ShaderModule, ShaderStages, StencilState, StoreOp, TextureDescriptor,
+	RenderPipelineDescriptor, ShaderModule, ShaderStages, StencilState, StoreOp, Texture, TextureDescriptor,
 	TextureDimension, TextureFormat, TextureSampleType, TextureUsages, TextureView, TextureViewDescriptor,
 	TextureViewDimension, VertexFormat, VertexState, VertexStepMode,
 };
@@ -39,8 +40,14 @@ use winit::{
 	keyboard::{KeyCode, ModifiersState}, window::{CursorGrabMode, Icon, Window},
 };
 
-const PALETTE_SIZE: usize = size_of::<[tr1::Color6Bit; tr1::PALETTE_LEN]>();
+const WINDOW_TITLE: &str = "TR Tool";
 
+const PALETTE_SIZE: usize = size_of::<[tr1::Color24Bit; tr1::PALETTE_LEN]>();
+
+/*
+This ordering creates a "Z" so triangle_strip mode may be used for quads, and the first three indices used
+for tris.
+*/
 const FACE_VERT_INDICES: [u32; 4] = [1, 2, 0, 3];
 const NUM_QUAD_VERTS: u32 = 4;
 const NUM_TRI_VERTS: u32 = 3;
@@ -61,11 +68,11 @@ struct FaceTypes<TQ, TT = TQ, SQ = TQ, ST = TQ> {
 
 type FaceOffsets = FaceTypes<u32>;
 type FaceRanges = FaceTypes<Range<u32>>;
-type MeshFaceArrayRefs = FaceTypes<
+type MeshFaceArrayRefs<SolidQuad, SolidTri> = FaceTypes<
 	FaceArrayRef<tr1::MeshTexturedQuad>,
 	FaceArrayRef<tr1::MeshTexturedTri>,
-	FaceArrayRef<tr1::MeshSolidQuad>,
-	FaceArrayRef<tr1::MeshSolidTri>,
+	FaceArrayRef<SolidQuad>,
+	FaceArrayRef<SolidTri>,
 >;
 
 impl FaceOffsets {
@@ -89,6 +96,10 @@ struct RoomData {
 //[original room index, alt room index]
 struct RenderRoom([usize; 2]);
 
+struct MeshData {
+	
+}
+
 struct ActionMap {
 	forward: KeyGroup,
 	backward: KeyGroup,
@@ -107,6 +118,8 @@ struct LoadedLevel {
 	
 	//render
 	depth_view: TextureView,
+	interact_texture: Texture,
+	interact_view: TextureView,
 	camera_transform_buffer: Buffer,
 	perspective_transform_buffer: Buffer,
 	face_vertex_index_buffer: Buffer,
@@ -225,84 +238,123 @@ fn direction(yaw: f32, pitch: f32) -> Vec3 {
 	Vec3::new(-pitch_cos * yaw_sin, pitch_sin, -pitch_cos * yaw_cos)
 }
 
-fn room_pos(room: &tr1::Room) -> IVec3 {
-	IVec3::new(room.x, 0, room.z)
+trait LevelInfo {
+	fn print_info(&self);
 }
 
-fn get_rotation(rot: tr1::FrameRotation) -> Mat4 {
-	let Vec3 { x, y, z } = rot.get_angles().as_vec3() / 1024.0 * TAU;
-	Mat4::from_rotation_y(y) * Mat4::from_rotation_x(x) * Mat4::from_rotation_z(z)
+impl LevelInfo for tr1::Level {
+	fn print_info(&self) {
+		let top_bits = self.rooms.iter().map(|room| {
+			let geom = room.get_geom();
+			geom.quads.iter().map(|quad| quad.object_texture_index).chain(
+				geom.tris.iter().map(|tri| tri.object_texture_index),
+			)
+		}).flatten().filter(|tex_index| tex_index >> 15 != 0).count();
+		println!("obj tex top bits: {}", top_bits);
+	}
 }
 
-fn load_level<P>(
-	device: &Device, queue: &Queue, bind_group_layout: &BindGroupLayout, window_size: UVec2, path: P,
-) -> Result<LoadedLevel> where P: AsRef<Path> {
+impl LevelInfo for tr2::Level {
+	fn print_info(&self) {
+		let top_bits = self.rooms.iter().map(|room| {
+			let geom = room.get_geom();
+			geom.quads.iter().map(|quad| quad.object_texture_index).chain(
+				geom.tris.iter().map(|tri| tri.object_texture_index),
+			)
+		}).flatten().filter(|tex_index| tex_index >> 15 != 0).count();
+		println!("obj tex top bits: {}", top_bits);
+	}
+}
+
+impl LevelInfo for tr3::Level {
+	fn print_info(&self) {
+		let top_bits = self.rooms.iter().map(|room| {
+			let geom = room.get_geom();
+			geom.quads.iter().map(|quad| quad.object_texture_index).chain(
+				geom.tris.iter().map(|tri| tri.object_texture_index),
+			)
+		}).flatten().filter(|tex_index| tex_index >> 15 != 0).count();
+		println!("obj tex top bits: {}", top_bits);
+	}
+}
+
+fn make_interact_texture(device: &Device, window_size: UVec2) -> Texture {
+	make::texture(
+		device, window_size, TextureFormat::R32Uint,
+		TextureUsages::RENDER_ATTACHMENT | TextureUsages::COPY_SRC,
+	)
+}
+
+fn read_level<L: Level + LevelInfo, R: Read>(
+	device: &Device, queue: &Queue, bind_group_layout: &BindGroupLayout, window_size: UVec2, reader: &mut R,
+) -> Result<LoadedLevel> {
 	//read file and parse level
-	let mut level_file = File::open(path)?;
-	let mut level = Box::new(MaybeUninit::<tr1::Level>::uninit());
 	let level = unsafe {
-		tr1::Level::read(&mut level_file, level.as_mut_ptr())?;
-		transmute::<_, Box<tr1::Level>>(level)
+		let mut level = Box::new(MaybeUninit::uninit());
+		L::read(reader, level.as_mut_ptr())?;
+		level.assume_init()
 	};
+	
+	level.print_info();
 	
 	//map static mesh ids to static mesh refs
 	let static_mesh_id_map = level
-		.static_meshes
+		.static_meshes()
 		.iter()
 		.map(|static_mesh| (static_mesh.id as u16, static_mesh))
 		.collect::<HashMap<_, _>>();
 	
 	//map model and sprite sequence ids to model and sprite sequence refs
 	let model_id_map = Iterator::chain(
-		level.models.iter().map(|model| (model.id as u16, ModelRef::Model(model))),
-		level.sprite_sequences.iter().map(|ss| (ss.id as u16, ModelRef::SpriteSequence(ss))),
+		level.models().iter().map(|model| (model.id as u16, ModelRef::Model(model))),
+		level.sprite_sequences().iter().map(|ss| (ss.id as u16, ModelRef::SpriteSequence(ss))),
 	).collect::<HashMap<_, _>>();
 	
 	//group entities by room
-	let mut room_entities = vec![vec![]; level.rooms.len()];
-	for entity in level.entities.iter() {
-		room_entities[entity.room_index as usize].push(entity);
+	let mut room_entities = vec![vec![]; level.rooms().len()];
+	for entity in level.entities() {
+		room_entities[entity.room_index() as usize].push(entity);
 	}
 	
 	//data
-	let mut data = DataWriter::new();
-	data.write_object_textures(&level.object_textures);
-	data.write_sprite_textures(&level.sprite_textures);
-	let mut faces = FaceWriter::new();
-	let mut sprite_instances = Vec::new();
+	let mut data = DataWriter::<L>::new();
+	data.write_object_textures(&level.object_textures());
+	data.write_sprite_textures(&level.sprite_textures());
+	let mut faces = FaceWriter::<L>::new();
+	let mut sprite_instances = vec![];
 	
 	//write meshes to data, map tr mesh offets to meshes indices
-	let mut meshes = Vec::<MeshFaceArrayRefs>::new();
+	let mut meshes = vec![];
 	let mut mesh_offset_map = HashMap::new();
-	for &mesh_offset in level.mesh_offsets.iter() {
+	for &mesh_offset in level.mesh_offsets().iter() {
 		mesh_offset_map.entry(mesh_offset).or_insert_with(|| {
 			let mesh = level.get_mesh(mesh_offset);
 			let index = meshes.len();
-			let vertex_array_offset = data.write_vertex_array(mesh.vertices);
+			let vertex_array_offset = data.write_vertex_array(mesh.vertices());
 			meshes.push(MeshFaceArrayRefs {
-				textured_quads: data.write_face_array(mesh.textured_quads, vertex_array_offset),
-				textured_tris: data.write_face_array(mesh.textured_tris, vertex_array_offset),
-				solid_quads: data.write_face_array(mesh.solid_quads, vertex_array_offset),
-				solid_tris: data.write_face_array(mesh.solid_tris, vertex_array_offset),
+				textured_quads: data.write_face_array(mesh.textured_quads(), vertex_array_offset),
+				textured_tris: data.write_face_array(mesh.textured_tris(), vertex_array_offset),
+				solid_quads: data.write_face_array(mesh.solid_quads(), vertex_array_offset),
+				solid_tris: data.write_face_array(mesh.solid_tris(), vertex_array_offset),
 			});
 			index
 		});
 	}
 	
-	let mut room_indices = (0..level.rooms.len()).collect::<Vec<_>>();//rooms with alt will be removed
-	let mut render_rooms = Vec::with_capacity(level.rooms.len());//rooms.len is upper-bound
-	let mut rooms = Vec::with_capacity(level.rooms.len());
+	let mut room_indices = (0..level.rooms().len()).collect::<Vec<_>>();//rooms with alt will be removed
+	let mut render_rooms = Vec::with_capacity(level.rooms().len());//rooms.len is upper-bound
+	let mut rooms = Vec::with_capacity(level.rooms().len());
 	
 	//rooms
-	for (room_index, room) in level.rooms.iter().enumerate() {
-		let tr1::RoomGeom { vertices, quads, tris, sprites } = room.get_geom_data();
-		let room_pos = room_pos(room);
-		let (center, radius) = vertices
+	for (room_index, room) in level.rooms().iter().enumerate() {
+		let room_geom = room.get_geom();
+		let room_pos = room.pos();
+		let (center, radius) = room_geom.vertices()
 			.iter()
-			.map(|v| v.pos)
+			.map(|v| v.pos())
 			.min_max()
 			.map(|MinMax { min, max }| {
-				let center = (max + min).as_vec3() / 2.0;
+				let center = (max.as_vec3() + min.as_vec3()) / 2.0;
 				let radius = (max - min).max_element() as f32;
 				(center, radius)
 			})
@@ -312,45 +364,49 @@ fn load_level<P>(
 		let face_offsets_start = faces.get_offsets();
 		let sprites_offset_start = sprite_instances.len() as u32;
 		
-		let vertex_array_offset = data.write_vertex_array(vertices);
-		let quads_ref = data.write_face_array(quads, vertex_array_offset);
-		let tris_ref = data.write_face_array(tris, vertex_array_offset);
+		let vertex_array_offset = data.write_vertex_array(room_geom.vertices());
+		let quads_ref = data.write_face_array(room_geom.quads(), vertex_array_offset);
+		let tris_ref = data.write_face_array(room_geom.tris(), vertex_array_offset);
 		let transform = Mat4::from_translation(room_pos.as_vec3());
 		let transform_index = data.write_transform(&transform);
-		faces.write_face_instance_array(quads_ref, transform_index);
-		faces.write_face_instance_array(tris_ref, transform_index);
-		for room_static_mesh in room.room_static_meshes.iter() {
+		faces.write_face_instance_array(quads_ref, transform_index, 0);
+		faces.write_face_instance_array(tris_ref, transform_index, 0);
+		for room_static_mesh in room.room_static_meshes() {
+			let static_mesh = match static_mesh_id_map.get(&room_static_mesh.static_mesh_id()) {
+				Some(static_mesh) => *static_mesh,
+				None => {
+					println!("static mesh with id {} missing", room_static_mesh.static_mesh_id());
+					continue;
+				},
+			};
 			let mesh = &meshes[
-				mesh_offset_map[
-					&level.mesh_offsets[
-						static_mesh_id_map[&room_static_mesh.static_mesh_id].mesh_offset_index as usize
-					]
-				]
+				mesh_offset_map[&level.mesh_offsets()[static_mesh.mesh_offset_index as usize]]
 			];
-			let transform = Mat4::from_translation({room_static_mesh.pos}.as_vec3())
-				* Mat4::from_rotation_y(room_static_mesh.angle as f32 / 65536.0 * TAU);
+			let transform = Mat4::from_translation(room_static_mesh.pos().as_vec3())
+				* Mat4::from_rotation_y(room_static_mesh.angle() as f32 / 65536.0 * TAU);
 			let transform_index = data.write_transform(&transform);
-			faces.write_mesh(mesh, transform_index);
+			faces.write_mesh(mesh, transform_index, 0);
 		}
-		for sprite in sprites {
-			let pos = room_pos + vertices[sprite.vertex_index as usize].pos.as_ivec3();
+		for sprite in room_geom.sprites() {
+			let pos = room_pos + room_geom.vertices()[sprite.vertex_index as usize].pos().as_ivec3();
 			sprite_instances.push(pos.extend(sprite.sprite_texture_index as i32));
 		}
 		for entity in &room_entities[room_index] {
-			match model_id_map[&entity.model_id] {
+			match model_id_map[&entity.model_id()] {
 				ModelRef::Model(model) => {
-					let entity_transform = Mat4::from_translation({entity.pos}.as_vec3())
-						* Mat4::from_rotation_y(entity.angle as f32 / 65536.0 * TAU);
-					let frame = level.get_frame(model.frame_byte_offset);
-					let mut last_transform = Mat4::from_translation(frame.offset.as_vec3())
-						* get_rotation(frame.rotations[0]);
+					let entity_transform = Mat4::from_translation(entity.pos().as_vec3())
+						* Mat4::from_rotation_y(entity.angle() as f32 / 65536.0 * TAU);
+					let frame = level.get_frame(model);
+					let mut rotations = frame.iter_rotations();
+					let mut last_transform = Mat4::from_translation(frame.offset().as_vec3())
+						* rotations.next().unwrap();
 					let mesh = &meshes[
-						mesh_offset_map[&level.mesh_offsets[model.mesh_offset_index as usize]]
+						mesh_offset_map[&level.mesh_offsets()[model.mesh_offset_index as usize]]
 					];
 					let transform_index = data.write_transform(&(entity_transform * last_transform));
-					faces.write_mesh(mesh, transform_index);
+					faces.write_mesh(mesh, transform_index, 0);
 					let mut parent_stack = vec![];
-					let mesh_nodes = level.get_mesh_nodes(model.mesh_node_offset, model.num_meshes - 1);
+					let mesh_nodes = level.get_mesh_nodes(model);
 					for mesh_node_index in 0..mesh_nodes.len() {
 						let mesh_node = &mesh_nodes[mesh_node_index];
 						let parent = if mesh_node.flags.pop() {
@@ -363,18 +419,18 @@ fn load_level<P>(
 						}
 						let mesh = &meshes[
 							mesh_offset_map[
-								&level.mesh_offsets[model.mesh_offset_index as usize + mesh_node_index + 1]
+								&level.mesh_offsets()[model.mesh_offset_index as usize + mesh_node_index + 1]
 							]
 						];
 						last_transform = parent
 							* Mat4::from_translation(mesh_node.offset.as_vec3())
-							* get_rotation(frame.rotations[mesh_node_index + 1]);
+							* rotations.next().unwrap();
 						let transform_index = data.write_transform(&(entity_transform * last_transform));
-						faces.write_mesh(mesh, transform_index);
+						faces.write_mesh(mesh, transform_index, 0);
 					}
 				},
 				ModelRef::SpriteSequence(sprite_sequence) => {
-					sprite_instances.push(entity.pos.extend(sprite_sequence.sprite_index as i32));
+					sprite_instances.push(entity.pos().extend(sprite_sequence.sprite_texture_index as i32));
 				},
 			}
 		}
@@ -384,8 +440,8 @@ fn load_level<P>(
 		
 		rooms.push(RoomData { face_ranges, sprites_range, center, radius });
 		
-		if room.alt_room_index != u16::MAX {
-			let alt_room_index = room.alt_room_index as usize;
+		if room.alt_room_index() != u16::MAX {
+			let alt_room_index = room.alt_room_index() as usize;
 			room_indices.remove(room_indices.binary_search(&room_index).unwrap());
 			room_indices.remove(room_indices.binary_search(&alt_room_index).expect("alt room index"));
 			render_rooms.push(RenderRoom([room_index, alt_room_index]));
@@ -413,7 +469,7 @@ fn load_level<P>(
 	let perspective_transform_buffer = make::buffer(
 		device, perspective_transform.as_bytes(), BufferUsages::UNIFORM | BufferUsages::COPY_DST,
 	);
-	let palette_buffer = make::buffer(device, level.palette.as_bytes(), BufferUsages::UNIFORM);
+	let palette_buffer = make::buffer(device, level.palette().as_bytes(), BufferUsages::UNIFORM);
 	let atlases_texture = device.create_texture_with_data(
 		queue,
 		&TextureDescriptor {
@@ -421,7 +477,7 @@ fn load_level<P>(
 			size: Extent3d {
 				width: tr1::ATLAS_SIDE_LEN as u32,
 				height: tr1::ATLAS_SIDE_LEN as u32,
-				depth_or_array_layers: level.atlases.len() as u32,
+				depth_or_array_layers: level.atlases().len() as u32,
 			},
 			mip_level_count: 1,
 			sample_count: 1,
@@ -431,7 +487,7 @@ fn load_level<P>(
 			view_formats: &[],
 		},
 		TextureDataOrder::default(),
-		level.atlases.as_bytes(),
+		level.atlases().as_bytes(),
 	);
 	let atlases_texture_view = atlases_texture.create_view(&TextureViewDescriptor::default());
 	let bind_group = make::bind_group(
@@ -460,12 +516,17 @@ fn load_level<P>(
 		boost: KeyGroup::new(&[KeyCode::ShiftLeft, KeyCode::ShiftRight]),
 	};
 	
+	let interact_texture = make_interact_texture(device, window_size);
+	let interact_view = interact_texture.create_view(&TextureViewDescriptor::default());
+	
 	Ok(LoadedLevel {
 		pos,
 		yaw,
 		pitch,
 		
 		depth_view: make::depth_view(device, window_size),
+		interact_texture,
+		interact_view,
 		camera_transform_buffer,
 		perspective_transform_buffer,
 		face_vertex_index_buffer: make::buffer(device, FACE_VERT_INDICES.as_bytes(), BufferUsages::VERTEX),
@@ -486,7 +547,24 @@ fn load_level<P>(
 	})
 }
 
-fn window<R, F: FnOnce(&mut egui::Ui) -> R>(ctx: &egui::Context, title: &str, contents: F) -> R {
+fn load_level(
+	device: &Device, queue: &Queue, bind_group_layout: &BindGroupLayout, window_size: UVec2, path: &PathBuf,
+) -> Result<LoadedLevel> {
+	let mut reader = BufReader::new(File::open(path)?);
+	let mut version = [0; 4];
+	reader.read_exact(&mut version)?;
+	reader.rewind()?;
+	let version = u32::from_le_bytes(version);
+	let extension = path.extension().map(|e| e.to_string_lossy());
+	match (version, extension.as_ref().map(|e| e.as_ref())) {
+		(32, _) => read_level::<tr1::Level, _>(device, queue, bind_group_layout, window_size, &mut reader),
+		(45, _) => read_level::<tr2::Level, _>(device, queue, bind_group_layout, window_size, &mut reader),
+		(0xFF180038, _) => read_level::<tr3::Level, _>(device, queue, bind_group_layout, window_size, &mut reader),
+		_ => return Err(Error::other("unknown file type")),
+	}
+}
+
+fn draw_window<R, F: FnOnce(&mut egui::Ui) -> R>(ctx: &egui::Context, title: &str, contents: F) -> R {
 	egui::Window::new(title).collapsible(false).resizable(false).show(ctx, contents).unwrap().inner.unwrap()
 }
 
@@ -528,6 +606,10 @@ impl Gui for TrTool {
 		self.window_size = window_size;
 		if let Some(loaded_level) = &mut self.loaded_level {
 			loaded_level.depth_view = make::depth_view(device, window_size);
+			loaded_level.interact_texture = make_interact_texture(device, window_size);
+			loaded_level.interact_view = loaded_level.interact_texture.create_view(
+				&TextureViewDescriptor::default(),
+			);
 			loaded_level.update_perspective_transform(queue, window_size);
 		}
 	}
@@ -537,20 +619,48 @@ impl Gui for TrTool {
 	}
 	
 	fn key(
-		&mut self, window: &Window, target: &EventLoopWindowTarget<()>, key_code: KeyCode,
-		state: ElementState, repeat: bool,
+		&mut self, window: &Window, device: &Device, queue: &Queue, target: &EventLoopWindowTarget<()>,
+		key_code: KeyCode, state: ElementState, repeat: bool,
 	) {
 		if let Some(loaded_level) = &mut self.loaded_level {
 			loaded_level.key_states.set(key_code, state.is_pressed());
 		}
-		match (self.modifiers, state, key_code, repeat) {
-			(_, ElementState::Pressed, KeyCode::Escape, false) => target.exit(),
-			(_, ElementState::Pressed, KeyCode::KeyP, _) => self.print = true,
-			(ModifiersState::CONTROL, ElementState::Pressed, KeyCode::KeyO, false) => {
-				if let Some(loaded_level) = &mut self.loaded_level {
+		match (self.modifiers, state, key_code, repeat, &mut self.loaded_level) {
+			(_, ElementState::Pressed, KeyCode::Escape, false, _) => target.exit(),
+			(_, ElementState::Pressed, KeyCode::KeyP, _, _) => self.print = true,
+			(ModifiersState::CONTROL, ElementState::Pressed, KeyCode::KeyO, false, loaded_level) => {
+				if let Some(loaded_level) = loaded_level {
 					loaded_level.set_mouse_control(window, false);
 				}
 				self.file_dialog.select_file();
+			},
+			(_, ElementState::Pressed, KeyCode::KeyZ, false, Some(loaded_level)) => {
+				let width = ((loaded_level.interact_texture.width() + 63) / 64) * 64;
+				let height = loaded_level.interact_texture.height();
+				let buf = device.create_buffer(&BufferDescriptor {
+					label: None,
+					size: (width * height * 4) as u64,
+					usage: BufferUsages::COPY_DST | BufferUsages::MAP_READ,
+					mapped_at_creation: false,
+				});
+				let mut encoder = device.create_command_encoder(&CommandEncoderDescriptor::default());
+				encoder.copy_texture_to_buffer(
+					loaded_level.interact_texture.as_image_copy(),
+					ImageCopyBuffer {
+						buffer: &buf,
+						layout: ImageDataLayout {
+							offset: 0,
+							bytes_per_row: Some(width * 4),
+							rows_per_image: None,
+						},
+					},
+					loaded_level.interact_texture.size(),
+				);
+				queue.submit([encoder.finish()]);
+				let slice = buf.slice(..);
+				slice.map_async(wgpu::MapMode::Read, |_| {});
+				device.poll(MaintainBase::Wait);
+				let bytes = &*slice.get_mapped_range();
 			},
 			_ => {},
 		}
@@ -605,6 +715,14 @@ impl Gui for TrTool {
 						resolve_target: None,
 						view: color_view,
 					}),
+					Some(RenderPassColorAttachment {
+						ops: Operations {
+							load: LoadOp::Clear(Color::BLACK),
+							store: StoreOp::Store,
+						},
+						resolve_target: None,
+						view: &loaded_level.interact_view,
+					}),
 				],
 				depth_stencil_attachment: Some(RenderPassDepthStencilAttachment {
 					depth_ops: Some(Operations {
@@ -644,11 +762,16 @@ impl Gui for TrTool {
 		}
 	}
 	
-	fn gui(&mut self, device: &Device, queue: &Queue, ctx: &egui::Context) {
+	fn gui(&mut self, window: &Window, device: &Device, queue: &Queue, ctx: &egui::Context) {
 		self.file_dialog.update(ctx);
 		if let Some(path) = self.file_dialog.take_selected() {
-			match load_level(device, queue, &self.bind_group_layout, self.window_size, path) {
-				Ok(loaded_level) => self.loaded_level = Some(loaded_level),
+			match load_level(device, queue, &self.bind_group_layout, self.window_size, &path) {
+				Ok(loaded_level) => {
+					self.loaded_level = Some(loaded_level);
+					if let Some(file_name) = path.file_name().map(|f| f.to_string_lossy()) {
+						window.set_title(&format!("{} - {}", WINDOW_TITLE, file_name));
+					}
+				},
 				Err(e) => self.error = Some(e.to_string()),
 			}
 		}
@@ -662,10 +785,10 @@ impl Gui for TrTool {
 					});
 				});
 			},
-			Some(loaded_level) => window(ctx, "Render Options", |ui| render_options(loaded_level, ui)),
+			Some(loaded_level) => draw_window(ctx, "Render Options", |ui| render_options(loaded_level, ui)),
 		}
 		if let Some(error) = &self.error {
-			if window(ctx, "Error", |ui| {
+			if draw_window(ctx, "Error", |ui| {
 				ui.label(error);
 				ui.button("OK").clicked()
 			}) {
@@ -725,6 +848,11 @@ fn make_pipeline(
 						blend: None,
 						write_mask: ColorWrites::ALL,
 					}),
+					Some(ColorTargetState {
+						format: TextureFormat::R32Uint,
+						blend: None,
+						write_mask: ColorWrites::ALL,
+					}),
 				],
 			}),
 			multiview: None,
@@ -766,7 +894,8 @@ fn make_gui(device: &Device, window_size: UVec2) -> TrTool {
 		sprite_pipeline,
 		window_size,
 		modifiers: ModifiersState::empty(),
-		file_dialog: FileDialog::new().initial_directory(r"C:\Program Files (x86)\Steam\steamapps\common\Tomb Raider (I)\extracted\DATA".into()),
+		file_dialog: FileDialog::new().initial_directory(r"C:\Program Files (x86)\Steam\steamapps\common\TombRaider (III)\data".into()),
+		// file_dialog: FileDialog::new().initial_directory(r"C:\Program Files (x86)\Steam\steamapps\common\Tomb Raider (I)\extracted\DATA".into()),
 		// file_dialog: FileDialog::new().initial_directory(r"C:\Users\zane\Downloads\silver\trles\problem\SabatusTombRaider1_Revisited\DATA".into()),
 		error: None,
 		print: false,
@@ -775,9 +904,34 @@ fn make_gui(device: &Device, window_size: UVec2) -> TrTool {
 }
 
 fn main() {
+	// fn read_boxed<R: Read, T: tr_model::Readable>(reader: &mut R) -> Result<Box<T>> {
+	// 	let mut obj = Box::new(MaybeUninit::uninit());
+	// 	unsafe {
+	// 		T::read(reader, obj.as_mut_ptr())?;
+	// 		Ok(obj.assume_init())
+	// 	}
+	// }
+	// for path in std::fs::read_dir(r"C:\Program Files (x86)\Steam\steamapps\common\TombRaider (III)\data")
+	// 	.unwrap().map(|e| e.unwrap().path())
+	// 	.filter(|p| p.extension().map(|e| e.eq_ignore_ascii_case("tr2")).unwrap_or(false)) {
+	// 	let level = read_boxed::<_, tr3::Level>(&mut File::open(&path).unwrap()).unwrap();
+	// 	let level_name = path.file_name().unwrap().to_str().unwrap();
+		
+	// 	image::save_buffer(format!("{}_pal.png", level_name), &level.palette_24bit.as_bytes().iter().map(|c| c << 2).collect::<Vec<_>>(), 256, 1, image::ColorType::Rgb8).unwrap();
+		
+	// 	// let image_data = level.atlases.atlases_palette.iter().flatten().map(|&i| level.palette_24bit[i as usize]).map(|c| [c.r, c.g, c.b].map(|c| c << 2)).flatten().collect::<Vec<_>>();
+	// 	// image::save_buffer(format!("{}_palette.png", level_name), &image_data, 256, 256 * level.atlases.atlases_palette.len() as u32, image::ColorType::Rgb8).unwrap();
+		
+	// 	// let image_data = level.atlases.atlases_16bit.iter().flatten().map(|c| ([c.r(), c.g(), c.b()].map(|c| c << 3), c.a() as u8 * 255)).map(|([r, g, b], a)| [r, g, b, a]).flatten().collect::<Vec<_>>();
+	// 	// image::save_buffer(format!("{}_16bit.png", level_name), &image_data, 256, 256 * level.atlases.atlases_16bit.len() as u32, image::ColorType::Rgba8).unwrap();
+		
+	// 	println!("written");
+	// }
+	// return;
+	
 	let window_icon_bytes = include_bytes!("res/icon16.data");
 	let taskbar_icon_bytes = include_bytes!("res/icon24.data");
 	let window_icon = Icon::from_rgba(window_icon_bytes.to_vec(), 16, 16).expect("window icon");
 	let taskbar_icon = Icon::from_rgba(taskbar_icon_bytes.to_vec(), 24, 24).expect("taskbar icon");
-	gui::run("TR Tool", window_icon, taskbar_icon, make_gui);
+	gui::run(WINDOW_TITLE, window_icon, taskbar_icon, make_gui);
 }

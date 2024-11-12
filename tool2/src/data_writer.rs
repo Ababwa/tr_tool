@@ -1,60 +1,64 @@
 use std::{marker::PhantomData, mem::size_of};
 use glam::{I16Vec3, Mat4};
 use tr_model::tr1;
-use crate::{as_bytes::{AsBytes, ReinterpretAsBytes}, multi_cursor::MultiCursorBuffer};
+use crate::{
+	as_bytes::{AsBytes, ReinterpretAsBytes}, multi_cursor::MultiCursorBuffer, version_traits::{Level, Mesh, Room, RoomGeom}
+};
 
-//1 MB
-pub const DATA_SIZE: usize = 1048576;
+//2 MB
+pub const DATA_SIZE: usize = 2097152;
 
-//0..524288, len: 524288 (1/2 buffer)
+//0..1048576, len: 1048576 (1/2 buffer)
 const GEOM_CURSOR: usize = 0;
 const GEOM_OFFSET: usize = 0;
 
-//524288..655360, len: 131072 (1/8 buffer)
+//1048576..1310720, len: 262144 (1/8 buffer)
 const OBJECT_TEXTURES_CURSOR: usize = 1;
-const OBJECT_TEXTURES_OFFSET: usize = 524288;
+const OBJECT_TEXTURES_OFFSET: usize = 1048576;
 
-//655360..786432, len: 131072 (1/8 buffer)
+//1310720..1572864, len: 262144 (1/8 buffer)
 const TRANSFORMS_CURSOR: usize = 2;
-const TRANSFORMS_OFFSET: usize = 655360;
+const TRANSFORMS_OFFSET: usize = 1310720;
 
-//786432..917504, len: 131072 (1/8 buffer)
+//1572864..1835008, len: 262144 (1/8 buffer)
 const SPRITE_TEXTURES_CURSOR: usize = 3;
-const SPRITE_TEXTURES_OFFSET: usize = 786432;
+const SPRITE_TEXTURES_OFFSET: usize = 1572864;
 
-//917504..1048576, len: 131072 (1/8 buffer)
+//1835008..2097152, len: 262144 (1/8 buffer)
 const FACE_ARRAY_MAP_CURSOR: usize = 4;
-const FACE_ARRAY_MAP_OFFSET: usize = 917504;
+const FACE_ARRAY_MAP_OFFSET: usize = 1835008;
 
+//type constraints, not strictly necessary
 mod private {
-	pub trait Vertex {}
-	pub trait Face {}
+	pub trait Vertex<L, D> {}
+	pub trait Face<L, D> {}
 }
 
 use private::{Vertex, Face};
 
-impl Vertex for tr1::RoomVertex {}
-impl Vertex for I16Vec3 {}
+impl<L: Level> Vertex<L, [(); 0]> for I16Vec3 {}
+impl<L: Level> Vertex<L, [(); 1]> for <<L::Room as Room>::RoomGeom<'_> as RoomGeom>::RoomVertex {}
 
-impl Face for tr1::RoomQuad {}
-impl Face for tr1::RoomTri {}
-impl Face for tr1::MeshTexturedQuad {}
-impl Face for tr1::MeshTexturedTri {}
-impl Face for tr1::MeshSolidQuad {}
-impl Face for tr1::MeshSolidTri {}
+impl<L: Level> Face<L, [(); 0]> for tr1::RoomQuad {}
+impl<L: Level> Face<L, [(); 0]> for tr1::RoomTri {}
+impl<L: Level> Face<L, [(); 0]> for tr1::MeshTexturedQuad {}
+impl<L: Level> Face<L, [(); 0]> for tr1::MeshTexturedTri {}
+impl<L: Level> Face<L, [(); 1]> for <L::Mesh<'_> as Mesh>::SolidQuad {}
+impl<L: Level> Face<L, [(); 2]> for <L::Mesh<'_> as Mesh>::SolidTri {}
 
 #[derive(Clone, Copy)]
-pub struct FaceArrayRef<T> {
+pub struct FaceArrayRef<FaceType> {
 	pub index: u32,
 	pub len: u32,
-	u: PhantomData<T>,
+	u: PhantomData<FaceType>,
 }
 
-pub struct DataWriter {
+pub struct DataWriter<LevelType> {
 	mc: MultiCursorBuffer,
+	u: PhantomData<LevelType>,
 }
 
-impl DataWriter {
+impl<L> DataWriter<L> {
 	pub fn new() -> Self {
 		Self {
 			mc: MultiCursorBuffer::new(
@@ -67,6 +71,7 @@ impl DataWriter {
 					FACE_ARRAY_MAP_OFFSET,
 				],
 			),
+			u: PhantomData,
 		}
 	}
 	
@@ -78,8 +83,8 @@ impl DataWriter {
 		self.mc.get_writer(SPRITE_TEXTURES_CURSOR).write(sprite_textures.as_bytes()).unwrap();
 	}
 	
-	pub fn write_vertex_array<V>(&mut self, vertices: &[V]) -> u32
-	where V: Vertex + ReinterpretAsBytes {
+	pub fn write_vertex_array<V, D>(&mut self, vertices: &[V]) -> u32
+	where V: Vertex<L, D> + ReinterpretAsBytes {
 		let mut geom_writer = self.mc.get_writer(GEOM_CURSOR);
 		let offset = geom_writer.get_pos() as u32 / 2;
 		geom_writer.write(&(size_of::<V>() as u16 / 2).to_le_bytes()).unwrap();
@@ -87,8 +92,8 @@ impl DataWriter {
 		offset
 	}
 	
-	pub fn write_face_array<F>(&mut self, faces: &[F], vertex_array_offset: u32) -> FaceArrayRef<F>
-	where F: Face + ReinterpretAsBytes {
+	pub fn write_face_array<F, D>(&mut self, faces: &[F], vertex_array_offset: u32) -> FaceArrayRef<F>
+	where F: Face<L, D> + ReinterpretAsBytes {
 		let mut geom_writer = self.mc.get_writer(GEOM_CURSOR);
 		let offset = geom_writer.get_pos() as u32 / 2;
 		geom_writer.write(&vertex_array_offset.to_le_bytes()).unwrap();
