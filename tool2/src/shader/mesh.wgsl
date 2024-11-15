@@ -139,7 +139,7 @@ fn textured_vs_main(
 ) -> TexturedVTF {
 	let position_texture = get_position_texture(face, face_vertex_index);
 	let position = position_texture.position;
-	let object_texture_index = position_texture.texture_index;
+	let object_texture_index = position_texture.texture_index & 0x7FFF;
 	let object_texture_offset = OBJECT_TEXTURES_OFFSET / 2 + object_texture_index * 10;//10: size of ObjectTexture in u16s
 	let blend_mode = get_data_u16(object_texture_offset);
 	let atlas_index = get_data_u16(object_texture_offset + 1);

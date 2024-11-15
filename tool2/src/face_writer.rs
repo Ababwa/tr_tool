@@ -57,8 +57,6 @@ impl<L: Level> Face<L, [(); 0]> for tr1::MeshTexturedQuad { const CURSOR: usize 
 impl<L: Level> Face<L, [(); 0]> for tr1::MeshTexturedTri { const CURSOR: usize = TEXTURED_TRIS_CURSOR; }
 impl<L: Level> Face<L, [(); 1]> for <L::Mesh<'_> as Mesh>::SolidQuad { const CURSOR: usize = SOLID_QUADS_CURSOR; }
 impl<L: Level> Face<L, [(); 2]> for <L::Mesh<'_> as Mesh>::SolidTri { const CURSOR: usize = SOLID_TRIS_CURSOR; }
-// impl Face for tr1::MeshSolidQuad { const CURSOR: usize = SOLID_QUADS_CURSOR; }
-// impl Face for tr1::MeshSolidTri { const CURSOR: usize = SOLID_TRIS_CURSOR; }
 
 pub struct FaceWriter<L> {
 	mc: MultiCursorBuffer,
@@ -78,23 +76,27 @@ impl<L: Level> FaceWriter<L> {
 	
 	pub fn write_face_instance_array<F, D>(
 		&mut self, face_array_ref: FaceArrayRef<F>, transform_index: u32, id: u32,
-	) where F: Face<L, D> {
+	) -> u32
+	where F: Face<L, D> {
 		let mut face_type_writer = self.mc.get_writer(F::CURSOR);
 		for face_index in 0..face_array_ref.len {
-			if let Err(e) = face_type_writer.write(
-				&face_instance(face_array_ref.index, face_index, transform_index, id).to_le_bytes(),
-			) {
+			let face_instance = face_instance(
+				face_array_ref.index, face_index, transform_index, id + face_index,
+			);
+			if let Err(e) = face_type_writer.write(&face_instance.to_le_bytes()) {
 				panic!("write face instance fail: type: {}, msg: {}", F::CURSOR, e);
 			}
 		}
+		face_array_ref.len
 	}
 	
 	pub fn write_mesh<SolidQuad, D1, SolidTri, D2>(
 		&mut self, mesh: &MeshFaceArrayRefs<SolidQuad, SolidTri>, transform_index: u32, id: u32,
-	) where SolidQuad: Face<L, D1> + Copy, SolidTri: Face<L, D2> + Copy {
-		self.write_face_instance_array(mesh.textured_quads, transform_index, id);
-		self.write_face_instance_array(mesh.textured_tris, transform_index, id);
-		self.write_face_instance_array(mesh.solid_quads, transform_index, id);
+	)
+	where SolidQuad: Face<L, D1> + Copy, SolidTri: Face<L, D2> + Copy {
+		let id = id + self.write_face_instance_array(mesh.textured_quads, transform_index, id);
+		let id = id + self.write_face_instance_array(mesh.textured_tris, transform_index, id);
+		let id = id + self.write_face_instance_array(mesh.solid_quads, transform_index, id);
 		self.write_face_instance_array(mesh.solid_tris, transform_index, id);
 	}
 	

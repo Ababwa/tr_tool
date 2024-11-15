@@ -42,9 +42,14 @@ pub trait Entity {
 	fn angle(&self) -> u16;
 }
 
+pub trait SolidFace: ReinterpretAsBytes + Copy {
+	fn color_index_24bit(&self) -> u8;
+	fn color_index_32bit(&self) -> u8;
+}
+
 pub trait Mesh {
-	type SolidQuad: ReinterpretAsBytes + Copy;
-	type SolidTri: ReinterpretAsBytes + Copy;
+	type SolidQuad: SolidFace;
+	type SolidTri: SolidFace;
 	fn vertices(&self) -> &[I16Vec3];
 	fn textured_quads(&self) -> &[MeshTexturedQuad];
 	fn textured_tris(&self) -> &[MeshTexturedTri];
@@ -124,6 +129,16 @@ impl Entity for tr1::Entity {
 	fn angle(&self) -> u16 { self.angle }
 }
 
+impl SolidFace for tr1::MeshSolidQuad {
+	fn color_index_24bit(&self) -> u8 { self.color_index as u8 }
+	fn color_index_32bit(&self) -> u8 { (self.color_index >> 8) as u8 }
+}
+
+impl SolidFace for tr1::MeshSolidTri {
+	fn color_index_24bit(&self) -> u8 { self.color_index as u8 }
+	fn color_index_32bit(&self) -> u8 { (self.color_index >> 8) as u8 }
+}
+
 impl<'a> Mesh for tr1::Mesh<'a> {
 	type SolidQuad = tr1::MeshSolidQuad;
 	type SolidTri = tr1::MeshSolidTri;
@@ -193,6 +208,16 @@ impl Entity for tr2::Entity {
 	fn model_id(&self) -> u16 { self.model_id }
 	fn pos(&self) -> IVec3 { self.pos }
 	fn angle(&self) -> u16 { self.angle }
+}
+
+impl SolidFace for tr2::MeshSolidQuad {
+	fn color_index_24bit(&self) -> u8 { self.color_index_24bit }
+	fn color_index_32bit(&self) -> u8 { self.color_index_32bit }
+}
+
+impl SolidFace for tr2::MeshSolidTri {
+	fn color_index_24bit(&self) -> u8 { self.color_index_24bit }
+	fn color_index_32bit(&self) -> u8 { self.color_index_32bit }
 }
 
 impl<'a> Mesh for tr2::Mesh<'a> {

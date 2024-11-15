@@ -21,7 +21,7 @@ use egui_file_dialog::{DialogState, FileDialog};
 use as_bytes::AsBytes;
 use glam::{DVec2, EulerRot, Mat4, UVec2, Vec3, Vec3Swizzles};
 use gui::Gui;
-use version_traits::{Entity, Frame, Level, Mesh, Room, RoomGeom, RoomStaticMesh, RoomVertex};
+use version_traits::{Entity, Frame, Level, Mesh, Room, RoomGeom, RoomStaticMesh, RoomVertex, SolidFace};
 use shared::min_max::{MinMax, VecMinMaxFromIterator};
 use tr_model::{tr1, tr2, tr3};
 use wgpu::{
@@ -45,7 +45,7 @@ const WINDOW_TITLE: &str = "TR Tool";
 const PALETTE_SIZE: usize = size_of::<[tr1::Color24Bit; tr1::PALETTE_LEN]>();
 
 /*
-This ordering creates a "Z" so triangle_strip mode may be used for quads, and the first three indices used
+This ordering creates a "Z" so triangle strip mode may be used for quads, and the first three indices used
 for tris.
 */
 const FACE_VERT_INDICES: [u32; 4] = [1, 2, 0, 3];
@@ -96,8 +96,75 @@ struct RoomData {
 //[original room index, alt room index]
 struct RenderRoom([usize; 2]);
 
-struct MeshData {
+#[derive(Clone, Copy)]
+enum RoomFaceType {
+	Quad,
+	Tri,
+}
+
+#[derive(Clone, Copy)]
+enum MeshFaceType {
+	TexturedQuad,
+	TexturedTri,
+	SolidQuad,
+	SolidTri,
+}
+
+enum ObjectData {
+	RoomFace {
+		room_index: u16,
+		face_type: RoomFaceType,
+		face_index: u16,
+	},
+	StaticMeshFace {
+		room_index: u16,
+		room_static_mesh_index: u16,
+		face_type: MeshFaceType,
+		face_index: u16,
+	},
+	EntityMeshFace {
+		id: u16,
+	},
+	Sprite {
+		id: u16,
+	},
+}
+
+struct ObjectDataWriter(Vec<ObjectData>);
+
+impl ObjectDataWriter {
+	fn new() -> Self {
+		Self(vec![])
+	}
 	
+	fn add_room_faces(&mut self, room_index: u16, face_type: RoomFaceType, num: usize) -> u32 {
+		let id = self.0.len() as u32;
+		for face_index in 0..num as u16 {
+			self.0.push(ObjectData::RoomFace { room_index, face_type, face_index });
+		}
+		id
+	}
+	
+	fn add_room_static_mesh_faces(
+		&mut self, room_index: u16, room_static_mesh_index: u16, face_type: MeshFaceType, num: u32,
+	) {
+		for face_index in 0..num as u16 {
+			self.0.push(
+				ObjectData::StaticMeshFace { room_index, room_static_mesh_index, face_type, face_index },
+			);
+		}
+	}
+	
+	fn add_room_static_mesh<SQ, ST>(
+		&mut self, room_index: u16, room_static_mesh_index: u16, mesh: &MeshFaceArrayRefs<SQ, ST>,
+	) -> u32 {
+		let id = self.0.len() as u32;
+		self.add_room_static_mesh_faces(room_index, room_static_mesh_index, MeshFaceType::TexturedQuad, mesh.textured_quads.len);
+		self.add_room_static_mesh_faces(room_index, room_static_mesh_index, MeshFaceType::TexturedTri, mesh.textured_tris.len);
+		self.add_room_static_mesh_faces(room_index, room_static_mesh_index, MeshFaceType::SolidQuad, mesh.solid_quads.len);
+		self.add_room_static_mesh_faces(room_index, room_static_mesh_index, MeshFaceType::SolidTri, mesh.solid_tris.len);
+		id
+	}
 }
 
 struct ActionMap {
@@ -305,10 +372,12 @@ fn read_level<L: Level + LevelInfo, R: Read>(
 		.collect::<HashMap<_, _>>();
 	
 	//map model and sprite sequence ids to model and sprite sequence refs
-	let model_id_map = Iterator::chain(
-		level.models().iter().map(|model| (model.id as u16, ModelRef::Model(model))),
-		level.sprite_sequences().iter().map(|ss| (ss.id as u16, ModelRef::SpriteSequence(ss))),
-	).collect::<HashMap<_, _>>();
+	let model_id_map = level
+		.models()
+		.iter()
+		.map(|model| (model.id as u16, ModelRef::Model(model)))
+		.chain(level.sprite_sequences().iter().map(|ss| (ss.id as u16, ModelRef::SpriteSequence(ss))))
+		.collect::<HashMap<_, _>>();
 	
 	//group entities by room
 	let mut room_entities = vec![vec![]; level.rooms().len()];
@@ -322,21 +391,25 @@ fn read_level<L: Level + LevelInfo, R: Read>(
 	data.write_sprite_textures(&level.sprite_textures());
 	let mut faces = FaceWriter::<L>::new();
 	let mut sprite_instances = vec![];
+	let mut object_data = ObjectDataWriter::new();
 	
 	//write meshes to data, map tr mesh offets to meshes indices
-	let mut meshes = vec![];
+	// let mut meshes = Vec::<MeshFaceArrayRefs<L::Mesh>>::new();
 	let mut mesh_offset_map = HashMap::new();
 	for &mesh_offset in level.mesh_offsets().iter() {
 		mesh_offset_map.entry(mesh_offset).or_insert_with(|| {
 			let mesh = level.get_mesh(mesh_offset);
-			let index = meshes.len();
 			let vertex_array_offset = data.write_vertex_array(mesh.vertices());
-			meshes.push(MeshFaceArrayRefs {
-				textured_quads: data.write_face_array(mesh.textured_quads(), vertex_array_offset),
-				textured_tris: data.write_face_array(mesh.textured_tris(), vertex_array_offset),
-				solid_quads: data.write_face_array(mesh.solid_quads(), vertex_array_offset),
-				solid_tris: data.write_face_array(mesh.solid_tris(), vertex_array_offset),
-			});
+			let index = meshes.len();
+			meshes.push((
+				MeshFaceArrayRefs {
+					textured_quads: data.write_face_array(mesh.textured_quads(), vertex_array_offset),
+					textured_tris: data.write_face_array(mesh.textured_tris(), vertex_array_offset),
+					solid_quads: data.write_face_array(mesh.solid_quads(), vertex_array_offset),
+					solid_tris: data.write_face_array(mesh.solid_tris(), vertex_array_offset),
+				},
+				mesh,
+			));
 			index
 		});
 	}
@@ -347,6 +420,10 @@ fn read_level<L: Level + LevelInfo, R: Read>(
 	
 	//rooms
 	for (room_index, room) in level.rooms().iter().enumerate() {
+		let room_index = room_index as u16;
+		let face_offsets_start = faces.get_offsets();
+		let sprites_offset_start = sprite_instances.len() as u32;
+		
 		let room_geom = room.get_geom();
 		let room_pos = room.pos();
 		let (center, radius) = room_geom.vertices()
@@ -361,17 +438,20 @@ fn read_level<L: Level + LevelInfo, R: Read>(
 			.unwrap_or_default();
 		let center = center + room_pos.as_vec3();
 		
-		let face_offsets_start = faces.get_offsets();
-		let sprites_offset_start = sprite_instances.len() as u32;
-		
 		let vertex_array_offset = data.write_vertex_array(room_geom.vertices());
 		let quads_ref = data.write_face_array(room_geom.quads(), vertex_array_offset);
 		let tris_ref = data.write_face_array(room_geom.tris(), vertex_array_offset);
 		let transform = Mat4::from_translation(room_pos.as_vec3());
 		let transform_index = data.write_transform(&transform);
-		faces.write_face_instance_array(quads_ref, transform_index, 0);
-		faces.write_face_instance_array(tris_ref, transform_index, 0);
-		for room_static_mesh in room.room_static_meshes() {
+		
+		//object data
+		let quads_id = object_data.add_room_faces(room_index, RoomFaceType::Quad, room_geom.quads().len());
+		let tris_id = object_data.add_room_faces(room_index, RoomFaceType::Tri, room_geom.tris().len());
+		
+		faces.write_face_instance_array(quads_ref, transform_index, quads_id);
+		faces.write_face_instance_array(tris_ref, transform_index, tris_id);
+		for (room_static_mesh_index, room_static_mesh) in room.room_static_meshes().iter().enumerate() {
+			let room_static_mesh_index = room_static_mesh_index as u16;
 			let static_mesh = match static_mesh_id_map.get(&room_static_mesh.static_mesh_id()) {
 				Some(static_mesh) => *static_mesh,
 				None => {
@@ -379,19 +459,66 @@ fn read_level<L: Level + LevelInfo, R: Read>(
 					continue;
 				},
 			};
-			let mesh = &meshes[
-				mesh_offset_map[&level.mesh_offsets()[static_mesh.mesh_offset_index as usize]]
-			];
 			let transform = Mat4::from_translation(room_static_mesh.pos().as_vec3())
 				* Mat4::from_rotation_y(room_static_mesh.angle() as f32 / 65536.0 * TAU);
 			let transform_index = data.write_transform(&transform);
-			faces.write_mesh(mesh, transform_index, 0);
+			let (face_array_refs, mesh)
+				= &meshes[mesh_offset_map[&level.mesh_offsets()[static_mesh.mesh_offset_index as usize]]];
+			
+			//object data
+			let id = object_data.add_room_static_mesh_faces(
+				room_index, room_static_mesh_index, MeshFaceType::TexturedQuad, mesh.textured_quads().len(),
+			);
+			
+			// let id_start = face_data.len() as u32;
+			// for &object_texture_index in textured_quad_data {
+			// 	face_data.push(FaceData {
+			// 		room_index: room_index as u16,
+			// 		face_type: FaceType::Quad,
+			// 		mesh_type: MeshType::Mesh {
+			// 			texture: TextureType::Texture { object_texture_index },
+			// 			mesh_mesh_type: MeshMeshType::StaticMesh { id: room_static_mesh.static_mesh_id() },
+			// 		},
+			// 	})
+			// }
+			// for &object_texture_index in textured_tri_data {
+			// 	face_data.push(FaceData {
+			// 		room_index: room_index as u16,
+			// 		face_type: FaceType::Tri,
+			// 		mesh_type: MeshType::Mesh {
+			// 			texture: TextureType::Texture { object_texture_index },
+			// 			mesh_mesh_type: MeshMeshType::StaticMesh { id: room_static_mesh.static_mesh_id() },
+			// 		},
+			// 	})
+			// }
+			// for &(color_index_24bit, color_index_32bit) in solid_quad_data {
+			// 	face_data.push(FaceData {
+			// 		room_index: room_index as u16,
+			// 		face_type: FaceType::Quad,
+			// 		mesh_type: MeshType::Mesh {
+			// 			texture: TextureType::Solid { color_index_24bit, color_index_32bit },
+			// 			mesh_mesh_type: MeshMeshType::StaticMesh { id: room_static_mesh.static_mesh_id() },
+			// 		},
+			// 	})
+			// }
+			// for &(color_index_24bit, color_index_32bit) in solid_tri_data {
+			// 	face_data.push(FaceData {
+			// 		room_index: room_index as u16,
+			// 		face_type: FaceType::Tri,
+			// 		mesh_type: MeshType::Mesh {
+			// 			texture: TextureType::Solid { color_index_24bit, color_index_32bit },
+			// 			mesh_mesh_type: MeshMeshType::StaticMesh { id: room_static_mesh.static_mesh_id() },
+			// 		},
+			// 	})
+			// }
+			
+			faces.write_mesh(face_array_refs, transform_index, 0);
 		}
 		for sprite in room_geom.sprites() {
 			let pos = room_pos + room_geom.vertices()[sprite.vertex_index as usize].pos().as_ivec3();
 			sprite_instances.push(pos.extend(sprite.sprite_texture_index as i32));
 		}
-		for entity in &room_entities[room_index] {
+		for entity in &room_entities[room_index as usize] {
 			match model_id_map[&entity.model_id()] {
 				ModelRef::Model(model) => {
 					let entity_transform = Mat4::from_translation(entity.pos().as_vec3())
@@ -400,10 +527,12 @@ fn read_level<L: Level + LevelInfo, R: Read>(
 					let mut rotations = frame.iter_rotations();
 					let mut last_transform = Mat4::from_translation(frame.offset().as_vec3())
 						* rotations.next().unwrap();
-					let mesh = &meshes[
-						mesh_offset_map[&level.mesh_offsets()[model.mesh_offset_index as usize]]
-					];
 					let transform_index = data.write_transform(&(entity_transform * last_transform));
+					let (mesh, ..)
+						= &meshes[mesh_offset_map[&level.mesh_offsets()[model.mesh_offset_index as usize]]];
+					
+					
+					
 					faces.write_mesh(mesh, transform_index, 0);
 					let mut parent_stack = vec![];
 					let mesh_nodes = level.get_mesh_nodes(model);
@@ -417,11 +546,10 @@ fn read_level<L: Level + LevelInfo, R: Read>(
 						if mesh_node.flags.push() {
 							parent_stack.push(parent);
 						}
-						let mesh = &meshes[
-							mesh_offset_map[
-								&level.mesh_offsets()[model.mesh_offset_index as usize + mesh_node_index + 1]
-							]
-						];
+						let (mesh, ..)
+							= &meshes[mesh_offset_map[&level.mesh_offsets()[
+								model.mesh_offset_index as usize + mesh_node_index + 1
+							]]];
 						last_transform = parent
 							* Mat4::from_translation(mesh_node.offset.as_vec3())
 							* rotations.next().unwrap();
