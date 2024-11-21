@@ -3,10 +3,9 @@ use bitfield::bitfield;
 use glam::{I16Vec2, I16Vec3, IVec3, U16Vec2, U16Vec3};
 use glam_traits::ext::U8Vec2;
 use shared::min_max::MinMax;
-use tr_readable::{read_boxed_slice_flat, read_flat, Readable};
-use crate::{decl_mesh1, decl_room_geom, get_packed_angles, u16_cursor::U16Cursor, GenBoxData, GenTrBox};
+use tr_readable::{read_boxed_slice_flat, read_flat, read_val_flat, Readable};
+use crate::{decl_box_data, decl_mesh1, decl_room_geom, get_packed_angles, u16_cursor::U16Cursor};
 
-pub const ZONE_FACTOR: usize = 6;
 pub const ATLAS_SIDE_LEN: usize = 256;
 pub const ATLAS_PIXELS: usize = ATLAS_SIDE_LEN * ATLAS_SIDE_LEN;
 pub const PALETTE_LEN: usize = 256;
@@ -22,7 +21,7 @@ pub mod blend_mode {
 //model
 
 #[repr(C)]
-#[derive(Clone, Copy)]
+#[derive(Clone, Debug)]
 pub struct Portal {
 	/// Index into `Level.rooms`.
 	pub adjoining_room_index: u16,
@@ -32,7 +31,7 @@ pub struct Portal {
 }
 
 #[repr(C)]
-#[derive(Clone, Copy)]
+#[derive(Clone, Debug)]
 pub struct Sector {
 	/// Index into `Level.floor_data`.
 	pub floor_data_index: u16,
@@ -46,7 +45,7 @@ pub struct Sector {
 	pub ceiling: i8,
 }
 
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct Sectors {
 	pub size: U16Vec2,
 	pub sectors: Box<[Sector]>,
@@ -62,7 +61,7 @@ impl Readable for Sectors {
 }
 
 #[repr(C, packed(2))]
-#[derive(Clone, Copy)]
+#[derive(Clone, Debug)]
 pub struct Light {
 	pub pos: IVec3,
 	pub brightness: u16,
@@ -70,7 +69,7 @@ pub struct Light {
 }
 
 #[repr(C, packed(2))]
-#[derive(Clone, Copy)]
+#[derive(Clone, Debug)]
 pub struct RoomStaticMesh {
 	/// World coords.
 	pub pos: IVec3,
@@ -83,12 +82,12 @@ pub struct RoomStaticMesh {
 
 bitfield! {
 	#[repr(C)]
-	#[derive(Clone, Copy)]
+	#[derive(Clone, Debug)]
 	pub struct RoomFlags(u16);
 	pub water, _: 0;
 }
 
-#[derive(Readable, Clone)]
+#[derive(Readable, Clone, Debug)]
 pub struct Room {
 	/// World coord.
 	#[flat] pub x: i32,
@@ -108,7 +107,7 @@ pub struct Room {
 }
 
 #[repr(C)]
-#[derive(Clone, Copy)]
+#[derive(Clone, Debug)]
 pub struct Animation {
 	/// Byte offset into `Level.frame_data`.
 	pub frame_byte_offset: u32,
@@ -131,7 +130,7 @@ pub struct Animation {
 }
 
 #[repr(C)]
-#[derive(Clone, Copy)]
+#[derive(Clone, Debug)]
 pub struct StateChange {
 	pub state: u16,
 	pub num_anim_dispatches: u16,
@@ -139,7 +138,7 @@ pub struct StateChange {
 }
 
 #[repr(C)]
-#[derive(Clone, Copy)]
+#[derive(Clone, Debug)]
 pub struct AnimDispatch {
 	pub low_frame: u16,
 	pub high_frame: u16,
@@ -148,7 +147,7 @@ pub struct AnimDispatch {
 }
 
 #[repr(C, packed(2))]
-#[derive(Clone, Copy)]
+#[derive(Clone, Debug)]
 pub struct Model {
 	pub id: u32,
 	pub num_meshes: u16,
@@ -163,7 +162,7 @@ pub struct Model {
 }
 
 #[repr(C)]
-#[derive(Clone, Copy)]
+#[derive(Clone, Debug)]
 pub struct BoundBox {
 	pub x: MinMax<i16>,
 	pub y: MinMax<i16>,
@@ -171,7 +170,7 @@ pub struct BoundBox {
 }
 
 #[repr(C)]
-#[derive(Clone, Copy)]
+#[derive(Clone, Debug)]
 pub struct StaticMesh {
 	pub id: u32,
 	/// Index into `Level.mesh_offsets`.
@@ -182,7 +181,7 @@ pub struct StaticMesh {
 }
 
 #[repr(C)]
-#[derive(Clone, Copy)]
+#[derive(Clone, Debug)]
 pub struct ObjectTexture {
 	/// One of the blend modes in the `blend_mode` module.
 	pub blend_mode: u16,
@@ -193,7 +192,7 @@ pub struct ObjectTexture {
 }
 
 #[repr(C)]
-#[derive(Clone, Copy)]
+#[derive(Clone, Debug)]
 pub struct SpriteTexture {
 	/// Index into `Level.atlases`.
 	pub atlas_index: u16,
@@ -203,7 +202,7 @@ pub struct SpriteTexture {
 }
 
 #[repr(C)]
-#[derive(Clone, Copy)]
+#[derive(Clone, Debug)]
 pub struct SpriteSequence {
 	pub id: u32,
 	pub neg_length: i16,
@@ -212,7 +211,7 @@ pub struct SpriteSequence {
 }
 
 #[repr(C)]
-#[derive(Clone, Copy)]
+#[derive(Clone, Debug)]
 pub struct Camera {
 	/// World coords.
 	pub pos: IVec3,
@@ -222,7 +221,7 @@ pub struct Camera {
 }
 
 #[repr(C)]
-#[derive(Clone, Copy)]
+#[derive(Clone, Debug)]
 pub struct SoundSource {
 	/// World coords.
 	pub pos: IVec3,
@@ -230,12 +229,10 @@ pub struct SoundSource {
 	pub flags: u16,
 }
 
-pub type TrBox = GenTrBox<u32>;
-
-pub type BoxData = GenBoxData<TrBox, ZONE_FACTOR>;
+decl_box_data!(TrBox, BoxData, u32, 6);
 
 #[repr(C, packed(2))]
-#[derive(Clone, Copy)]
+#[derive(Clone, Debug)]
 pub struct Entity {
 	/// Matched to `Model.id` in `Level.models` or `SpriteSequence.id` in `Level.sprite_sequences`.
 	pub model_id: u16,
@@ -252,7 +249,7 @@ pub struct Entity {
 
 /// 6 bits per channel
 #[repr(C)]
-#[derive(Clone, Copy)]
+#[derive(Clone, Debug)]
 pub struct Color24Bit {
 	pub r: u8,
 	pub g: u8,
@@ -260,7 +257,7 @@ pub struct Color24Bit {
 }
 
 #[repr(C)]
-#[derive(Clone, Copy)]
+#[derive(Clone, Debug)]
 pub struct CinematicFrame {
 	pub target: I16Vec3,
 	pub pos: I16Vec3,
@@ -269,7 +266,7 @@ pub struct CinematicFrame {
 }
 
 #[repr(C)]
-#[derive(Clone, Copy)]
+#[derive(Clone, Debug)]
 pub struct SoundDetails {
 	/// Index into `Level.sample_indices`.
 	pub sample_index: u16,
@@ -278,7 +275,7 @@ pub struct SoundDetails {
 	pub details: u16,
 }
 
-#[derive(Readable, Clone)]
+#[derive(Readable, Clone, Debug)]
 pub struct Level {
 	#[flat] pub version: u32,
 	#[flat] #[list(u32)] pub atlases: Box<[[u8; ATLAS_PIXELS]]>,
@@ -317,7 +314,7 @@ pub struct Level {
 //extraction
 
 #[repr(C)]
-#[derive(Clone, Copy)]
+#[derive(Clone, Debug)]
 pub struct RoomVertex {
 	/// Relative to room
 	pub pos: I16Vec3,
@@ -327,7 +324,7 @@ pub struct RoomVertex {
 macro_rules! decl_face_type {
 	($name:ident, $num_indices:literal, $texture_field:ident) => {
 		#[repr(C)]
-		#[derive(Clone, Copy)]
+		#[derive(Clone, Debug)]
 		pub struct $name {
 			pub vertex_indices: [u16; $num_indices],
 			pub $texture_field: u16,
@@ -339,7 +336,7 @@ decl_face_type!(RoomQuad, 4, object_texture_index);
 decl_face_type!(RoomTri, 3, object_texture_index);
 
 #[repr(C)]
-#[derive(Clone, Copy)]
+#[derive(Clone, Debug)]
 pub struct Sprite {
 	/// Index into `Room.vertices`.
 	pub vertex_index: u16,
@@ -355,7 +352,7 @@ impl Room {
 	}
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Debug)]
 pub enum MeshLighting<'a> {
 	Normals(&'a [I16Vec3]),
 	Lights(&'a [u16]),
@@ -370,14 +367,14 @@ decl_mesh1!(Mesh, MeshLighting, MeshTexturedQuad, MeshTexturedTri, MeshSolidQuad
 
 bitfield! {
 	#[repr(C)]
-	#[derive(Clone, Copy)]
+	#[derive(Clone, Debug)]
 	pub struct MeshNodeFlags(u32);
 	pub pop, _: 0;
 	pub push, _: 1;
 }
 
 #[repr(C)]
-#[derive(Clone, Copy)]
+#[derive(Clone, Debug)]
 pub struct MeshNode {
 	pub flags: MeshNodeFlags,
 	/// Relative to parent.
@@ -396,7 +393,7 @@ impl MeshNode {
 }
 
 #[repr(C)]
-#[derive(Clone, Copy)]
+#[derive(Clone, Debug)]
 pub struct FrameRotation(u16, u16);
 
 impl FrameRotation {
@@ -406,6 +403,7 @@ impl FrameRotation {
 }
 
 #[repr(C)]
+#[derive(Debug)]
 pub struct Frame {
 	pub bound_box: MinMax<I16Vec3>,
 	pub offset: I16Vec3,

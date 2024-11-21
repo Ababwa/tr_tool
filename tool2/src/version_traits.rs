@@ -62,7 +62,7 @@ pub trait Frame {
 	fn iter_rotations(&self) -> impl Iterator<Item = Mat4>;
 }
 
-pub trait Level: Readable {
+pub trait Level {
 	type Room: Room;
 	type Entity: Entity;
 	type Mesh<'a>: Mesh where Self: 'a;

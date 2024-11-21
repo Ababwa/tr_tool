@@ -27,6 +27,7 @@ impl<T: ReinterpretAsBytes> AsBytes for [T] {
 impl<T: ReinterpretAsBytes, const N: usize> ReinterpretAsBytes for [T; N] {}
 
 impl ReinterpretAsBytes for u8 {}
+impl ReinterpretAsBytes for u16 {}
 impl ReinterpretAsBytes for u32 {}
 impl ReinterpretAsBytes for U16Vec2 {}
 impl ReinterpretAsBytes for I16Vec3 {}
@@ -48,3 +49,5 @@ impl ReinterpretAsBytes for tr2::MeshSolidQuad {}
 impl ReinterpretAsBytes for tr2::MeshSolidTri {}
 impl ReinterpretAsBytes for tr2::Color16Bit {}
 impl ReinterpretAsBytes for tr3::RoomVertex {}
+impl ReinterpretAsBytes for tr3::RoomQuad {}
+impl ReinterpretAsBytes for tr3::RoomTri {}

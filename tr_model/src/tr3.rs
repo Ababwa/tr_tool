@@ -1,10 +1,11 @@
+use bitfield::bitfield;
 use glam::{I16Vec3, IVec3};
 use tr_readable::Readable;
 use crate::{
 	decl_room_geom, tr1::{
 		AnimDispatch, Animation, Camera, CinematicFrame, Color24Bit, MeshNode, Model, ObjectTexture, Portal,
-		RoomFlags, RoomQuad, RoomTri, Sectors, SoundSource, Sprite, SpriteSequence, SpriteTexture,
-		StateChange, StaticMesh, LIGHT_MAP_LEN, PALETTE_LEN,
+		RoomFlags, Sectors, SoundSource, Sprite, SpriteSequence, SpriteTexture, StateChange, StaticMesh,
+		LIGHT_MAP_LEN, PALETTE_LEN,
 	}, tr2::{Atlases, BoxData, Color16Bit, Color32Bit, Entity, Frame, Mesh, SOUND_MAP_LEN},
 	u16_cursor::U16Cursor,
 };
@@ -23,7 +24,7 @@ pub mod light_type {
 //model
 
 #[repr(C)]
-#[derive(Clone, Copy)]
+#[derive(Clone, Debug)]
 pub struct Light {
 	pub pos: IVec3,
 	pub color: Color24Bit,
@@ -33,7 +34,7 @@ pub struct Light {
 }
 
 #[repr(C)]
-#[derive(Clone, Copy)]
+#[derive(Clone, Debug)]
 pub struct RoomStaticMesh {
 	/// World coords.
 	pub pos: IVec3,
@@ -45,7 +46,7 @@ pub struct RoomStaticMesh {
 	pub static_mesh_id: u16,
 }
 
-#[derive(Readable, Clone)]
+#[derive(Readable, Clone, Debug)]
 pub struct Room {
 	/// World coord.
 	#[flat] pub x: i32,
@@ -69,7 +70,7 @@ pub struct Room {
 }
 
 #[repr(C)]
-#[derive(Clone, Copy)]
+#[derive(Clone, Debug)]
 pub struct SoundDetails {
 	/// Index into `Level.sample_indices`.
 	pub sample_index: u16,
@@ -80,7 +81,7 @@ pub struct SoundDetails {
 	pub details: u16,
 }
 
-#[derive(Readable, Clone)]
+#[derive(Readable, Clone, Debug)]
 pub struct Level {
 	#[flat] pub version: u32,
 	#[flat] #[boxed] pub palette_24bit: Box<[Color24Bit; PALETTE_LEN]>,
@@ -119,7 +120,7 @@ pub struct Level {
 //extraction
 
 #[repr(C)]
-#[derive(Clone, Copy)]
+#[derive(Clone, Debug)]
 pub struct RoomVertex {
 	/// Relative to room
 	pub pos: I16Vec3,
@@ -127,6 +128,28 @@ pub struct RoomVertex {
 	pub attrs: u16,
 	pub color: Color16Bit,
 }
+
+bitfield! {
+	#[repr(C)]
+	#[derive(Clone, Debug)]
+	pub struct RoomFaceTexture(u16);
+	pub object_texture_index, _: 0, 14;
+	pub double_sided, _: 15;
+}
+
+macro_rules! decl_face_type {
+	($name:ident, $num_indices:literal) => {
+		#[repr(C)]
+		#[derive(Clone, Debug)]
+		pub struct $name {
+			pub vertex_indices: [u16; $num_indices],
+			pub texture: RoomFaceTexture,
+		}
+	};
+}
+
+decl_face_type!(RoomQuad, 4);
+decl_face_type!(RoomTri, 3);
 
 decl_room_geom!(RoomGeom, RoomVertex, RoomQuad, RoomTri, Sprite);
 

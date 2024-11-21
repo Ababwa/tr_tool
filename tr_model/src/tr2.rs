@@ -4,21 +4,20 @@ use glam::{I16Vec3, IVec3, U16Vec3};
 use shared::min_max::MinMax;
 use tr_readable::{read_boxed_slice_flat, read_val_flat, Readable};
 use crate::{
-	decl_mesh1, decl_room_geom, get_packed_angles, tr1::{
+	decl_box_data, decl_mesh1, decl_room_geom, get_packed_angles, tr1::{
 		AnimDispatch, Animation, Camera, CinematicFrame, Color24Bit, MeshLighting, MeshNode,
 		MeshTexturedQuad, MeshTexturedTri, Model, ObjectTexture, Portal, RoomFlags, RoomQuad, RoomTri,
 		Sectors, SoundDetails, SoundSource, Sprite, SpriteSequence, SpriteTexture, StateChange, StaticMesh,
 		ATLAS_PIXELS, LIGHT_MAP_LEN, PALETTE_LEN,
-	}, u16_cursor::U16Cursor, GenBoxData, GenTrBox,
+	}, u16_cursor::U16Cursor
 };
 
-pub const ZONE_FACTOR: usize = 10;
 pub const SOUND_MAP_LEN: usize = 370;
 
 //model
 
 #[repr(C)]
-#[derive(Clone, Copy)]
+#[derive(Clone, Debug)]
 pub struct Color32Bit {
 	pub r: u8,
 	pub g: u8,
@@ -28,7 +27,7 @@ pub struct Color32Bit {
 
 bitfield! {
 	#[repr(C)]
-	#[derive(Clone, Copy)]
+	#[derive(Clone, Debug)]
 	pub struct Color16Bit(u16);
 	u8;
 	pub a, _: 15;
@@ -37,7 +36,7 @@ bitfield! {
 	pub b, _: 4, 0;
 }
 
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct Atlases {
 	pub atlases_palette: Box<[[u8; ATLAS_PIXELS]]>,
 	pub atlases_16bit: Box<[[Color16Bit; ATLAS_PIXELS]]>,
@@ -53,7 +52,7 @@ impl Readable for Atlases {
 }
 
 #[repr(C)]
-#[derive(Clone, Copy)]
+#[derive(Clone, Debug)]
 pub struct Light {
 	pub pos: IVec3,
 	pub brightness: u16,
@@ -63,7 +62,7 @@ pub struct Light {
 }
 
 #[repr(C)]
-#[derive(Clone, Copy)]
+#[derive(Clone, Debug)]
 pub struct RoomStaticMesh {
 	/// World coords.
 	pub pos: IVec3,
@@ -75,7 +74,7 @@ pub struct RoomStaticMesh {
 	pub static_mesh_id: u16,
 }
 
-#[derive(Readable, Clone)]
+#[derive(Readable, Clone, Debug)]
 pub struct Room {
 	/// World coord.
 	#[flat] pub x: i32,
@@ -96,12 +95,10 @@ pub struct Room {
 	#[flat] pub flags: RoomFlags,
 }
 
-pub type TrBox = GenTrBox<u8>;
-
-pub type BoxData = GenBoxData<TrBox, ZONE_FACTOR>;
+decl_box_data!(TrBox, BoxData, u8, 10);
 
 #[repr(C)]
-#[derive(Clone, Copy)]
+#[derive(Clone, Debug)]
 pub struct Entity {
 	/// Matched to `Model.id` in `Level.models` or `SpriteSequence.id` in `Level.sprite_sequences`.
 	pub model_id: u16,
@@ -117,7 +114,7 @@ pub struct Entity {
 	pub flags: u16,
 }
 
-#[derive(Readable, Clone)]
+#[derive(Readable, Clone, Debug)]
 pub struct Level {
 	#[flat] pub version: u32,
 	#[flat] #[boxed] pub palette_24bit: Box<[Color24Bit; PALETTE_LEN]>,
@@ -156,7 +153,7 @@ pub struct Level {
 //extraction
 
 #[repr(C)]
-#[derive(Clone, Copy)]
+#[derive(Clone, Debug)]
 pub struct RoomVertex {
 	/// Relative to room
 	pub pos: I16Vec3,
@@ -176,7 +173,7 @@ impl Room {
 macro_rules! decl_solid_face_type {
 	($name:ident, $num_indices:literal) => {
 		#[repr(C)]
-		#[derive(Clone, Copy)]
+		#[derive(Clone, Debug)]
 		pub struct $name {
 			pub vertex_indices: [u16; $num_indices],
 			pub color_index_24bit: u8,
@@ -191,24 +188,29 @@ decl_solid_face_type!(MeshSolidTri, 3);
 decl_mesh1!(Mesh, MeshLighting, MeshTexturedQuad, MeshTexturedTri, MeshSolidQuad, MeshSolidTri);
 
 #[repr(C)]
+#[derive(Debug)]
 pub struct FrameData {
 	pub bound_box: MinMax<I16Vec3>,
 	pub offset: I16Vec3,
 	pub rotation_data: [u16],
 }
 
+#[derive(Clone, Debug)]
 pub struct Frame<'a> {
 	pub num_meshes: usize,
 	pub frame_data: &'a FrameData,
 }
 
+#[derive(Clone, Debug)]
 pub struct RotationIterator<'a> {
 	rotation_data: Iter<'a, u16>,
 	remaining: usize,
 }
 
+#[derive(Clone, Debug)]
 pub enum Axis { X, Y, Z }
 
+#[derive(Clone, Debug)]
 pub enum FrameRotation {
 	AllAxes(U16Vec3),
 	SingleAxis(Axis, u16),
@@ -254,7 +256,7 @@ impl<'a> Frame<'a> {
 		}
 	}
 	
-	pub fn iter_rotations(&self) -> RotationIterator {
+	pub fn iter_rotations(&self) -> RotationIterator<'a> {
 		RotationIterator {
 			rotation_data: self.frame_data.rotation_data.iter(),
 			remaining: self.num_meshes,

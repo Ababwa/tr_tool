@@ -1,7 +1,8 @@
 use std::{
-	alloc::{alloc, handle_alloc_error, Layout}, io::{Error, Result}, ops::Range,
+	alloc::{alloc, handle_alloc_error, Layout}, io::{Error, Result}, marker::PhantomData, ops::Range,
 	ptr::slice_from_raw_parts_mut,
 };
+use crate::as_bytes::{AsBytes, ReinterpretAsBytes};
 
 pub struct Writer<'a> {
 	buffer: &'a mut Box<[u8]>,
@@ -10,11 +11,11 @@ pub struct Writer<'a> {
 }
 
 impl<'a> Writer<'a> {
-	pub fn get_pos(&self) -> usize {
+	pub fn pos(&self) -> usize {
 		self.range.end
 	}
 	
-	pub fn get_size(&self) -> usize {
+	pub fn size(&self) -> usize {
 		self.range.end - self.range.start
 	}
 	
@@ -25,6 +26,28 @@ impl<'a> Writer<'a> {
 		self.buffer[self.range.end..][..bytes.len()].copy_from_slice(bytes);
 		self.range.end += bytes.len();
 		Ok(())
+	}
+	
+	pub fn type_wrap<T>(self) -> TypedWriter<'a, T> {
+		TypedWriter { writer: self, u: PhantomData }
+	}
+}
+
+pub struct TypedWriter<'a, T> {
+	writer: Writer<'a>,
+	u: PhantomData<T>,
+}
+
+impl<'a, T: ReinterpretAsBytes> TypedWriter<'a, T> {
+	pub fn write(&mut self, item: &T) -> Result<()> {
+		self.writer.write(item.as_bytes())
+	}
+	
+	/// Position of writer in units of the type.
+	pub fn pos(&self) -> usize {
+		let pos = self.writer.pos();
+		assert!(pos % size_of::<T>() == 0);
+		pos / size_of::<T>()
 	}
 }
 
@@ -60,10 +83,6 @@ impl MultiCursorBuffer {
 			mc.add_cursor(cursor_pos);
 		}
 		mc
-	}
-	
-	pub fn get_pos(&self, cursor_index: usize) -> usize {
-		self.ranges[cursor_index].end
 	}
 	
 	pub fn get_range(&self, cursor_index: usize) -> Range<usize> {

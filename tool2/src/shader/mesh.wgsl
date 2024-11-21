@@ -87,6 +87,7 @@ fn get_data_u16(offset: u32) -> u32 {
 struct PositionTexture {
 	position: vec4f,
 	texture_index: u32,
+	object_id: u32,
 }
 
 fn get_position_texture(face: vec2u, face_vertex_index: u32) -> PositionTexture {
@@ -94,6 +95,7 @@ fn get_position_texture(face: vec2u, face_vertex_index: u32) -> PositionTexture 
 	let face_array_index = face.x & 0xFFFF;
 	let face_index = face.x >> 16;
 	let transform_index = face.y & 0xFFFF;
+	let object_id = face.y >> 16;
 	//transform
 	let transform_offset_v4 = (TRANSFORMS_OFFSET / 64 + transform_index) * 4;
 	let local_transform = mat4x4f(
@@ -122,7 +124,7 @@ fn get_position_texture(face: vec2u, face_vertex_index: u32) -> PositionTexture 
 	let position = perspective_transform * camera_transform * vertex_absolute;
 	//texture
 	let texture_index = get_data_u16(face_offset + face_size - 1);
-	return PositionTexture(position, texture_index);
+	return PositionTexture(position, texture_index, object_id);
 }
 
 struct TexturedVTF {
@@ -130,6 +132,7 @@ struct TexturedVTF {
 	@location(0) blend_mode: u32,
 	@location(1) atlas_index: u32,
 	@location(2) uv: vec2f,
+	@location(3) object_id: u32,
 }
 
 @vertex
@@ -140,6 +143,7 @@ fn textured_vs_main(
 	let position_texture = get_position_texture(face, face_vertex_index);
 	let position = position_texture.position;
 	let object_texture_index = position_texture.texture_index & 0x7FFF;
+	let object_id = position_texture.object_id;
 	let object_texture_offset = OBJECT_TEXTURES_OFFSET / 2 + object_texture_index * 10;//10: size of ObjectTexture in u16s
 	let blend_mode = get_data_u16(object_texture_offset);
 	let atlas_index = get_data_u16(object_texture_offset + 1);
@@ -149,12 +153,13 @@ fn textured_vs_main(
 		get_data_u16(uv_offset + 1),
 	);
 	let uv = vec2f((uv_subpixel + 128) / 256);//round to nearest whole pixel
-	return TexturedVTF(position, blend_mode, atlas_index, uv);
+	return TexturedVTF(position, blend_mode, atlas_index, uv, object_id);
 }
 
 struct SolidVTF {
 	@builtin(position) position: vec4f,
 	@location(0) color_index: u32,
+	@location(1) object_id: u32,
 }
 
 @vertex
@@ -165,7 +170,8 @@ fn solid_vs_main(
 	let position_texture = get_position_texture(face, face_vertex_index);
 	let position = position_texture.position;
 	let color_index = position_texture.texture_index & 0xFF;
-	return SolidVTF(position, color_index);
+	let object_id = position_texture.object_id;
+	return SolidVTF(position, color_index, object_id);
 }
 
 struct SpriteVTF {
@@ -247,24 +253,24 @@ fn get_color(color_index: u32) -> vec4f {
 const BLEND_MODE_TEST: u32 = 1;
 const BLEND_MODE_ADD: u32 = 2;
 
-@fragment
-fn textured_fs_main(vtf: TexturedVTF) -> @location(0) vec4f {
-	let color_index = textureLoad(atlases, vec2i(vtf.uv), vtf.atlas_index, 0).x;
-	if color_index == 0 {
-		discard;
-	} else {
-		return get_color(color_index);
-	}
-}
-
 struct Out {
 	@location(0) color: vec4f,
 	@location(1) interact: u32,
 }
 
 @fragment
+fn textured_fs_main(vtf: TexturedVTF) -> Out {
+	let color_index = textureLoad(atlases, vec2i(vtf.uv), vtf.atlas_index, 0).x;
+	if color_index == 0 {
+		discard;
+	} else {
+		return Out(get_color(color_index), vtf.object_id);
+	}
+}
+
+@fragment
 fn solid_fs_main(vtf: SolidVTF) -> Out {
-	return Out(get_color(vtf.color_index), 0xFF0000FF);
+	return Out(get_color(vtf.color_index), vtf.object_id);
 }
 
 @fragment

@@ -1,4 +1,4 @@
-use glam::{dvec2, DVec2, UVec2};
+use glam::{DVec2, UVec2};
 use pollster::block_on;
 use std::{
 	future::Future, num::NonZeroU32, sync::{mpsc::{channel, TryRecvError}, Arc}, thread::{sleep, spawn},
@@ -47,7 +47,6 @@ macro_rules! impl_to_vec {
 }
 
 impl_to_vec!(PhysicalSize<u32>, UVec2, width, height);
-impl_to_vec!(PhysicalPosition<f64>, DVec2, x, y);
 
 fn sb_surface(window: &Window, size: UVec2) -> softbuffer::Surface<&Window, &Window> {
 	let mut surface = softbuffer::Surface::new(
@@ -63,17 +62,21 @@ fn sb_surface(window: &Window, size: UVec2) -> softbuffer::Surface<&Window, &Win
 pub trait Gui {
 	fn resize(&mut self, window_size: UVec2, device: &Device, queue: &Queue);
 	fn modifiers(&mut self, modifers: ModifiersState);
-	fn mouse_button(&mut self, window: &Window, button: MouseButton, state: ElementState);
-	fn mouse_moved(&mut self, delta: DVec2);
+	fn mouse_button(
+		&mut self, window: &Window, device: Arc<Device>, queue: &Queue, button: MouseButton,
+		state: ElementState,
+	);
+	fn mouse_motion(&mut self, delta: DVec2);
 	fn mouse_wheel(&mut self, delta: MouseScrollDelta);
+	fn cursor_moved(&mut self, pos: DVec2);
 	fn gui(&mut self, window: &Window, device: &Device, queue: &Queue, ctx: &egui::Context);
 	fn key(
 		&mut self, window: &Window, device: &Device, queue: &Queue, target: &EventLoopWindowTarget<()>,
 		key_code: KeyCode, state: ElementState, repeat: bool,
 	);
 	fn render(
-		&mut self, queue: &Queue, encoder: &mut CommandEncoder, view: &TextureView, delta_time: Duration,
-		last_render_time: Duration,
+		&mut self, device: &Device, queue: &Queue, encoder: &mut CommandEncoder, view: &TextureView,
+		delta_time: Duration, last_render_time: Duration,
 	);
 }
 
@@ -88,7 +91,7 @@ where T: Into<String>, G: Gui, F: FnOnce(&Device, UVec2) -> G {
 		.with_taskbar_icon(Some(taskbar_icon))
 		.build(&event_loop)
 		.expect("build window");
-	let mut window_size = window.inner_size().to_vec();
+	let mut window_size = <[u32; 2]>::from(window.inner_size()).into();
 	let window = Arc::new(window);
 	let painter_window = window.clone();
 	let (tx, rx) = channel();
@@ -127,6 +130,7 @@ where T: Into<String>, G: Gui, F: FnOnce(&Device, UVec2) -> G {
 		)
 		.wait()
 		.expect("request device");//250ms
+	let device = Arc::new(device);
 	let mut config = surface
 		.get_default_config(&adapter, window_size.x, window_size.y)
 		.expect("get default config");
@@ -144,14 +148,19 @@ where T: Into<String>, G: Gui, F: FnOnce(&Device, UVec2) -> G {
 	let mut last_render_time = Duration::ZERO;
 	event_loop.run(|event, target| match event {
 		Event::DeviceEvent { event: DeviceEvent::MouseMotion { delta: (x, y) }, .. } => {
-			gui.mouse_moved(dvec2(x, y));
+			gui.mouse_motion(DVec2 { x, y });
 		},
 		Event::WindowEvent { event, .. } => if !egui_input_state.on_window_event(&window, &event).consumed {
 			match event {
 				WindowEvent::CloseRequested => target.exit(),
 				WindowEvent::ModifiersChanged(modifiers) => gui.modifiers(modifiers.state()),
-				WindowEvent::MouseInput { button, state, .. } => gui.mouse_button(&window, button, state),
+				WindowEvent::MouseInput { button, state, .. } => {
+					gui.mouse_button(&window, device.clone(), &queue, button, state);
+				},
 				WindowEvent::MouseWheel { delta, .. } => gui.mouse_wheel(delta),
+				WindowEvent::CursorMoved { position: PhysicalPosition { x, y }, .. } => {
+					gui.cursor_moved(DVec2 { x, y });
+				},
 				WindowEvent::KeyboardInput {
 					event: KeyEvent { repeat, physical_key: PhysicalKey::Code(key_code), state, .. },
 					..
@@ -170,7 +179,7 @@ where T: Into<String>, G: Gui, F: FnOnce(&Device, UVec2) -> G {
 					let frame = surface.get_current_texture().expect("get current texture");
 					let view = &frame.texture.create_view(&TextureViewDescriptor::default());
 					
-					gui.render(&queue, &mut encoder, view, delta_time, last_render_time);
+					gui.render(&device, &queue, &mut encoder, view, delta_time, last_render_time);
 					
 					let egui_input = egui_input_state.take_egui_input(&window);
 					let egui::FullOutput {

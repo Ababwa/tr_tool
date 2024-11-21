@@ -1,123 +1,111 @@
-use std::{marker::PhantomData, mem::size_of};
-use glam::{I16Vec3, Mat4};
-use tr_model::tr1;
+use std::ops::Range;
+use tr_model::{tr1, tr3};
 use crate::{
-	as_bytes::{AsBytes, ReinterpretAsBytes}, multi_cursor::MultiCursorBuffer, version_traits::{Level, Mesh, Room, RoomGeom}
+	as_bytes::ReinterpretAsBytes, face_buffer::{FaceBuffer, FaceInstance, FaceType},
+	geom_buffer::{Face, GeomBuffer}, multi_cursor::TypedWriter, ObjectData, WrittenFaceArray, WrittenMesh,
 };
 
-//2 MB
-pub const DATA_SIZE: usize = 2097152;
-
-//0..1048576, len: 1048576 (1/2 buffer)
-const GEOM_CURSOR: usize = 0;
-const GEOM_OFFSET: usize = 0;
-
-//1048576..1310720, len: 262144 (1/8 buffer)
-const OBJECT_TEXTURES_CURSOR: usize = 1;
-const OBJECT_TEXTURES_OFFSET: usize = 1048576;
-
-//1310720..1572864, len: 262144 (1/8 buffer)
-const TRANSFORMS_CURSOR: usize = 2;
-const TRANSFORMS_OFFSET: usize = 1310720;
-
-//1572864..1835008, len: 262144 (1/8 buffer)
-const SPRITE_TEXTURES_CURSOR: usize = 3;
-const SPRITE_TEXTURES_OFFSET: usize = 1572864;
-
-//1835008..2097152, len: 262144 (1/8 buffer)
-const FACE_ARRAY_MAP_CURSOR: usize = 4;
-const FACE_ARRAY_MAP_OFFSET: usize = 1835008;
-
-//type constraints, not strictly necessary
-mod private {
-	pub trait Vertex<L, D> {}
-	pub trait Face<L, D> {}
+pub trait RoomFace {
+	fn double_sided(&self) -> bool;
 }
 
-use private::{Vertex, Face};
+impl RoomFace for tr1::RoomQuad { fn double_sided(&self) -> bool { false } }
+impl RoomFace for tr1::RoomTri { fn double_sided(&self) -> bool { false } }
+impl RoomFace for tr3::RoomQuad { fn double_sided(&self) -> bool { self.texture.double_sided() } }
+impl RoomFace for tr3::RoomTri { fn double_sided(&self) -> bool { self.texture.double_sided() } }
 
-impl<L: Level> Vertex<L, [(); 0]> for I16Vec3 {}
-impl<L: Level> Vertex<L, [(); 1]> for <<L::Room as Room>::RoomGeom<'_> as RoomGeom>::RoomVertex {}
-
-impl<L: Level> Face<L, [(); 0]> for tr1::RoomQuad {}
-impl<L: Level> Face<L, [(); 0]> for tr1::RoomTri {}
-impl<L: Level> Face<L, [(); 0]> for tr1::MeshTexturedQuad {}
-impl<L: Level> Face<L, [(); 0]> for tr1::MeshTexturedTri {}
-impl<L: Level> Face<L, [(); 1]> for <L::Mesh<'_> as Mesh>::SolidQuad {}
-impl<L: Level> Face<L, [(); 2]> for <L::Mesh<'_> as Mesh>::SolidTri {}
-
-#[derive(Clone, Copy)]
-pub struct FaceArrayRef<FaceType> {
-	pub index: u32,
-	pub len: u32,
-	u: PhantomData<FaceType>,
+pub struct DataWriter {
+	pub geom_buffer: GeomBuffer,
+	pub face_buffer: FaceBuffer,
+	pub object_data: Vec<ObjectData>,
 }
 
-pub struct DataWriter<LevelType> {
-	mc: MultiCursorBuffer,
-	u: PhantomData<LevelType>,
+fn instantiate_face_array(
+	object_data: &mut Vec<ObjectData>, face_writer: &mut TypedWriter<FaceInstance>,
+	face_array: &WrittenFaceArray, transform_index: usize, object_data_maker: impl Fn(usize) -> ObjectData,
+) -> Range<u32> {
+	let start = face_writer.pos() as u32;
+	for face_index in 0..face_array.len {
+		let fi = FaceInstance::new(face_array.index, face_index, transform_index, object_data.len());
+		face_writer.write(&fi).unwrap();
+		object_data.push(object_data_maker(face_index));
+	}
+	let end = face_writer.pos() as u32;
+	start..end
 }
 
-impl<L> DataWriter<L> {
-	pub fn new() -> Self {
-		Self {
-			mc: MultiCursorBuffer::new(
-				DATA_SIZE,
-				&[
-					GEOM_OFFSET,
-					OBJECT_TEXTURES_OFFSET,
-					TRANSFORMS_OFFSET,
-					SPRITE_TEXTURES_OFFSET,
-					FACE_ARRAY_MAP_OFFSET,
-				],
+pub struct MeshFaceInstanceRanges {
+	pub textured_quads: Range<u32>,
+	pub textured_tris: Range<u32>,
+	pub solid_quads: Range<u32>,
+	pub solid_tris: Range<u32>,
+}
+
+pub struct RoomFaceInstanceOffsets {
+	pub start: u32,
+	pub flipped_start: u32,
+	pub end: u32,
+}
+
+impl RoomFaceInstanceOffsets {
+	pub fn original(&self) -> Range<u32> {
+		self.start..self.flipped_start
+	}
+	
+	pub fn flipped(&self) -> Range<u32> {
+		self.flipped_start..self.end
+	}
+}
+
+impl DataWriter {
+	pub fn instantiate_mesh(
+		&mut self, mesh: &WrittenMesh, transform_index: usize,
+		object_data_maker: impl Fn(FaceType, usize) -> ObjectData,
+	) -> MeshFaceInstanceRanges {
+		MeshFaceInstanceRanges {
+			textured_quads: instantiate_face_array(
+				&mut self.object_data, &mut self.face_buffer.get_writer(FaceType::TexturedQuad),
+				&mesh.textured_quads, transform_index,
+				|face_index| object_data_maker(FaceType::TexturedQuad, face_index),
 			),
-			u: PhantomData,
+			textured_tris: instantiate_face_array(
+				&mut self.object_data, &mut self.face_buffer.get_writer(FaceType::TexturedTri),
+				&mesh.textured_tris, transform_index,
+				|face_index| object_data_maker(FaceType::TexturedTri, face_index),
+			),
+			solid_quads: instantiate_face_array(
+				&mut self.object_data, &mut self.face_buffer.get_writer(FaceType::SolidQuad),
+				&mesh.solid_quads, transform_index,
+				|face_index| object_data_maker(FaceType::SolidQuad, face_index),
+			),
+			solid_tris: instantiate_face_array(
+				&mut self.object_data, &mut self.face_buffer.get_writer(FaceType::SolidTri),
+				&mesh.solid_tris, transform_index,
+				|face_index| object_data_maker(FaceType::SolidTri, face_index),
+			),
 		}
 	}
 	
-	pub fn write_object_textures(&mut self, object_textures: &[tr1::ObjectTexture]) {
-		self.mc.get_writer(OBJECT_TEXTURES_CURSOR).write(object_textures.as_bytes()).unwrap();
-	}
-	
-	pub fn write_sprite_textures(&mut self, sprite_textures: &[tr1::SpriteTexture]) {
-		self.mc.get_writer(SPRITE_TEXTURES_CURSOR).write(sprite_textures.as_bytes()).unwrap();
-	}
-	
-	pub fn write_vertex_array<V, D>(&mut self, vertices: &[V]) -> u32
-	where V: Vertex<L, D> + ReinterpretAsBytes {
-		let mut geom_writer = self.mc.get_writer(GEOM_CURSOR);
-		let offset = geom_writer.get_pos() as u32 / 2;
-		geom_writer.write(&(size_of::<V>() as u16 / 2).to_le_bytes()).unwrap();
-		geom_writer.write(vertices.as_bytes()).unwrap();
-		offset
-	}
-	
-	pub fn write_face_array<F, D>(&mut self, faces: &[F], vertex_array_offset: u32) -> FaceArrayRef<F>
-	where F: Face<L, D> + ReinterpretAsBytes {
-		let mut geom_writer = self.mc.get_writer(GEOM_CURSOR);
-		let offset = geom_writer.get_pos() as u32 / 2;
-		geom_writer.write(&vertex_array_offset.to_le_bytes()).unwrap();
-		geom_writer.write(&(size_of::<F>() as u16 / 2).to_le_bytes()).unwrap();
-		geom_writer.write(faces.as_bytes()).unwrap();
-		let mut face_array_map_writer = self.mc.get_writer(FACE_ARRAY_MAP_CURSOR);
-		let index = face_array_map_writer.get_size() as u32 / 4;
-		face_array_map_writer.write(&offset.to_le_bytes()).unwrap();
-		FaceArrayRef { index, len: faces.len() as u32, u: PhantomData }
-	}
-	
-	pub fn write_transform(&mut self, transform: &Mat4) -> u32 {
-		let mut transforms_writer = self.mc.get_writer(TRANSFORMS_CURSOR);
-		let index = (transforms_writer.get_size() / size_of::<Mat4>()) as u32;
-		transforms_writer.write(transform.as_bytes()).unwrap();
-		index
-	}
-	
-	pub fn into_buffer(self) -> Box<[u8]> {
-		println!("GEOM bytes: {}", self.mc.get_size(GEOM_CURSOR));
-		println!("OBJECT_TEXTURES bytes: {}", self.mc.get_size(OBJECT_TEXTURES_CURSOR));
-		println!("TRANSFORM bytes: {}", self.mc.get_size(TRANSFORMS_CURSOR));
-		println!("SPRITE_TEXTURES bytes: {}", self.mc.get_size(SPRITE_TEXTURES_CURSOR));
-		println!("FACE_MAP bytes: {}", self.mc.get_size(FACE_ARRAY_MAP_CURSOR));
-		self.mc.into_buffer()
+	pub fn write_room_face_array<F: RoomFace + Face + ReinterpretAsBytes>(
+		&mut self, vertex_array_offset: usize, face_type: FaceType, faces: &[F], transform_index: usize,
+		object_data_maker: impl Fn(usize) -> ObjectData,
+	) -> RoomFaceInstanceOffsets {
+		let face_array = self.geom_buffer.write_face_array(faces, vertex_array_offset);
+		let mut face_writer = self.face_buffer.get_writer(face_type);
+		let object_data_offset = self.object_data.len();
+		let Range { start, end: flipped_start } = instantiate_face_array(
+			&mut self.object_data, &mut face_writer, &face_array, transform_index, object_data_maker,
+		);
+		for (face_index, face) in faces.iter().enumerate() {
+			if face.double_sided() {
+				let fi = FaceInstance::new(
+					face_array.index, face_index, transform_index, self.object_data.len(),
+				);
+				face_writer.write(&fi).unwrap();
+				self.object_data.push(ObjectData::flipped(object_data_offset + face_index));
+			}
+		}
+		let end = face_writer.pos() as u32;
+		RoomFaceInstanceOffsets { start, flipped_start, end }
 	}
 }

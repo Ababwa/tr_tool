@@ -6,48 +6,50 @@ pub mod tr1;
 pub mod tr2;
 pub mod tr3;
 
-use std::{io::{Read, Result}, ptr::addr_of_mut};
 use glam::U16Vec3;
-use shared::min_max::MinMax;
-use tr_readable::{read_boxed_slice_flat, read_val_flat};
 
 pub use tr_readable::Readable;
 
 //model
 
-#[repr(C)]
-#[derive(Clone, Copy)]
-pub struct GenTrBox<Scalar> {
-	/// Sectors.
-	pub z: MinMax<Scalar>,
-	pub x: MinMax<Scalar>,
-	pub y: i16,
-	pub overlap: u16,
+macro_rules! decl_box_data {
+	($tr_box:ident, $box_data:ident, $scalar:ty, $zone_mult:literal) => {
+		#[repr(C)]
+		#[derive(Clone, Debug)]
+		pub struct $tr_box {
+			/// Sectors.
+			pub z: MinMax<$scalar>,
+			pub x: MinMax<$scalar>,
+			pub y: i16,
+			pub overlap: u16,
+		}
+		
+		#[derive(Clone, Debug)]
+		pub struct $box_data {
+			pub boxes: Box<[$tr_box]>,
+			pub overlap_data: Box<[u16]>,
+			pub zone_data: Box<[u16]>,
+		}
+		
+		impl Readable for $box_data {
+			unsafe fn read<R: Read>(reader: &mut R, this: *mut Self) -> Result<()> {
+				let num_boxes = read_val_flat::<_, u32>(reader)? as usize;
+				read_boxed_slice_flat(reader, addr_of_mut!((*this).boxes), num_boxes)?;
+				let num_overlaps = read_val_flat::<_, u32>(reader)? as usize;
+				read_boxed_slice_flat(reader, addr_of_mut!((*this).overlap_data), num_overlaps)?;
+				read_boxed_slice_flat(reader, addr_of_mut!((*this).zone_data), num_boxes * $zone_mult)?;
+				Ok(())
+			}
+		}
+	};
 }
-
-#[derive(Clone)]
-pub struct GenBoxData<TrBox, const ZONE_FACTOR: usize> {
-	pub boxes: Box<[TrBox]>,
-	pub overlap_data: Box<[u16]>,
-	pub zone_data: Box<[u16]>,
-}
-
-impl<TrBox, const ZONE_FACTOR: usize> Readable for GenBoxData<TrBox, ZONE_FACTOR> {
-	unsafe fn read<R: Read>(reader: &mut R, this: *mut Self) -> Result<()> {
-		let num_boxes = read_val_flat::<_, u32>(reader)? as usize;
-		read_boxed_slice_flat(reader, addr_of_mut!((*this).boxes), num_boxes)?;
-		let num_overlaps = read_val_flat::<_, u32>(reader)? as usize;
-		read_boxed_slice_flat(reader, addr_of_mut!((*this).overlap_data), num_overlaps)?;
-		read_boxed_slice_flat(reader, addr_of_mut!((*this).zone_data), num_boxes * ZONE_FACTOR)?;
-		Ok(())
-	}
-}
+pub(crate) use decl_box_data;
 
 //extraction
 
 macro_rules! decl_room_geom {
 	($room_geom:ident, $room_vertex:ty, $room_quad:ty, $room_tri:ty, $sprite:ty) => {
-		#[derive(Clone, Copy)]
+		#[derive(Clone, Debug)]
 		pub struct $room_geom<'a> {
 			pub vertices: &'a [$room_vertex],
 			pub quads: &'a [$room_quad],
@@ -74,7 +76,7 @@ pub(crate) use decl_room_geom;
 
 macro_rules! decl_mesh1 {
 	($mesh:ident, $mesh_lighting:ident, $textured_quad:ty, $textured_tri:ty, $solid_quad:ty, $solid_tri:ty) => {
-		#[derive(Clone, Copy)]
+		#[derive(Clone, Debug)]
 		pub struct $mesh<'a> {
 			pub center: I16Vec3,
 			pub radius: i32,
