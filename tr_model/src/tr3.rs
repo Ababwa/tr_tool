@@ -133,8 +133,8 @@ bitfield! {
 	#[repr(C)]
 	#[derive(Clone, Debug)]
 	pub struct RoomFaceTexture(u16);
-	pub object_texture_index, _: 0, 14;
 	pub double_sided, _: 15;
+	pub object_texture_index, _: 14, 0;
 }
 
 macro_rules! decl_face_type {

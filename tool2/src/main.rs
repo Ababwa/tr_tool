@@ -2,11 +2,10 @@ mod as_bytes;
 mod gui;
 mod make;
 mod keys;
-// mod version_traits;
-mod versions;
+mod tr_traits;
+// mod versions;
 mod vec_tail;
 mod geom_buffer;
-mod face_buffer;
 mod multi_cursor;
 mod data_writer;
 
@@ -15,27 +14,19 @@ use std::{
 	io::{BufReader, Error, Read, Result, Seek}, mem::{size_of, take, MaybeUninit}, ops::Range, path::PathBuf,
 	sync::Arc, thread::{spawn, JoinHandle}, time::Duration,
 };
-use data_writer::{DataWriter, MeshFaceInstanceRanges, RoomFaceInstanceOffsets};
+use data_writer::{DataWriter, MeshFaceOffsets, Results, RoomFaceOffsets};
 use geom_buffer::{GeomBuffer, GEOM_BUFFER_SIZE};
-use face_buffer::{FaceType, FaceBuffer};
 use keys::{KeyGroup, KeyStates};
 use egui_file_dialog::{DialogState, FileDialog};
 use as_bytes::AsBytes;
 use glam::{DVec2, EulerRot, IVec4, Mat4, UVec2, Vec3, Vec3Swizzles};
 use gui::Gui;
-use versions::{converge, Level, TrVersion};
+// use versions::{converge, Level, Slice, TrVersion};
 use shared::min_max::{MinMax, VecMinMaxFromIterator};
-use tr_model::{tr1, tr2, tr3, Readable};
+use tr_model::{tr1, tr2, tr3};
+use tr_traits::{Entity, Face, Frame, Level, LevelStore, Mesh, MeshFaceType, Room, RoomFace, RoomFaceType, RoomGeom, RoomStaticMesh, RoomVertex, SolidFace, TexturedFace};
 use wgpu::{
-	util::{DeviceExt, TextureDataOrder}, BindGroup, BindGroupLayout, BindingResource, BindingType, Buffer,
-	BufferDescriptor, BufferUsages, Color, ColorTargetState, ColorWrites, CommandEncoder,
-	CommandEncoderDescriptor, CompareFunction, DepthBiasState, DepthStencilState, Device, Extent3d,
-	FragmentState, FrontFace, ImageCopyBuffer, ImageDataLayout, IndexFormat, LoadOp, Maintain, MapMode,
-	MultisampleState, Operations, PipelineLayoutDescriptor, PrimitiveState, PrimitiveTopology, Queue,
-	RenderPassColorAttachment, RenderPassDepthStencilAttachment, RenderPassDescriptor, RenderPipeline,
-	RenderPipelineDescriptor, ShaderModule, ShaderStages, StencilState, StoreOp, Texture, TextureDescriptor,
-	TextureDimension, TextureFormat, TextureSampleType, TextureUsages, TextureView, TextureViewDescriptor,
-	TextureViewDimension, VertexFormat, VertexState, VertexStepMode,
+	util::{DeviceExt, TextureDataOrder}, BindGroup, BindGroupLayout, BindingResource, BindingType, BlendComponent, BlendFactor, BlendOperation, BlendState, Buffer, BufferDescriptor, BufferUsages, Color, ColorTargetState, ColorWrites, CommandEncoder, CommandEncoderDescriptor, CompareFunction, DepthBiasState, DepthStencilState, Device, Extent3d, FragmentState, FrontFace, ImageCopyBuffer, ImageDataLayout, IndexFormat, LoadOp, Maintain, MapMode, MultisampleState, Operations, PipelineLayoutDescriptor, PrimitiveState, PrimitiveTopology, Queue, RenderPassColorAttachment, RenderPassDepthStencilAttachment, RenderPassDescriptor, RenderPipeline, RenderPipelineDescriptor, ShaderModule, ShaderStages, StencilState, StoreOp, Texture, TextureDescriptor, TextureDimension, TextureFormat, TextureSampleType, TextureUsages, TextureView, TextureViewDescriptor, TextureViewDimension, VertexFormat, VertexState, VertexStepMode
 };
 use winit::{
 	event::{ElementState, MouseButton, MouseScrollDelta}, event_loop::EventLoopWindowTarget,
@@ -50,7 +41,7 @@ This ordering creates a "Z" so triangle strip mode may be used for quads, and th
 for tris.
 */
 const FACE_VERTEX_INDICES: [u32; 4] = [1, 2, 0, 3];
-const FLIPPED_INDICES: [u16; 4] = [0, 2, 1, 3];//yields face vertex indices [1, 0, 2, 3]
+const REVERSE_INDICES: [u16; 4] = [0, 2, 1, 3];//yields face vertex indices [1, 0, 2, 3]
 const NUM_QUAD_VERTICES: u32 = 4;
 const NUM_TRI_VERTICES: u32 = 3;
 
@@ -61,22 +52,22 @@ const RIGHT: Vec3 = Vec3::NEG_X;
 const DOWN: Vec3 = Vec3::Y;
 const UP: Vec3 = Vec3::NEG_Y;
 
-struct WrittenFaceArray {
+struct WrittenFaceArray<'a, F> {
 	index: usize,
-	len: usize,
+	faces: &'a [F],
 }
 
-struct WrittenMesh {
-	textured_quads: WrittenFaceArray,
-	textured_tris: WrittenFaceArray,
-	solid_quads: WrittenFaceArray,
-	solid_tris: WrittenFaceArray,
+struct WrittenMesh<'a, L: Level + 'a> {
+	textured_quads: WrittenFaceArray<'a, <L::Mesh<'a> as Mesh<'a>>::TexturedQuad>,
+	textured_tris: WrittenFaceArray<'a, <L::Mesh<'a> as Mesh<'a>>::TexturedTri>,
+	solid_quads: WrittenFaceArray<'a, <L::Mesh<'a> as Mesh<'a>>::SolidQuad>,
+	solid_tris: WrittenFaceArray<'a, <L::Mesh<'a> as Mesh<'a>>::SolidTri>,
 }
 
 struct RoomData {
-	quads: RoomFaceInstanceOffsets,
-	tris: RoomFaceInstanceOffsets,
-	meshes: Vec<MeshFaceInstanceRanges>,
+	quads: RoomFaceOffsets,
+	tris: RoomFaceOffsets,
+	meshes: Vec<MeshFaceOffsets>,
 	sprites: Range<u32>,
 	center: Vec3,
 	radius: f32,
@@ -84,12 +75,6 @@ struct RoomData {
 
 /// `[original_room_index, alt_room_index]`
 struct RenderRoom([usize; 2]);
-
-#[derive(Clone, Copy, Debug)]
-enum RoomFaceType {
-	Quad,
-	Tri,
-}
 
 #[allow(dead_code)]
 #[derive(Clone, Copy, Debug)]
@@ -102,7 +87,7 @@ enum ObjectData {
 	RoomStaticMeshFace {
 		room_index: u16,
 		room_static_mesh_index: u16,
-		face_type: FaceType,
+		face_type: MeshFaceType,
 		face_index: u16,
 	},
 	RoomSprite {
@@ -112,13 +97,13 @@ enum ObjectData {
 	EntityMeshFace {
 		entity_index: u16,
 		mesh_index: u16,
-		face_type: FaceType,
+		face_type: MeshFaceType,
 		face_index: u16,
 	},
 	EntitySprite {
 		entity_index: u16,
 	},
-	Flipped {
+	Reverse {
 		object_data_index: u16,
 	},
 }
@@ -129,7 +114,7 @@ impl ObjectData {
 	}
 	
 	fn room_static_mesh_face(
-		room_index: usize, room_static_mesh_index: usize, face_type: FaceType, face_index: usize,
+		room_index: usize, room_static_mesh_index: usize, face_type: MeshFaceType, face_index: usize,
 	) -> Self {
 		Self::RoomStaticMeshFace {
 			room_index: room_index as u16, room_static_mesh_index: room_static_mesh_index as u16, face_type,
@@ -137,12 +122,12 @@ impl ObjectData {
 		}
 	}
 	
-	fn room_sprite(room_index: usize, sprite_index: usize) -> Self {
-		Self::RoomSprite { room_index: room_index as u16, sprite_index: sprite_index as u16 }
-	}
+	// fn room_sprite(room_index: usize, sprite_index: usize) -> Self {
+	// 	Self::RoomSprite { room_index: room_index as u16, sprite_index: sprite_index as u16 }
+	// }
 	
 	fn entity_mesh_face(
-		entity_index: usize, mesh_index: usize, face_type: FaceType, face_index: usize,
+		entity_index: usize, mesh_index: usize, face_type: MeshFaceType, face_index: usize,
 	) -> Self {
 		Self::EntityMeshFace {
 			entity_index: entity_index as u16, mesh_index: mesh_index as u16, face_type,
@@ -150,21 +135,23 @@ impl ObjectData {
 		}
 	}
 	
-	fn entity_sprite(entity_index: usize) -> Self {
-		Self::EntitySprite { entity_index: entity_index as u16 }
-	}
-	
-	fn flipped(object_data_index: usize) -> Self {
-		Self::Flipped { object_data_index: object_data_index as u16 }
-	}
+	// fn entity_sprite(entity_index: usize) -> Self {
+	// 	Self::EntitySprite { entity_index: entity_index as u16 }
+	// }
 }
 
-fn print_object_data(level: &Level, object_data: &[ObjectData], index: usize) {
+fn print_object_data<L: Level>(level: &L, object_data: &[ObjectData], index: usize) {
 	println!("object data index: {}", index);
-	let data = object_data[index];
+	let data = match object_data.get(index) {
+		Some(&data) => data,
+		None => {
+			println!("out of bounds");
+			return;
+		},
+	};
 	println!("{:?}", data);
 	let data = match object_data[index] {
-		ObjectData::Flipped { object_data_index } => {
+		ObjectData::Reverse { object_data_index } => {
 			let data = object_data[object_data_index as usize];
 			println!("{:?}", data);
 			data
@@ -173,26 +160,25 @@ fn print_object_data(level: &Level, object_data: &[ObjectData], index: usize) {
 	};
 	let mesh_face = match data {
 		ObjectData::RoomFace { room_index, face_type, face_index } => {
-			let room_geom = level.rooms().get(room_index as usize).get_geom();
-			let texture = match face_type {
-				RoomFaceType::Quad => match room_geom.quads().get(face_index as usize) {
-					TrVersion::Tr1(quad) | TrVersion::Tr2(quad) => quad.object_texture_index,
-					TrVersion::Tr3(quad) => quad.texture.0,
+			let room_geom = level.rooms()[room_index as usize].get_geom();
+			let (double_sided, object_texture_index) = match face_type {
+				RoomFaceType::Quad => {
+					let quad = &room_geom.quads()[face_index as usize];
+					(quad.double_sided(), quad.object_texture_index())
 				},
-				RoomFaceType::Tri => match room_geom.tris().get(face_index as usize) {
-					TrVersion::Tr1(tri) | TrVersion::Tr2(tri) => tri.object_texture_index,
-					TrVersion::Tr3(tri) => tri.texture.0,
+				RoomFaceType::Tri => {
+					let tri = &room_geom.tris()[face_index as usize];
+					(tri.double_sided(), tri.object_texture_index())
 				},
 			};
-			println!("double sided: {}", texture & 0x8000 != 0);
-			let object_texture_index = texture & 0x7FFF;
+			println!("double sided: {}", double_sided);
 			let object_texture = &level.object_textures()[object_texture_index as usize];
 			println!("blend mode: {}", object_texture.blend_mode);
 			None
 		},
 		ObjectData::RoomStaticMeshFace { room_index, room_static_mesh_index, face_type, face_index } => {
-			let room = level.rooms().get(room_index as usize);
-			let room_static_mesh = room.room_static_meshes().get(room_static_mesh_index as usize);
+			let room = &level.rooms()[room_index as usize];
+			let room_static_mesh = &room.room_static_meshes()[room_static_mesh_index as usize];
 			let static_mesh_id = room_static_mesh.static_mesh_id();
 			let static_mesh = level
 				.static_meshes()
@@ -204,55 +190,44 @@ fn print_object_data(level: &Level, object_data: &[ObjectData], index: usize) {
 		},
 		ObjectData::RoomSprite { .. } => None,
 		ObjectData::EntityMeshFace { entity_index, mesh_index, face_type, face_index } => {
-			let model_id = level.entities().get(entity_index as usize).model_id();
+			let model_id = level.entities()[entity_index as usize].model_id();
 			let model = level.models().iter().find(|model| model.id as u16 == model_id).unwrap();
 			let mesh_offset = level.mesh_offsets()[(model.mesh_offset_index + mesh_index) as usize];
 			Some((mesh_offset, face_type, face_index))
 		},
 		ObjectData::EntitySprite { .. } => None,
-		ObjectData::Flipped { .. } => unreachable!("flipped points to flipped"),
+		ObjectData::Reverse { .. } => unreachable!("reverse points to reverse"),
 	};
 	if let Some((mesh_offset, face_type, face_index)) = mesh_face {
 		println!("mesh offset: {}", mesh_offset);
 		let mesh = level.get_mesh(mesh_offset);
-		let face_texture = match face_type {
-			FaceType::TexturedQuad => converge!(
-				mesh.textured_quads().get(face_index as usize),
-				|quad| (Some(quad.object_texture_index), None, None),
-			),
-			FaceType::TexturedTri => converge!(
-				mesh.textured_tris().get(face_index as usize),
-				|tri| (Some(tri.object_texture_index), None, None),
-			),
-			FaceType::SolidQuad => match mesh.solid_quads().get(face_index as usize) {
-				TrVersion::Tr1(quad) => (None, Some(quad.color_index), None),
-				TrVersion::Tr2(quad) | TrVersion::Tr3(quad) => {
-					(None, Some(quad.color_index_24bit as u16), Some(quad.color_index_32bit))
-				},
+		let (object_texture_index, color_index_24bit, color_index_32bit) = match face_type {
+			MeshFaceType::TexturedQuad => {
+				(Some(mesh.textured_quads()[face_index as usize].object_texture_index()), None, None)
 			},
-			FaceType::SolidTri => match mesh.solid_tris().get(face_index as usize) {
-				TrVersion::Tr1(tri) => (None, Some(tri.color_index), None),
-				TrVersion::Tr2(tri) | TrVersion::Tr3(tri) => {
-					(None, Some(tri.color_index_24bit as u16), Some(tri.color_index_32bit))
-				},
+			MeshFaceType::TexturedTri => {
+				(Some(mesh.textured_tris()[face_index as usize].object_texture_index()), None, None)
+			},
+			MeshFaceType::SolidQuad => {
+				let quad = &mesh.solid_quads()[face_index as usize];
+				(None, Some(quad.color_index_24bit()), quad.color_index_32bit())
+			},
+			MeshFaceType::SolidTri =>  {
+				let tri = &mesh.solid_tris()[face_index as usize];
+				(None, Some(tri.color_index_24bit()), tri.color_index_32bit())
 			},
 		};
-		if let (Some(object_texture_index), ..) = face_texture {
+		if let Some(object_texture_index) = object_texture_index {
 			let object_texture = &level.object_textures()[object_texture_index as usize];
 			println!("blend mode: {}", object_texture.blend_mode);
 		}
-		if let (_, Some(color_index_24bit), _) = face_texture {
-			let tr1::Color24Bit { r, g, b } = level.palette_24bit()[color_index_24bit as usize];
+		if let (Some(color_index_24bit), Some(palette_24bit)) = (color_index_24bit, level.palette_24bit()) {
+			let tr1::Color24Bit { r, g, b } = palette_24bit[color_index_24bit as usize];
 			let [r, g, b] = [r, g, b].map(|c| (c << 2) as u32);
 			let color = (r << 16) | (g << 8) | b;
 			println!("color 24 bit: #{:06X}", color);
 		}
-		if let (.., Some(color_index_32bit)) = face_texture {
-			let palette_32bit = match level {
-				TrVersion::Tr1(_) => unreachable!(),
-				TrVersion::Tr2(level) => &level.palette_32bit,
-				TrVersion::Tr3(level) => &level.palette_32bit,
-			} as &[_; 256];
+		if let (Some(color_index_32bit), Some(palette_32bit)) = (color_index_32bit, level.palette_32bit()) {
 			let tr2::Color32Bit { r, g, b , ..} = palette_32bit[color_index_32bit as usize];
 			let [r, g, b] = [r, g, b].map(|c| c as u32);
 			let color = (r << 16) | (g << 8) | b;
@@ -274,7 +249,7 @@ struct ActionMap {
 struct LoadedLevel {
 	//constant
 	face_vertex_index_buffer: Buffer,
-	flipped_indices_buffer: Buffer,
+	reverse_indices_buffer: Buffer,
 	
 	//render
 	depth_view: TextureView,
@@ -298,9 +273,9 @@ struct LoadedLevel {
 	render_alt_rooms: bool,
 	
 	//object data
+	level: LevelStore,
 	object_data: Vec<ObjectData>,
 	click_handle: Option<JoinHandle<u32>>,
-	level: Level,
 	
 	//input state
 	mouse_pos: DVec2,
@@ -315,6 +290,7 @@ struct TrTool {
 	//static
 	bind_group_layout: BindGroupLayout,
 	textured_pipeline: RenderPipeline,
+	additive_pipeline: RenderPipeline,
 	solid_pipeline: RenderPipeline,
 	sprite_pipeline: RenderPipeline,
 	
@@ -374,8 +350,10 @@ impl LoadedLevel {
 		if let Some(click_handle) = self.click_handle.take() {
 			if click_handle.is_finished() {
 				let object_id = click_handle.join().expect("join click handle");
-				if object_id != 0 {
-					print_object_data(&self.level, &self.object_data, object_id as usize);
+				match &self.level {
+					LevelStore::Tr1(level) => print_object_data(level.as_ref(), &self.object_data, object_id as usize),
+					LevelStore::Tr2(level) => print_object_data(level.as_ref(), &self.object_data, object_id as usize),
+					LevelStore::Tr3(level) => print_object_data(level.as_ref(), &self.object_data, object_id as usize),
 				}
 			} else {
 				self.click_handle = Some(click_handle);
@@ -423,9 +401,20 @@ fn make_interact_texture(device: &Device, window_size: UVec2) -> Texture {
 	)
 }
 
-fn parse_level(
-	device: &Device, queue: &Queue, bind_group_layout: &BindGroupLayout, window_size: UVec2, level: Level,
-) -> LoadedLevel {
+fn write_face_array<'a, F: Face>(
+	geom_buffer: &mut GeomBuffer, vertex_array_offset: usize, faces: &'a [F],
+) -> WrittenFaceArray<'a, F> {
+	WrittenFaceArray { index: geom_buffer.write_face_array(faces, vertex_array_offset), faces }
+}
+
+fn parse_level<R: Read, L: Level>(
+	device: &Device, queue: &Queue, bind_group_layout: &BindGroupLayout, window_size: UVec2, reader: &mut R,
+) -> Result<LoadedLevel> {
+	let level = unsafe {
+		let mut level = Box::new(MaybeUninit::uninit());
+		L::read(reader, level.as_mut_ptr())?;
+		level.assume_init()
+	};
 	//map model and sprite sequence ids to model and sprite sequence refs
 	let model_id_map = level
 		.models()
@@ -453,21 +442,19 @@ fn parse_level(
 			let mesh = level.get_mesh(mesh_offset);
 			let vao = geom_buffer.write_vertex_array(mesh.vertices());
 			let index = written_meshes.len();
-			written_meshes.push(WrittenMesh {
-				textured_quads: converge!(mesh.textured_quads(), |f| geom_buffer.write_face_array(f, vao)),
-				textured_tris: converge!(mesh.textured_tris(), |f| geom_buffer.write_face_array(f, vao)),
-				solid_quads: converge!(mesh.solid_quads(), |f| geom_buffer.write_face_array(f, vao)),
-				solid_tris: converge!(mesh.solid_tris(), |f| geom_buffer.write_face_array(f, vao)),
-			});
+			let written_mesh = WrittenMesh {
+				textured_quads: write_face_array(&mut geom_buffer, vao, mesh.textured_quads()),
+				textured_tris: write_face_array(&mut geom_buffer, vao, mesh.textured_tris()),
+				solid_quads: write_face_array(&mut geom_buffer, vao, mesh.solid_quads()),
+				solid_tris: write_face_array(&mut geom_buffer, vao, mesh.solid_tris()),
+			};
+			written_meshes.push(written_mesh);
 			index
 		});
 	}
 	
 	//rooms
-	let mut data_writer = DataWriter {
-		geom_buffer, face_buffer: FaceBuffer::new(),
-		object_data: vec![ObjectData::entity_sprite(usize::MAX)],//dummy value at index 0
-	};
+	let mut data_writer = DataWriter::new(geom_buffer);
 	let mut sprite_instances = Vec::<IVec4>::new();
 	let mut room_indices = (0..level.rooms().len()).collect::<Vec<_>>();//rooms with alt will be removed
 	let mut render_rooms = Vec::with_capacity(level.rooms().len());//rooms.len is upper-bound
@@ -480,22 +467,15 @@ fn parse_level(
 		
 		//room geom
 		let (quads, tris) = {
-			let vertex_array_offset = converge!(
-				room_geom.vertices(), |vertices| data_writer.geom_buffer.write_vertex_array(vertices),
-			);
+			let vertex_array_offset = data_writer.geom_buffer.write_vertex_array(room_geom.vertices());
 			let transform = Mat4::from_translation(room_pos.as_vec3());
 			let transform_index = data_writer.geom_buffer.write_transform(&transform);
-			let quad_obj_fn = |face_index| ObjectData::room_face(room_index, RoomFaceType::Quad, face_index);
-			let quads = converge!(
-				room_geom.quads(), |quads| data_writer.write_room_face_array(
-					vertex_array_offset, FaceType::TexturedQuad, quads, transform_index, quad_obj_fn,
-				),
+			let obj_fn = |face_type, face_index| ObjectData::room_face(room_index, face_type, face_index);
+			let quads = data_writer.write_room_face_array(
+				level.as_ref(), vertex_array_offset, room_geom.quads(), transform_index, obj_fn,
 			);
-			let tri_obj_fn = |face_index| ObjectData::room_face(room_index, RoomFaceType::Tri, face_index);
-			let tris = converge!(
-				room_geom.tris(), |tris| data_writer.write_room_face_array(
-					vertex_array_offset, FaceType::TexturedTri, tris, transform_index, tri_obj_fn,
-				),
+			let tris = data_writer.write_room_face_array(
+				level.as_ref(), vertex_array_offset, room_geom.tris(), transform_index, obj_fn,
 			);
 			(quads, tris)
 		};
@@ -523,27 +503,29 @@ fn parse_level(
 			let obj_fn = |face_type, face_index| {
 				ObjectData::room_static_mesh_face(room_index, room_static_mesh_index, face_type, face_index)
 			};
-			meshes.push(data_writer.instantiate_mesh(written_mesh, transform_index, obj_fn));
+			meshes.push(data_writer.instantiate_mesh(level.as_ref(), written_mesh, transform_index, obj_fn));
 		}
 		
 		//room sprites
-		for (sprite_index, sprite) in room_geom.sprites().iter().enumerate() {
-			let pos = room_pos + room_geom.vertices().get(sprite.vertex_index as usize).pos().as_ivec3();
+		for (_sprite_index, sprite) in room_geom.sprites().iter().enumerate() {
+			let pos = room_pos + room_geom.vertices()[sprite.vertex_index as usize].pos().as_ivec3();
 			sprite_instances.push(pos.extend(sprite.sprite_texture_index as i32));
-			data_writer.object_data.push(ObjectData::room_sprite(room_index, sprite_index));
+			// data_writer.object_data.push(ObjectData::room_sprite(room_index, sprite_index));
 		}
 		
 		//entities
 		for &entity_index in &room_entity_indices[room_index] {
-			let entity = level.entities().get(entity_index);
+			let entity = &level.entities()[entity_index];
 			match model_id_map[&entity.model_id()] {
 				ModelRef::Model(model) => {
-					let entity_transform = Mat4::from_translation(entity.pos().as_vec3())
-						* Mat4::from_rotation_y(entity.angle() as f32 / 65536.0 * TAU);
+					let entity_translation = Mat4::from_translation(entity.pos().as_vec3());
+					let entity_rotation = Mat4::from_rotation_y(entity.angle() as f32 / 65536.0 * TAU);
+					let entity_transform = entity_translation * entity_rotation;
 					let frame = level.get_frame(model);
 					let mut rotations = frame.iter_rotations();
-					let mut last_transform = Mat4::from_translation(frame.offset().as_vec3())
-						* rotations.next().unwrap();
+					let first_translation = Mat4::from_translation(frame.offset().as_vec3());
+					let first_rotation = rotations.next().unwrap();
+					let mut last_transform = first_translation * first_rotation;
 					let transform = entity_transform * last_transform;
 					let transform_index = data_writer.geom_buffer.write_transform(&transform);
 					let mesh_offset = level.mesh_offsets()[model.mesh_offset_index as usize];
@@ -551,7 +533,7 @@ fn parse_level(
 					let obj_fn = |face_type, face_index| {
 						ObjectData::entity_mesh_face(entity_index, 0, face_type, face_index)
 					};
-					meshes.push(data_writer.instantiate_mesh(mesh, transform_index, obj_fn));
+					meshes.push(data_writer.instantiate_mesh(level.as_ref(), mesh, transform_index, obj_fn));
 					let mut parent_stack = vec![];
 					let mesh_nodes = level.get_mesh_nodes(model);
 					for mesh_node_index in 0..mesh_nodes.len() {
@@ -567,9 +549,9 @@ fn parse_level(
 						let mesh_offset_index = model.mesh_offset_index as usize + mesh_node_index + 1;
 						let mesh_offset = level.mesh_offsets()[mesh_offset_index];
 						let mesh = &written_meshes[mesh_offset_map[&mesh_offset]];
-						last_transform = parent
-							* Mat4::from_translation(mesh_node.offset.as_vec3())
-							* rotations.next().unwrap();
+						let translation = Mat4::from_translation(mesh_node.offset.as_vec3());
+						let rotation = rotations.next().unwrap();
+						last_transform = parent * translation * rotation;
 						let transform = entity_transform * last_transform;
 						let transform_index = data_writer.geom_buffer.write_transform(&transform);
 						let obj_fn = |face_type, face_index| {
@@ -577,12 +559,14 @@ fn parse_level(
 								entity_index, mesh_node_index + 1, face_type, face_index,
 							)
 						};
-						meshes.push(data_writer.instantiate_mesh(mesh, transform_index, obj_fn));
+						meshes.push(
+							data_writer.instantiate_mesh(level.as_ref(), mesh, transform_index, obj_fn),
+						);
 					}
 				},
 				ModelRef::SpriteSequence(sprite_sequence) => {
 					sprite_instances.push(entity.pos().extend(sprite_sequence.sprite_texture_index as i32));
-					data_writer.object_data.push(ObjectData::entity_sprite(entity_index));
+					// data_writer.object_data.push(ObjectData::entity_sprite(entity_index));
 				},
 			}
 		}
@@ -611,16 +595,16 @@ fn parse_level(
 		RoomData { quads, tris, meshes, sprites: sprites_start..sprites_end, center, radius, }
 	}).collect::<Vec<_>>();
 	
-	let DataWriter { geom_buffer, face_buffer, object_data } = data_writer;
-	
 	//remaining room indices have no alt
 	for room_index in room_indices {
 		render_rooms.push(RenderRoom([room_index; 2]));
 	}
 	render_rooms.sort_by_key(|rr| rr.0[0]);
 	
+	let Results { geom_buffer, face_buffer, object_data } = data_writer.done();
+	
 	//level bind group
-	let data_buffer = make::buffer(device, &geom_buffer.into_buffer(), BufferUsages::STORAGE);
+	let geom_buffer = make::buffer(device, &geom_buffer, BufferUsages::STORAGE);
 	let (yaw, pitch) = yaw_pitch(Vec3::ONE);
 	let pos = rooms
 		.get(0)
@@ -634,7 +618,7 @@ fn parse_level(
 	let perspective_transform_buffer = make::buffer(
 		device, perspective_transform.as_bytes(), BufferUsages::UNIFORM | BufferUsages::COPY_DST,
 	);
-	let palette_buffer = make::buffer(device, level.palette_24bit().as_bytes(), BufferUsages::UNIFORM);
+	let palette_buffer = make::buffer(device, level.palette_24bit().unwrap().as_bytes(), BufferUsages::UNIFORM);
 	let atlases_texture = device.create_texture_with_data(
 		queue,
 		&TextureDescriptor {
@@ -659,7 +643,7 @@ fn parse_level(
 		device,
 		&bind_group_layout,
 		&[
-			data_buffer.as_entire_binding(),
+			geom_buffer.as_entire_binding(),
 			camera_transform_buffer.as_entire_binding(),
 			perspective_transform_buffer.as_entire_binding(),
 			palette_buffer.as_entire_binding(),
@@ -683,15 +667,15 @@ fn parse_level(
 	let interact_texture = make_interact_texture(device, window_size);
 	let interact_view = interact_texture.create_view(&TextureViewDescriptor::default());
 	
-	LoadedLevel {
+	Ok(LoadedLevel {
 		face_vertex_index_buffer: make::buffer(device, FACE_VERTEX_INDICES.as_bytes(), BufferUsages::VERTEX),
-		flipped_indices_buffer: make::buffer(device, FLIPPED_INDICES.as_bytes(), BufferUsages::INDEX),
+		reverse_indices_buffer: make::buffer(device, REVERSE_INDICES.as_bytes(), BufferUsages::INDEX),
 		depth_view: make::depth_view(device, window_size),
 		interact_texture,
 		interact_view,
 		camera_transform_buffer,
 		perspective_transform_buffer,
-		face_instance_buffer: make::buffer(device, &face_buffer.into_buffer(), BufferUsages::VERTEX),
+		face_instance_buffer: make::buffer(device, face_buffer.as_bytes(), BufferUsages::VERTEX),
 		sprite_instance_buffer: make::buffer(device, sprite_instances.as_bytes(), BufferUsages::VERTEX),
 		bind_group,
 		pos,
@@ -701,27 +685,19 @@ fn parse_level(
 		render_rooms,
 		render_room_index: None,
 		render_alt_rooms: false,
-		object_data,
+		object_data: object_data.to_vec(),
+		level: level.store(),
 		click_handle: None,
-		level,
 		mouse_pos: DVec2::ZERO,
 		mouse_control: false,
 		key_states: KeyStates::new(),
 		action_map,
 		frame_update_queue: vec![],
-	}
-}
-
-fn read_level<R: Read, L: Readable>(reader: &mut R) -> Result<L> {
-	unsafe {
-		let mut level = MaybeUninit::uninit();
-		L::read(reader, level.as_mut_ptr())?;
-		Ok(level.assume_init())
-	}
+	})
 }
 
 fn load_level(
-	device: &Device, queue: &Queue, bind_group_layout: &BindGroupLayout, window_size: UVec2, path: &PathBuf,
+	device: &Device, queue: &Queue, bgl: &BindGroupLayout, window_size: UVec2, path: &PathBuf,
 ) -> Result<LoadedLevel> {
 	let mut reader = BufReader::new(File::open(path)?);
 	let mut version = [0; 4];
@@ -729,13 +705,12 @@ fn load_level(
 	reader.rewind()?;
 	let version = u32::from_le_bytes(version);
 	let extension = path.extension().map(|e| e.to_string_lossy());
-	let level = match (version, extension.as_ref().map(|e| e.as_ref())) {
-		(0x00000020, _) => Level::Tr1(read_level::<_, tr1::Level>(&mut reader)?),
-		(0x0000002D, _) => Level::Tr2(read_level::<_, tr2::Level>(&mut reader)?),
-		(0xFF180038, _) => Level::Tr3(read_level::<_, tr3::Level>(&mut reader)?),
+	match (version, extension.as_ref().map(|e| e.as_ref())) {
+		(0x00000020, _) => parse_level::<_, tr1::Level>(device, queue, bgl, window_size, &mut reader),
+		(0x0000002D, _) => parse_level::<_, tr2::Level>(device, queue, bgl, window_size, &mut reader),
+		(0xFF180038, _) => parse_level::<_, tr3::Level>(device, queue, bgl, window_size, &mut reader),
 		_ => return Err(Error::other("unknown file type")),
-	};
-	Ok(parse_level(device, queue, bind_group_layout, window_size, level))
+	}
 }
 
 fn draw_window<R, F: FnOnce(&mut egui::Ui) -> R>(ctx: &egui::Context, title: &str, contents: F) -> R {
@@ -908,7 +883,7 @@ impl Gui for TrTool {
 					}),
 					Some(RenderPassColorAttachment {
 						ops: Operations {
-							load: LoadOp::Clear(Color::BLACK),
+							load: LoadOp::Clear(Color { r: f64::MAX, g: 0.0, b: 0.0, a: 0.0 }),
 							store: StoreOp::Store,
 						},
 						resolve_target: None,
@@ -928,21 +903,36 @@ impl Gui for TrTool {
 			});
 			
 			rpass.set_bind_group(0, &loaded_level.bind_group, &[]);
-			rpass.set_index_buffer(loaded_level.flipped_indices_buffer.slice(..), IndexFormat::Uint16);
+			rpass.set_index_buffer(loaded_level.reverse_indices_buffer.slice(..), IndexFormat::Uint16);
 			rpass.set_vertex_buffer(0, loaded_level.face_vertex_index_buffer.slice(..));
 			
 			rpass.set_vertex_buffer(1, loaded_level.face_instance_buffer.slice(..));
+			
 			rpass.set_pipeline(&self.textured_pipeline);
 			for room in render_room_range.clone().map(|render_room_index| {
 				&loaded_level.rooms[loaded_level.render_rooms[render_room_index].0[room_version]]
 			}) {
 				rpass.draw(0..NUM_QUAD_VERTICES, room.quads.original());
 				rpass.draw(0..NUM_TRI_VERTICES, room.tris.original());
-				rpass.draw_indexed(0..NUM_QUAD_VERTICES, 0, room.quads.flipped());
-				rpass.draw_indexed(0..NUM_TRI_VERTICES, 0, room.tris.flipped());
+				rpass.draw_indexed(0..NUM_QUAD_VERTICES, 0, room.quads.reverse());
+				rpass.draw_indexed(0..NUM_TRI_VERTICES, 0, room.tris.reverse());
 				for mesh in &room.meshes {
-					rpass.draw(0..NUM_QUAD_VERTICES, mesh.textured_quads.clone());
-					rpass.draw(0..NUM_TRI_VERTICES, mesh.textured_tris.clone());
+					rpass.draw(0..NUM_QUAD_VERTICES, mesh.textured_quads.opaque());
+					rpass.draw(0..NUM_TRI_VERTICES, mesh.textured_tris.opaque());
+				}
+			}
+			
+			rpass.set_pipeline(&self.additive_pipeline);
+			for room in render_room_range.clone().map(|render_room_index| {
+				&loaded_level.rooms[loaded_level.render_rooms[render_room_index].0[room_version]]
+			}) {
+				rpass.draw(0..NUM_QUAD_VERTICES, room.quads.additive());
+				rpass.draw(0..NUM_TRI_VERTICES, room.tris.additive());
+				rpass.draw_indexed(0..NUM_QUAD_VERTICES, 0, room.quads.reverse_additive());
+				rpass.draw_indexed(0..NUM_TRI_VERTICES, 0, room.tris.reverse_additive());
+				for mesh in &room.meshes {
+					rpass.draw(0..NUM_QUAD_VERTICES, mesh.textured_quads.additive());
+					rpass.draw(0..NUM_TRI_VERTICES, mesh.textured_tris.additive());
 				}
 			}
 			
@@ -957,6 +947,7 @@ impl Gui for TrTool {
 			}
 			
 			rpass.set_vertex_buffer(1, loaded_level.sprite_instance_buffer.slice(..));
+			
 			rpass.set_pipeline(&self.sprite_pipeline);
 			for room in render_room_range.clone().map(|render_room_index| {
 				&loaded_level.rooms[loaded_level.render_rooms[render_room_index].0[room_version]]
@@ -1008,7 +999,7 @@ impl Gui for TrTool {
 
 fn make_pipeline(
 	device: &Device, bind_group_layout: &BindGroupLayout, module: &ShaderModule, vs_entry: &str,
-	fs_entry: &str, instance: VertexFormat,
+	fs_entry: &str, instance: VertexFormat, blend: Option<BlendState>, depth_write_enabled: bool,
 ) -> RenderPipeline {
 	device.create_render_pipeline(
 		&RenderPipelineDescriptor {
@@ -1041,7 +1032,7 @@ fn make_pipeline(
 			depth_stencil: Some(DepthStencilState {
 				bias: DepthBiasState::default(),
 				depth_compare: CompareFunction::Less,
-				depth_write_enabled: true,
+				depth_write_enabled,
 				format: TextureFormat::Depth32Float,
 				stencil: StencilState::default(),
 			}),
@@ -1052,7 +1043,7 @@ fn make_pipeline(
 				targets: &[
 					Some(ColorTargetState {
 						format: TextureFormat::Bgra8Unorm,
-						blend: None,
+						blend,
 						write_mask: ColorWrites::ALL,
 					}),
 					Some(ColorTargetState {
@@ -1086,17 +1077,31 @@ fn make_gui(device: &Device, window_size: UVec2) -> TrTool {
 		],
 	);
 	let shader = make::shader(device, include_str!("shader/mesh.wgsl"));
-	let [textured_pipeline, solid_pipeline, sprite_pipeline] = [
-		("textured_vs_main", "textured_fs_main", VertexFormat::Uint32x2),
-		("solid_vs_main", "solid_fs_main", VertexFormat::Uint32x2),
-		("sprite_vs_main", "sprite_fs_main", VertexFormat::Sint32x4),
-	].map(|(vs_entry, fs_entry, instance)| {
-		make_pipeline(device, &bind_group_layout, &shader, vs_entry, fs_entry, instance)
+	let additive_blend = BlendState {
+		alpha: BlendComponent {
+			src_factor: BlendFactor::One,
+			dst_factor: BlendFactor::One,
+			operation: BlendOperation::Add,
+		},
+		color: BlendComponent {
+			src_factor: BlendFactor::One,
+			dst_factor: BlendFactor::One,
+			operation: BlendOperation::Add,
+		},
+	};
+	let [textured_pipeline, additive_pipeline, solid_pipeline, sprite_pipeline] = [
+		("textured_vs_main", "textured_fs_main", VertexFormat::Uint32x2, None, true),
+		("textured_vs_main", "textured_fs_main", VertexFormat::Uint32x2, Some(additive_blend), false),
+		("solid_vs_main", "solid_fs_main", VertexFormat::Uint32x2, None, true),
+		("sprite_vs_main", "sprite_fs_main", VertexFormat::Sint32x4, None, true),
+	].map(|(vs_entry, fs_entry, instance, blend, depth)| {
+		make_pipeline(device, &bind_group_layout, &shader, vs_entry, fs_entry, instance, blend, depth)
 	});
 	
 	TrTool {
 		bind_group_layout,
 		textured_pipeline,
+		additive_pipeline,
 		solid_pipeline,
 		sprite_pipeline,
 		window_size,

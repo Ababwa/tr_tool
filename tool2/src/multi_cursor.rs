@@ -1,8 +1,5 @@
-use std::{
-	alloc::{alloc, handle_alloc_error, Layout}, io::{Error, Result}, marker::PhantomData, ops::Range,
-	ptr::slice_from_raw_parts_mut,
-};
-use crate::as_bytes::{AsBytes, ReinterpretAsBytes};
+use std::{io::{Error, Result}, ops::Range};
+use shared::alloc;
 
 pub struct Writer<'a> {
 	buffer: &'a mut Box<[u8]>,
@@ -27,28 +24,6 @@ impl<'a> Writer<'a> {
 		self.range.end += bytes.len();
 		Ok(())
 	}
-	
-	pub fn type_wrap<T>(self) -> TypedWriter<'a, T> {
-		TypedWriter { writer: self, u: PhantomData }
-	}
-}
-
-pub struct TypedWriter<'a, T> {
-	writer: Writer<'a>,
-	u: PhantomData<T>,
-}
-
-impl<'a, T: ReinterpretAsBytes> TypedWriter<'a, T> {
-	pub fn write(&mut self, item: &T) -> Result<()> {
-		self.writer.write(item.as_bytes())
-	}
-	
-	/// Position of writer in units of the type.
-	pub fn pos(&self) -> usize {
-		let pos = self.writer.pos();
-		assert!(pos % size_of::<T>() == 0);
-		pos / size_of::<T>()
-	}
 }
 
 pub struct MultiCursorBuffer {
@@ -70,23 +45,12 @@ impl MultiCursorBuffer {
 	}
 	
 	pub fn new(size: usize, cursor_positions: &[usize]) -> Self {
-		let buffer = unsafe {
-			let layout = Layout::array::<u8>(size).unwrap();
-			let ptr = alloc(layout);
-			if ptr.is_null() {
-				handle_alloc_error(layout);
-			}
-			Box::from_raw(slice_from_raw_parts_mut(ptr, size))
-		};
+		let buffer = unsafe { alloc::slice(size).assume_init() };
 		let mut mc = Self { buffer, ranges: Vec::with_capacity(cursor_positions.len()) };
 		for &cursor_pos in cursor_positions {
 			mc.add_cursor(cursor_pos);
 		}
 		mc
-	}
-	
-	pub fn get_range(&self, cursor_index: usize) -> Range<usize> {
-		self.ranges[cursor_index].clone()
 	}
 	
 	pub fn get_size(&self, cursor_index: usize) -> usize {
