@@ -1,13 +1,16 @@
 use std::{mem::MaybeUninit, ops::Range};
+use glam::IVec3;
 use shared::alloc;
-use tr_model::tr3;
+use tr_model::{tr1, tr3};
 use crate::{
-	as_bytes::{ReinterpretAsBytes, ToBytes}, geom_buffer::GeomBuffer,
-	tr_traits::{Level, MeshFace, MeshFaceType, RoomFace, RoomFaceType, TexturedFace}, ObjectData,
-	WrittenFaceArray, WrittenMesh,
+	as_bytes::{ReinterpretAsBytes, ToBytes}, fixed_vec::FixedVec, geom_buffer::GeomBuffer,
+	tr_traits::{Level, MeshFace, MeshFaceType, RoomFace, RoomFaceType, RoomVertex, TexturedFace},
+	ObjectData, WrittenFaceArray, WrittenMesh,
 };
 
-const NUM_FACES: usize = 65536;
+const MAX_FACES: usize = 65536;
+const MAX_SPRITES: usize = 128;
+const MAX_OBJ_DATA: usize = 65536;
 
 #[repr(C)]
 #[derive(Clone, Copy)]
@@ -32,6 +35,15 @@ impl FaceInstance {
 }
 
 impl ReinterpretAsBytes for FaceInstance {}
+
+#[repr(C)]
+struct SpriteInstance {
+	pos: IVec3,
+	sprite_texture_index: u16,
+	object_data_index: u16,
+}
+
+impl ReinterpretAsBytes for SpriteInstance {}
 
 pub struct MeshTexturedFaceOffsets {
 	pub opaque: u32,
@@ -85,31 +97,33 @@ impl RoomFaceOffsets {
 pub struct Results {
 	pub geom_buffer: Box<[u8]>,
 	pub face_buffer: Box<[u8]>,
+	pub sprite_buffer: Box<[u8]>,
 	pub object_data: Vec<ObjectData>,
 }
 
 pub struct DataWriter {
 	pub geom_buffer: GeomBuffer,
-	face_buffer: Box<[MaybeUninit<FaceInstance>; NUM_FACES]>,
-	object_data: Box<[MaybeUninit<ObjectData>; NUM_FACES]>,
+	face_buffer: Box<[MaybeUninit<FaceInstance>; MAX_FACES]>,//raw array for out-of-order initialization
 	num_written_faces: usize,
+	sprite_buffer: FixedVec<SpriteInstance, MAX_SPRITES>,
+	object_data: FixedVec<ObjectData, MAX_OBJ_DATA>,
 }
 
 impl DataWriter {
 	pub fn new(geom_buffer: GeomBuffer) -> Self {
 		Self {
 			geom_buffer,
-			face_buffer: unsafe { alloc::val().assume_init() },
-			object_data: unsafe { alloc::val().assume_init() },
+			face_buffer: alloc::array(),
 			num_written_faces: 0,
+			sprite_buffer: FixedVec::new(),
+			object_data: FixedVec::new(),
 		}
 	}
 	
-	pub fn write_room_face_array<L, F, O>(
+	pub fn write_room_face_array<L: Level, F: RoomFace, O: Fn(RoomFaceType, usize) -> ObjectData>(
 		&mut self, level: &L, vertex_array_offset: usize, faces: &[F], transform_index: usize,
 		object_data_maker: O,
-	) -> RoomFaceOffsets
-	where L: Level, F: RoomFace, O: Fn(RoomFaceType, usize) -> ObjectData {
+	) -> RoomFaceOffsets {
 		let face_array_index = self.geom_buffer.write_face_array(faces, vertex_array_offset);
 		let mut double_sided = Vec::with_capacity(faces.len());
 		let original = self.num_written_faces;
@@ -124,10 +138,11 @@ impl DataWriter {
 			} else {
 				face_index + additive - faces.len()
 			};
-			let object_data = object_data_maker(F::TYPE, face_index);
-			let face_instance = FaceInstance::new(face_array_index, face_index, transform_index, index);
-			self.object_data[index].write(object_data);
+			let face_instance = FaceInstance::new(
+				face_array_index, face_index, transform_index, self.object_data.len(),
+			);
 			self.face_buffer[index].write(face_instance);
+			self.object_data.push(object_data_maker(F::TYPE, face_index));
 			if face.double_sided() {
 				double_sided.push((face_instance, is_additive));
 			}
@@ -142,9 +157,9 @@ impl DataWriter {
 				ds_index + additive_reverse - double_sided.len()
 			};
 			let object_data = ObjectData::Reverse { object_data_index: face_instance.object_data_index };
-			face_instance.object_data_index = index as u16;
-			self.object_data[index].write(object_data);
+			face_instance.object_data_index = self.object_data.len() as u16;
 			self.face_buffer[index].write(face_instance);
+			self.object_data.push(object_data);
 		}
 		self.num_written_faces = end;
 		let original = original as u32;
@@ -156,7 +171,8 @@ impl DataWriter {
 	}
 	
 	fn mesh_textured_face_array<L, F, O>(
-		&mut self, level: &L, face_array: &WrittenFaceArray<F>, transform_index: usize, object_data_maker: O,
+		&mut self, level: &L, face_array: &WrittenFaceArray<F>, transform_index: usize,
+		object_data_maker: O,
 	) -> MeshTexturedFaceOffsets
 	where L: Level, F: TexturedFace + MeshFace, O: Fn(MeshFaceType, usize) -> ObjectData {
 		let opaque = self.num_written_faces;
@@ -170,10 +186,11 @@ impl DataWriter {
 			} else {
 				face_index + additive - face_array.faces.len()
 			};
-			let object_data = object_data_maker(F::TYPE, face_index);
-			let face_instance = FaceInstance::new(face_array.index, face_index, transform_index, index);
-			self.object_data[index].write(object_data);
+			let face_instance = FaceInstance::new(
+				face_array.index, face_index, transform_index, self.object_data.len(),
+			);
 			self.face_buffer[index].write(face_instance);
+			self.object_data.push(object_data_maker(F::TYPE, face_index));
 		}
 		self.num_written_faces = end;
 		let opaque = opaque as u32;
@@ -182,18 +199,17 @@ impl DataWriter {
 		MeshTexturedFaceOffsets { opaque, additive, end }
 	}
 	
-	fn mesh_solid_face_array<F, O>(
+	fn mesh_solid_face_array<F: MeshFace, O: Fn(MeshFaceType, usize) -> ObjectData>(
 		&mut self, face_array: &WrittenFaceArray<F>, transform_index: usize, object_data_maker: O,
-	) -> Range<u32>
-	where F: MeshFace, O: Fn(MeshFaceType, usize) -> ObjectData {
+	) -> Range<u32> {
 		let start = self.num_written_faces;
 		let end = start + face_array.faces.len();
 		for face_index in 0..face_array.faces.len() {
-			let index = start + face_index;
-			let object_data = object_data_maker(F::TYPE, face_index);
-			let face_instance = FaceInstance::new(face_array.index, face_index, transform_index, index);
-			self.object_data[index].write(object_data);
-			self.face_buffer[index].write(face_instance);
+			let face_instance = FaceInstance::new(
+				face_array.index, face_index, transform_index, self.object_data.len(),
+			);
+			self.face_buffer[start + face_index].write(face_instance);
+			self.object_data.push(object_data_maker(F::TYPE, face_index));
 		}
 		self.num_written_faces = end;
 		let start = start as u32;
@@ -201,26 +217,49 @@ impl DataWriter {
 		start..end
 	}
 	
-	pub fn instantiate_mesh<L, O>(
-		&mut self, level: &L, mesh: &WrittenMesh<L>, transform_index: usize, object_data_maker: O,
-	) -> MeshFaceOffsets
-	where L: Level, O: Fn(MeshFaceType, usize) -> ObjectData {
+	pub fn place_mesh<L: Level, O: Fn(MeshFaceType, usize) -> ObjectData>(
+		&mut self, level: &L, mesh: &WrittenMesh<L>, transfm_idx: usize, odm: O,
+	) -> MeshFaceOffsets {
 		MeshFaceOffsets {
-			textured_quads: self.mesh_textured_face_array(level, &mesh.textured_quads, transform_index, &object_data_maker),
-			textured_tris: self.mesh_textured_face_array(level, &mesh.textured_tris, transform_index, &object_data_maker),
-			solid_quads: self.mesh_solid_face_array(&mesh.solid_quads, transform_index, &object_data_maker),
-			solid_tris: self.mesh_solid_face_array(&mesh.solid_tris, transform_index, &object_data_maker),
+			textured_quads: self.mesh_textured_face_array(level, &mesh.textured_quads, transfm_idx, &odm),
+			textured_tris: self.mesh_textured_face_array(level, &mesh.textured_tris, transfm_idx, &odm),
+			solid_quads: self.mesh_solid_face_array(&mesh.solid_quads, transfm_idx, &odm),
+			solid_tris: self.mesh_solid_face_array(&mesh.solid_tris, transfm_idx, &odm),
 		}
+	}
+	
+	pub fn sprite_offset(&self) -> u32 {
+		self.sprite_buffer.len() as u32
+	}
+	
+	pub fn write_room_sprites<V: RoomVertex, O: Fn(u16) -> ObjectData>(
+		&mut self, room_pos: IVec3, vertices: &[V], sprites: &[tr1::Sprite], object_data_maker: O,
+	) {
+		for &tr1::Sprite { vertex_index, sprite_texture_index } in sprites {
+			self.sprite_buffer.push(SpriteInstance {
+				pos: room_pos + vertices[vertex_index as usize].pos().as_ivec3(),
+				sprite_texture_index,
+				object_data_index: self.object_data.len() as u16,
+			});
+			self.object_data.push(object_data_maker(sprite_texture_index));
+		}
+	}
+	
+	pub fn write_entity_sprite(&mut self, entity_index: usize, pos: IVec3, sprite_texture_index: u16) {
+		self.sprite_buffer.push(SpriteInstance {
+			pos,
+			sprite_texture_index,
+			object_data_index: self.object_data.len() as u16,
+		});
+		self.object_data.push(ObjectData::entity_sprite(entity_index));
 	}
 	
 	pub fn done(self) -> Results {
 		Results {
-			geom_buffer: self.geom_buffer.into_buffer(), face_buffer: self.face_buffer.to_bytes(),
-			object_data: unsafe {
-				Vec::from_raw_parts(
-					Box::into_raw(self.object_data).cast(), self.num_written_faces, NUM_FACES,
-				)
-			},
+			geom_buffer: self.geom_buffer.into_buffer(),
+			face_buffer: self.face_buffer.to_bytes(),
+			sprite_buffer: self.sprite_buffer.into_inner().to_bytes(),
+			object_data: self.object_data.into_vec(),
 		}
 	}
 }

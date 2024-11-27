@@ -3,9 +3,9 @@ use glam::{I16Vec3, IVec3};
 use tr_readable::Readable;
 use crate::{
 	decl_room_geom, tr1::{
-		AnimDispatch, Animation, Camera, CinematicFrame, Color24Bit, MeshNode, Model, ObjectTexture, Portal,
-		RoomFlags, Sectors, SoundSource, Sprite, SpriteSequence, SpriteTexture, StateChange, StaticMesh,
-		LIGHT_MAP_LEN, PALETTE_LEN,
+		AnimDispatch, Animation, Camera, CinematicFrame, Color24Bit, MeshNode, Model, ObjectTexture,
+		Portal, RoomFlags, Sectors, SoundSource, Sprite, SpriteSequence, SpriteTexture, StateChange,
+		StaticMesh, LIGHT_MAP_LEN, PALETTE_LEN,
 	}, tr2::{Atlases, BoxData, Color16Bit, Color32Bit, Entity, Frame, Mesh, SOUND_MAP_LEN},
 	u16_cursor::U16Cursor,
 };

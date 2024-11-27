@@ -1,4 +1,6 @@
-use std::{io::{Read, Result}, mem::{size_of, transmute, MaybeUninit}, ops::Range, slice::from_raw_parts_mut};
+use std::{
+	io::{Read, Result}, mem::{size_of, transmute, MaybeUninit}, ops::Range, slice::from_raw_parts_mut,
+};
 use shared::alloc;
 
 pub use tr_derive::Readable;

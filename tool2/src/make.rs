@@ -1,12 +1,13 @@
 use crate::vec_tail::VecTail;
-use glam::UVec2;
+use winit::dpi::PhysicalSize;
 use std::num::NonZeroU64;
 use wgpu::{
-	util::{BufferInitDescriptor, DeviceExt}, BindGroup, BindGroupDescriptor, BindGroupEntry, BindGroupLayout,
-	BindGroupLayoutDescriptor, BindGroupLayoutEntry, BindingResource, BindingType, Buffer, BufferBindingType,
-	BufferUsages, Device, Extent3d, ShaderModule, ShaderModuleDescriptor, ShaderSource, ShaderStages,
-	Texture, TextureDescriptor, TextureDimension, TextureFormat, TextureUsages, TextureView,
-	TextureViewDescriptor, VertexAttribute, VertexBufferLayout, VertexFormat, VertexStepMode,
+	util::{BufferInitDescriptor, DeviceExt, TextureDataOrder}, BindGroup, BindGroupDescriptor,
+	BindGroupEntry, BindGroupLayout, BindGroupLayoutDescriptor, BindGroupLayoutEntry, BindingResource,
+	BindingType, Buffer, BufferBindingType, BufferUsages, Device, Extent3d, Queue, ShaderModule,
+	ShaderModuleDescriptor, ShaderSource, ShaderStages, Texture, TextureDescriptor, TextureDimension,
+	TextureFormat, TextureSampleType, TextureUsages, TextureView, TextureViewDescriptor,
+	TextureViewDimension, VertexAttribute, VertexBufferLayout, VertexFormat, VertexStepMode,
 };
 
 pub fn buffer(device: &Device, contents: &[u8], usage: BufferUsages) -> Buffer {
@@ -15,78 +16,88 @@ pub fn buffer(device: &Device, contents: &[u8], usage: BufferUsages) -> Buffer {
 
 pub fn shader(device: &Device, source: &str) -> ShaderModule {
 	device.create_shader_module(ShaderModuleDescriptor {
-		label: None,
-		source: ShaderSource::Wgsl(source.into()),
+		label: None, source: ShaderSource::Wgsl(source.into()),
 	})
 }
 
-pub fn layout_entry(ty: BufferBindingType, size: usize) -> BindingType {
-	BindingType::Buffer {
-		ty,
-		has_dynamic_offset: false,
-		min_binding_size: NonZeroU64::new(size as u64),
-	}
+pub fn buffer_layout_entry(ty: BufferBindingType, size: usize) -> BindingType {
+	BindingType::Buffer { ty, has_dynamic_offset: false, min_binding_size: NonZeroU64::new(size as u64) }
 }
 
 pub fn uniform_layout_entry(size: usize) -> BindingType {
-	layout_entry(BufferBindingType::Uniform, size)
+	buffer_layout_entry(BufferBindingType::Uniform, size)
 }
 
 pub fn storage_layout_entry(size: usize) -> BindingType {
-	layout_entry(BufferBindingType::Storage { read_only: true }, size)
+	buffer_layout_entry(BufferBindingType::Storage { read_only: true }, size)
 }
 
-pub fn bind_group_layout(device: &Device, entries: &[(BindingType, ShaderStages)]) -> BindGroupLayout {
+pub fn texture_layout_entry(view_dimension: TextureViewDimension) -> BindingType {
+	BindingType::Texture { sample_type: TextureSampleType::Uint, view_dimension, multisampled: false }
+}
+
+pub fn bind_group_layout(device: &Device, entries: &[(u32, BindingType, ShaderStages)]) -> BindGroupLayout {
 	device.create_bind_group_layout(&BindGroupLayoutDescriptor {
 		label: None,
 		entries: &entries
 			.iter()
-			.enumerate()
-			.map(|(index, &(ty, visibility))| {
-				BindGroupLayoutEntry {
-					binding: index as u32,
-					visibility,
-					ty,
-					count: None,
-				}
+			.map(|&(binding, ty, visibility)| {
+				BindGroupLayoutEntry { binding, visibility, ty, count: None }
 			})
 			.collect::<Vec<_>>(),
 	})
 }
 
-pub fn bind_group(device: &Device, layout: &BindGroupLayout, entries: &[BindingResource]) -> BindGroup {
+pub fn bind_group(
+	device: &Device, layout: &BindGroupLayout, entries: &[(u32, BindingResource)],
+) -> BindGroup {
 	device.create_bind_group(&BindGroupDescriptor {
 		label: None,
 		layout,
 		entries: &entries
 			.iter()
 			.cloned()
-			.enumerate()
-			.map(|(index, resource)| BindGroupEntry { binding: index as u32, resource })
+			.map(|(binding, resource)| BindGroupEntry { binding, resource })
 			.collect::<Vec<_>>(),
 	})
 }
 
-pub fn texture(device: &Device, size: UVec2, format: TextureFormat, usage: TextureUsages) -> Texture {
-	device.create_texture(&TextureDescriptor {
+pub fn texture_desc(
+	size: Extent3d, dimension: TextureDimension, format: TextureFormat, usage: TextureUsages,
+) -> TextureDescriptor<'static> {
+	TextureDescriptor {
 		label: None,
-		size: Extent3d {
-			width: size.x,
-			height: size.y,
-			depth_or_array_layers: 1,
-		},
+		size,
 		mip_level_count: 1,
 		sample_count: 1,
-		dimension: TextureDimension::D2,
+		dimension,
 		format,
 		usage,
 		view_formats: &[],
-	})
+	}
 }
 
-pub fn depth_view(device: &Device, size: UVec2) -> TextureView {
-	texture(device, size, TextureFormat::Depth32Float, TextureUsages::RENDER_ATTACHMENT)
-		.create_view(&TextureViewDescriptor::default())
+pub fn texture(
+	device: &Device, size: Extent3d, dimension: TextureDimension, format: TextureFormat,
+	usage: TextureUsages,
+) -> Texture {
+	device.create_texture(&texture_desc(size, dimension, format, usage))
+}
+
+pub fn texture_view_with_data(
+	device: &Device, queue: &Queue, size: Extent3d, dimension: TextureDimension, format: TextureFormat,
+	usage: TextureUsages, data: &[u8],
+) -> TextureView {
+	device.create_texture_with_data(
+		queue, &texture_desc(size, dimension, format, usage), TextureDataOrder::default(), data,
+	).create_view(&TextureViewDescriptor::default())
+}
+
+pub fn depth_view(device: &Device, PhysicalSize { width, height }: PhysicalSize<u32>) -> TextureView {
+	texture(
+		device, Extent3d { width, height, depth_or_array_layers: 1 }, TextureDimension::D2,
+		TextureFormat::Depth32Float, TextureUsages::RENDER_ATTACHMENT,
+	).create_view(&TextureViewDescriptor::default())
 }
 
 pub fn vertex_buffer_layouts<'a>(

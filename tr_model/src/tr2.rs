@@ -7,8 +7,8 @@ use crate::{
 	decl_box_data, decl_mesh1, decl_room_geom, get_packed_angles, tr1::{
 		AnimDispatch, Animation, Camera, CinematicFrame, Color24Bit, MeshLighting, MeshNode,
 		MeshTexturedQuad, MeshTexturedTri, Model, ObjectTexture, Portal, RoomFlags, RoomQuad, RoomTri,
-		Sectors, SoundDetails, SoundSource, Sprite, SpriteSequence, SpriteTexture, StateChange, StaticMesh,
-		ATLAS_PIXELS, LIGHT_MAP_LEN, PALETTE_LEN,
+		Sectors, SoundDetails, SoundSource, Sprite, SpriteSequence, SpriteTexture, StateChange,
+		StaticMesh, ATLAS_PIXELS, LIGHT_MAP_LEN, PALETTE_LEN,
 	}, u16_cursor::U16Cursor
 };
 
@@ -16,13 +16,14 @@ pub const SOUND_MAP_LEN: usize = 370;
 
 //model
 
-#[repr(C)]
-#[derive(Clone, Debug)]
-pub struct Color32Bit {
-	pub r: u8,
-	pub g: u8,
-	pub b: u8,
-	pub unused: u8,
+bitfield! {
+	#[repr(C)]
+	#[derive(Clone, Debug)]
+	pub struct Color32Bit(u32);
+	u8;
+	pub b, _: 23, 16;
+	pub g, _: 15, 8;
+	pub r, _: 7, 0;
 }
 
 bitfield! {

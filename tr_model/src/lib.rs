@@ -5,6 +5,7 @@ mod u16_cursor;
 pub mod tr1;
 pub mod tr2;
 pub mod tr3;
+// pub mod tr4;
 
 use glam::U16Vec3;
 
@@ -75,7 +76,10 @@ macro_rules! decl_room_geom {
 pub(crate) use decl_room_geom;
 
 macro_rules! decl_mesh1 {
-	($mesh:ident, $mesh_lighting:ident, $textured_quad:ty, $textured_tri:ty, $solid_quad:ty, $solid_tri:ty) => {
+	(
+		$mesh:ident, $mesh_lighting:ident, $textured_quad:ty, $textured_tri:ty, $solid_quad:ty,
+		$solid_tri:ty
+	) => {
 		#[derive(Clone, Debug)]
 		pub struct $mesh<'a> {
 			pub center: I16Vec3,

@@ -12,6 +12,10 @@ pub fn val<T>() -> Box<MaybeUninit<T>> {
 	}
 }
 
+pub fn array<T, const N: usize>() -> Box<[MaybeUninit<T>; N]> {
+	unsafe { val().assume_init() }
+}
+
 pub fn slice<T>(len: usize) -> Box<[MaybeUninit<T>]> {
 	unsafe {
 		let layout = Layout::array::<T>(len).unwrap();

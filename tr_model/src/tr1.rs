@@ -425,6 +425,6 @@ impl Level {
 			[model.frame_byte_offset as usize / 2..]
 			[..10 + model.num_meshes as usize * (size_of::<FrameRotation>() / 2)]//bound check
 			.as_ptr() as usize;
-		unsafe { transmute([ptr, model.num_meshes as usize]) }//no nice way to make dynamically sized struct
+		unsafe { transmute([ptr, model.num_meshes as usize]) }//no nice way to make unsized struct
 	}
 }

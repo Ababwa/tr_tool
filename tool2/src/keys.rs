@@ -39,7 +39,8 @@ impl KeyStates {
 	
 	pub fn set(&mut self, key_code: KeyCode, val: bool) {
 		let index = key_code as usize;
-		self.bytes[index / 8] = (self.bytes[index / 8] & !(1 << (index % 8))) | ((val as u8) << (index % 8));
+		self.bytes[index / 8] = (self.bytes[index / 8] & !(1 << (index % 8)))
+			| ((val as u8) << (index % 8));
 	}
 	
 	pub fn any(&self, key_group: KeyGroup) -> bool {
