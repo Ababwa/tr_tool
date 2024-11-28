@@ -6,6 +6,7 @@ parse_attrs_fn!(
 	parse_field_attrs -> FieldAttrs {
 		flat: bool,
 		delegate: bool,
+		zlib: bool,
 		boxed: bool,
 		list: Arg,
 	}
@@ -20,37 +21,45 @@ pub fn derive_readable_impl(input: &DeriveInput) -> TokenStream {
 	let mut body = quote! {};
 	for field in fields {
 		let field_ident = field.ident.as_ref().unwrap();
-		let FieldAttrs { flat, delegate, boxed, list } = parse_field_attrs(&field.attrs);
-		if flat == delegate {
-			panic!("{}: field must be either flat or delegate", field_ident);
+		let FieldAttrs { flat, delegate, zlib, boxed, list } = parse_field_attrs(&field.attrs);
+		if flat as u8 + delegate as u8 + zlib as u8 != 1 {
+			panic!("{}: field must be one of flat, delegate, or zlib", field_ident);
 		}
-		if boxed && list.is_some() {
-			panic!("{}: field cannot be both boxed and list", field_ident);
+		if boxed && !flat {
+			panic!("{}: boxed field must be flat", field_ident);
 		}
-		if delegate && boxed {
-			panic!("{}: field cannot be both delegate and boxed", field_ident);
+		if list.is_some() && zlib {
+			panic!("{}: list field cannot be zlib", field_ident);
 		}
-		let initializer = match (flat, boxed, list) {
-			(true, false, None) => quote! {
+		if list.is_some() && boxed {
+			panic!("{}: list field cannot be boxed", field_ident);
+		}
+		let initializer = match (flat, boxed, zlib, list) {
+			(true, false, false, None) => quote! {
 				tr_readable::read_flat(reader, std::ptr::addr_of_mut!((*this).#field_ident))?;
 			},
-			(true, true, None) => quote! {
+			(true, true, false, None) => quote! {
 				tr_readable::read_boxed_flat(reader, std::ptr::addr_of_mut!((*this).#field_ident))?;
 			},
-			(false, false, None) => quote! {
+			(false, false, false, None) => quote! {
 				tr_readable::Readable::read(reader, std::ptr::addr_of_mut!((*this).#field_ident))?;
 			},
-			(flat, false, Some(list_len_type)) => {
+			(false, false, true, None) => quote! {
+				tr_readable::Readable::read(
+					&mut tr_readable::zlib(reader)?, std::ptr::addr_of_mut!((*this).#field_ident),
+				)?;
+			},
+			(flat, false, false, Some(list_len_type)) => {
 				let array_fn = match flat {
 					true => quote! { read_boxed_slice_flat },
 					false => quote! { read_boxed_slice_delegate },
 				};
 				quote! {
-					let mut len = tr_readable::read_val_flat::<_, #list_len_type>(reader)? as usize;
-					tr_readable::#array_fn(reader, std::ptr::addr_of_mut!((*this).#field_ident), len)?;
+					let len = tr_readable::read_flat_get::<_, #list_len_type>(reader)? as usize;
+					tr_readable::#array_fn(reader, len, std::ptr::addr_of_mut!((*this).#field_ident))?;
 				}
 			},
-			_ => unreachable!("case not covered by guards: ({}, {}, {})", flat, boxed, list.is_some()),
+			_ => panic!("invalid attribute combination"),//should be covered by guards
 		};
 		body = quote! { #body #initializer };
 	}

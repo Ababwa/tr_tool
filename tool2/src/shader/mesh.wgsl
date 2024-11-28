@@ -106,12 +106,12 @@ fn get_position_texture(face: vec2u, face_vertex_index: u32) -> PositionTexture 
 	);
 	//position
 	let face_array_offset = get_data_u32(FACE_ARRAY_MAP_OFFSET / 4 + face_array_index);
-	let vertex_array_offset_lower = get_data_u16(face_array_offset);
-	let vertex_array_offset_upper = get_data_u16(face_array_offset + 1);
-	let vertex_array_offset = vertex_array_offset_lower | (vertex_array_offset_upper << 16);
+	let vertex_array_offset = get_data_u16(face_array_offset) * 8;
 	let vertex_size = get_data_u16(vertex_array_offset);
-	let face_size = get_data_u16(face_array_offset + 2);
-	let face_offset = face_array_offset + 3 + (face_index * face_size);
+	let face_info_packed = get_data_u16(face_array_offset + 1);
+	let face_size = face_info_packed & 0xFF;
+	let face_texture_index_offset = face_info_packed >> 8;
+	let face_offset = face_array_offset + 2 + (face_index * face_size);
 	let vertex_index = get_data_u16(face_offset + face_vertex_index);
 	let vertex_offset = vertex_array_offset + 1 + (vertex_index * vertex_size);
 	let vertex_unsigned = vec3u(
@@ -123,7 +123,7 @@ fn get_position_texture(face: vec2u, face_vertex_index: u32) -> PositionTexture 
 	let vertex_absolute = local_transform * vec4f(vec3f(vertex_relative), 1.0);
 	let position = perspective_transform * camera_transform * vertex_absolute;
 	//texture
-	let texture_index = get_data_u16(face_offset + face_size - 1);
+	let texture_index = get_data_u16(face_offset + face_texture_index_offset);
 	return PositionTexture(position, texture_index, object_id);
 }
 
@@ -143,10 +143,12 @@ fn texture_vs_main(
 	let position = position_texture.position;
 	let object_texture_index = position_texture.texture_index & 0x7FFF;
 	let object_id = position_texture.object_id;
-	let object_texture_offset = OBJECT_TEXTURES_OFFSET / 2 + object_texture_index * 10;//10: size of ObjectTexture in u16s
+	let object_textures_start = OBJECT_TEXTURES_OFFSET / 2;
+	let object_texture_size = get_data_u16(object_textures_start);
+	let object_texture_offset = object_textures_start + 1 + object_texture_index * object_texture_size;
 	// let blend_mode = get_data_u16(object_texture_offset);
-	let atlas_index = get_data_u16(object_texture_offset + 1);
-	let uv_offset = (object_texture_offset + 2) + face_vertex_index * 2;
+	let atlas_index = get_data_u16(object_texture_offset + 1) & 0x7FFF;
+	let uv_offset = (object_texture_offset + 2 + (object_texture_size % 2)) + face_vertex_index * 2;
 	let uv_subpixel = vec2u(
 		get_data_u16(uv_offset),
 		get_data_u16(uv_offset + 1),
@@ -283,6 +285,22 @@ fn texture_16bit_fs_main(vtf: TextureVTF) -> Out {
 			(color >> 5) & 0x1F,
 			color & 0x1F,
 			31.0,
+		);
+		return Out(color, vtf.object_id);
+	}
+}
+
+@fragment
+fn texture_32bit_fs_main(vtf: TextureVTF) -> Out {
+	let color = textureLoad(atlases, vec2i(vtf.uv), vtf.atlas_index, 0).x;
+	if (color & 0xFF00FF) == 0xFF00FF {
+		discard;
+	} else {
+		let color = to_f32_color(
+			(color >> 16) & 0xFF,
+			(color >> 8) & 0xFF,
+			color & 0xFF,
+			255.0,
 		);
 		return Out(color, vtf.object_id);
 	}

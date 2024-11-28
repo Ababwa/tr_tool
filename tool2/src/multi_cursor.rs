@@ -16,6 +16,16 @@ impl<'a> Writer<'a> {
 		self.range.end - self.range.start
 	}
 	
+	pub fn align(&mut self, align: usize) -> Result<()> {
+		let padding = (align - (self.range.end % align)) % align;
+		if self.range.end + padding > self.upper_bound {
+			return Err(Error::other("align out of range"));
+		}
+		self.buffer[self.range.end..][..padding].fill(0);
+		self.range.end += padding;
+		Ok(())
+	}
+	
 	pub fn write(&mut self, bytes: &[u8]) -> Result<()> {
 		if self.range.end + bytes.len() > self.upper_bound {
 			return Err(Error::other("write out of range"));

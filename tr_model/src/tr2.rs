@@ -2,14 +2,11 @@ use std::{io::{Read, Result}, mem::transmute, ptr::addr_of_mut, slice::Iter};
 use bitfield::bitfield;
 use glam::{I16Vec3, IVec3, U16Vec3};
 use shared::min_max::MinMax;
-use tr_readable::{read_boxed_slice_flat, read_val_flat, Readable};
+use tr_readable::{read_boxed_slice_flat, read_flat_get, Readable};
 use crate::{
-	decl_box_data, decl_mesh1, decl_room_geom, get_packed_angles, tr1::{
-		AnimDispatch, Animation, Camera, CinematicFrame, Color24Bit, MeshLighting, MeshNode,
-		MeshTexturedQuad, MeshTexturedTri, Model, ObjectTexture, Portal, RoomFlags, RoomQuad, RoomTri,
-		Sectors, SoundDetails, SoundSource, Sprite, SpriteSequence, SpriteTexture, StateChange,
-		StaticMesh, ATLAS_PIXELS, LIGHT_MAP_LEN, PALETTE_LEN,
-	}, u16_cursor::U16Cursor
+	tr1::{
+		decl_box_data, decl_mesh, decl_room_geom, get_packed_angles, AnimDispatch, Animation, Camera, CinematicFrame, Color24Bit, MeshLighting, MeshNode, MeshTexturedQuad, MeshTexturedTri, Model, ObjectTexture, Portal, RoomFlags, RoomQuad, RoomTri, Sectors, SoundDetails, SoundSource, Sprite, SpriteSequence, SpriteTexture, StateChange, StaticMesh, ATLAS_PIXELS, LIGHT_MAP_LEN, PALETTE_LEN
+	}, u16_cursor::U16Cursor,
 };
 
 pub const SOUND_MAP_LEN: usize = 370;
@@ -19,7 +16,7 @@ pub const SOUND_MAP_LEN: usize = 370;
 bitfield! {
 	#[repr(C)]
 	#[derive(Clone, Debug)]
-	pub struct Color32Bit(u32);
+	pub struct Color32BitBGR(u32);
 	u8;
 	pub b, _: 23, 16;
 	pub g, _: 15, 8;
@@ -29,7 +26,7 @@ bitfield! {
 bitfield! {
 	#[repr(C)]
 	#[derive(Clone, Debug)]
-	pub struct Color16Bit(u16);
+	pub struct Color16BitARGB(u16);
 	u8;
 	pub a, _: 15;
 	pub r, _: 14, 10;
@@ -40,14 +37,14 @@ bitfield! {
 #[derive(Clone, Debug)]
 pub struct Atlases {
 	pub atlases_palette: Box<[[u8; ATLAS_PIXELS]]>,
-	pub atlases_16bit: Box<[[Color16Bit; ATLAS_PIXELS]]>,
+	pub atlases_16bit: Box<[[Color16BitARGB; ATLAS_PIXELS]]>,
 }
 
 impl Readable for Atlases {
 	unsafe fn read<R: Read>(reader: &mut R, this: *mut Self) -> Result<()> {
-		let num_atlases = read_val_flat::<_, u32>(reader)? as usize;
-		read_boxed_slice_flat(reader, addr_of_mut!((*this).atlases_palette), num_atlases)?;
-		read_boxed_slice_flat(reader, addr_of_mut!((*this).atlases_16bit), num_atlases)?;
+		let num_atlases = read_flat_get::<_, u32>(reader)? as usize;
+		read_boxed_slice_flat(reader, num_atlases, addr_of_mut!((*this).atlases_palette))?;
+		read_boxed_slice_flat(reader, num_atlases, addr_of_mut!((*this).atlases_16bit))?;
 		Ok(())
 	}
 }
@@ -119,7 +116,7 @@ pub struct Entity {
 pub struct Level {
 	#[flat] pub version: u32,
 	#[flat] #[boxed] pub palette_24bit: Box<[Color24Bit; PALETTE_LEN]>,
-	#[flat] #[boxed] pub palette_32bit: Box<[Color32Bit; PALETTE_LEN]>,
+	#[flat] #[boxed] pub palette_32bit: Box<[Color32BitBGR; PALETTE_LEN]>,
 	#[delegate] pub atlases: Atlases,
 	#[flat] pub unused: u32,
 	#[delegate] #[list(u16)] pub rooms: Box<[Room]>,
@@ -186,7 +183,7 @@ macro_rules! decl_solid_face_type {
 decl_solid_face_type!(MeshSolidQuad, 4);
 decl_solid_face_type!(MeshSolidTri, 3);
 
-decl_mesh1!(Mesh, MeshLighting, MeshTexturedQuad, MeshTexturedTri, MeshSolidQuad, MeshSolidTri);
+decl_mesh!(Mesh, MeshLighting, MeshTexturedQuad, MeshTexturedTri, MeshSolidQuad, MeshSolidTri);
 
 #[repr(C)]
 #[derive(Debug)]
@@ -251,10 +248,7 @@ impl<'a> Frame<'a> {
 		let frame_data = &frame_data[model.frame_byte_offset as usize / 2..];
 		let ptr = frame_data[..9].as_ptr() as usize;
 		let frame_data = unsafe { transmute([ptr, frame_data.len() - 9]) };
-		Frame {
-			num_meshes: model.num_meshes as usize,
-			frame_data,
-		}
+		Frame { num_meshes: model.num_meshes as usize, frame_data }
 	}
 	
 	pub fn iter_rotations(&self) -> RotationIterator<'a> {

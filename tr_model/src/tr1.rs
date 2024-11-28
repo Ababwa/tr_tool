@@ -1,10 +1,16 @@
+/*
+Terminology:
+An "offset" marks a starting point of some kind.
+An "index" points to an entry in an array.
+*/
+
 use std::{io::{Read, Result}, mem::transmute, ptr::addr_of_mut, slice};
 use bitfield::bitfield;
 use glam::{I16Vec2, I16Vec3, IVec3, U16Vec2, U16Vec3};
 use glam_traits::ext::U8Vec2;
 use shared::min_max::MinMax;
-use tr_readable::{read_boxed_slice_flat, read_flat, read_val_flat, Readable};
-use crate::{decl_box_data, decl_mesh1, decl_room_geom, get_packed_angles, u16_cursor::U16Cursor};
+use tr_readable::{read_boxed_slice_flat, read_flat, read_flat_get, Readable};
+use crate::u16_cursor::U16Cursor;
 
 pub const ATLAS_SIDE_LEN: usize = 256;
 pub const ATLAS_PIXELS: usize = ATLAS_SIDE_LEN * ATLAS_SIDE_LEN;
@@ -23,24 +29,18 @@ pub mod blend_mode {
 #[repr(C)]
 #[derive(Clone, Debug)]
 pub struct Portal {
-	/// Index into `Level.rooms`.
 	pub adjoining_room_index: u16,
 	pub normal: I16Vec3,
-	/// Relative to room.
 	pub vertices: [I16Vec3; 4],
 }
 
 #[repr(C)]
 #[derive(Clone, Debug)]
 pub struct Sector {
-	/// Index into `Level.floor_data`.
 	pub floor_data_index: u16,
-	/// Index into `BoxData.boxes`.
 	pub box_index: u16,
-	/// Index into `Level.rooms`.
-	pub room_below_id: u8,
+	pub room_below_index: u8,
 	pub floor: i8,
-	/// Index into `Level.rooms`.
 	pub room_above_index: u8,
 	pub ceiling: i8,
 }
@@ -55,7 +55,7 @@ impl Readable for Sectors {
 	unsafe fn read<R: Read>(reader: &mut R, this: *mut Self) -> Result<()> {
 		read_flat(reader, addr_of_mut!((*this).size))?;
 		let len = (*this).size.element_product() as usize;
-		read_boxed_slice_flat(reader, addr_of_mut!((*this).sectors), len)?;
+		read_boxed_slice_flat(reader, len, addr_of_mut!((*this).sectors))?;
 		Ok(())
 	}
 }
@@ -109,30 +109,26 @@ pub struct Room {
 #[repr(C)]
 #[derive(Clone, Debug)]
 pub struct Animation {
-	/// Byte offset into `Level.frame_data`.
 	pub frame_byte_offset: u32,
-	/// 30ths of a second.
 	pub frame_duration: u8,
 	pub num_frames: u8,
-	pub state: u16,
-	/// Fixed-point.
+	pub state_id: u16,
 	pub speed: u32,
-	/// Fixed-point.
 	pub accel: u32,
 	pub frame_start: u16,
 	pub frame_end: u16,
 	pub next_anim: u16,
 	pub next_frame: u16,
 	pub num_state_changes: u16,
-	pub state_change_id: u16,
+	pub state_change_index: u16,
 	pub num_anim_commands: u16,
-	pub anim_command_id: u16,
+	pub anim_command_index: u16,
 }
 
 #[repr(C)]
 #[derive(Clone, Debug)]
 pub struct StateChange {
-	pub state: u16,
+	pub state_id: u16,
 	pub num_anim_dispatches: u16,
 	pub anim_dispatch_id: u16,
 }
@@ -213,9 +209,7 @@ pub struct SpriteSequence {
 #[repr(C)]
 #[derive(Clone, Debug)]
 pub struct Camera {
-	/// World coords.
 	pub pos: IVec3,
-	/// Index into `Level.rooms`.
 	pub room_index: u16,
 	pub flags: u16,
 }
@@ -223,11 +217,42 @@ pub struct Camera {
 #[repr(C)]
 #[derive(Clone, Debug)]
 pub struct SoundSource {
-	/// World coords.
 	pub pos: IVec3,
 	pub sound_id: u16,
 	pub flags: u16,
 }
+
+macro_rules! decl_box_data {
+	($tr_box:ident, $box_data:ident, $scalar:ty, $zone_mult:literal) => {
+		#[repr(C)]
+		#[derive(Clone, Debug)]
+		pub struct $tr_box {
+			pub z: MinMax<$scalar>,
+			pub x: MinMax<$scalar>,
+			pub y: i16,
+			pub overlap: u16,
+		}
+		
+		#[derive(Clone, Debug)]
+		pub struct $box_data {
+			pub boxes: Box<[$tr_box]>,
+			pub overlap_data: Box<[u16]>,
+			pub zone_data: Box<[u16]>,
+		}
+		
+		impl Readable for $box_data {
+			unsafe fn read<R: Read>(reader: &mut R, this: *mut Self) -> Result<()> {
+				let num_boxes = read_flat_get::<_, u32>(reader)? as usize;
+				read_boxed_slice_flat(reader, num_boxes, addr_of_mut!((*this).boxes))?;
+				let num_overlaps = read_flat_get::<_, u32>(reader)? as usize;
+				read_boxed_slice_flat(reader, num_overlaps, addr_of_mut!((*this).overlap_data))?;
+				read_boxed_slice_flat(reader, num_boxes * $zone_mult, addr_of_mut!((*this).zone_data))?;
+				Ok(())
+			}
+		}
+	};
+}
+pub(crate) use decl_box_data;
 
 decl_box_data!(TrBox, BoxData, u32, 6);
 
@@ -249,7 +274,7 @@ pub struct Entity {
 
 /// 6 bits per channel
 #[repr(C)]
-#[derive(Clone, Debug)]
+#[derive(Clone, Copy, Debug)]
 pub struct Color24Bit {
 	pub r: u8,
 	pub g: u8,
@@ -268,7 +293,6 @@ pub struct CinematicFrame {
 #[repr(C)]
 #[derive(Clone, Debug)]
 pub struct SoundDetails {
-	/// Index into `Level.sample_indices`.
 	pub sample_index: u16,
 	pub volume: u16,
 	pub chance: u16,
@@ -338,11 +362,36 @@ decl_face_type!(RoomTri, 3, object_texture_index);
 #[repr(C)]
 #[derive(Clone, Debug)]
 pub struct Sprite {
-	/// Index into `Room.vertices`.
 	pub vertex_index: u16,
-	/// Index into `Level.sprite_textures`.
 	pub sprite_texture_index: u16,
 }
+
+macro_rules! decl_room_geom {
+	($room_geom:ident, $room_vertex:ty, $room_quad:ty, $room_tri:ty, $sprite:ty) => {
+		#[derive(Clone, Debug)]
+		pub struct $room_geom<'a> {
+			pub vertices: &'a [$room_vertex],
+			pub quads: &'a [$room_quad],
+			pub tris: &'a [$room_tri],
+			pub sprites: &'a [$sprite],
+		}
+		
+		impl<'a> $room_geom<'a> {
+			pub(crate) fn get(geom_data: &'a [u16]) -> Self {
+				let mut cursor = U16Cursor::new(geom_data);
+				unsafe {
+					Self {
+						vertices: cursor.u16_len_slice(),
+						quads: cursor.u16_len_slice(),
+						tris: cursor.u16_len_slice(),
+						sprites: cursor.u16_len_slice(),
+					}
+				}
+			}
+		}
+	};
+}
+pub(crate) use decl_room_geom;
 
 decl_room_geom!(RoomGeom, RoomVertex, RoomQuad, RoomTri, Sprite);
 
@@ -363,7 +412,50 @@ decl_face_type!(MeshTexturedTri, 3, object_texture_index);
 decl_face_type!(MeshSolidQuad, 4, color_index);
 decl_face_type!(MeshSolidTri, 3, color_index);
 
-decl_mesh1!(Mesh, MeshLighting, MeshTexturedQuad, MeshTexturedTri, MeshSolidQuad, MeshSolidTri);
+macro_rules! decl_mesh {
+	(
+		$mesh:ident, $mesh_lighting:ident, $textured_quad:ty, $textured_tri:ty, $solid_quad:ty,
+		$solid_tri:ty
+	) => {
+		#[derive(Clone, Debug)]
+		pub struct $mesh<'a> {
+			pub center: I16Vec3,
+			pub radius: i32,
+			/// If static mesh, relative to `RoomStaticMesh.pos`.
+			/// If entity mesh, relative to `Entity.pos`.
+			pub vertices: &'a [I16Vec3],
+			pub lighting: $mesh_lighting<'a>,
+			pub textured_quads: &'a [$textured_quad],
+			pub textured_tris: &'a [$textured_tri],
+			pub solid_quads: &'a [$solid_quad],
+			pub solid_tris: &'a [$solid_tri],
+		}
+		
+		impl<'a> $mesh<'a> {
+			pub(crate) fn get(mesh_data: &'a [u16], mesh_offset: u32) -> Self {
+				let mut cursor = U16Cursor::new(&mesh_data[mesh_offset as usize / 2..]);
+				unsafe {
+					Self {
+						center: cursor.read(),
+						radius: cursor.read(),
+						vertices: cursor.u16_len_slice(),
+						lighting: match cursor.next() as i16 {
+							len if len > 0 => MeshLighting::Normals(cursor.slice(len as usize)),
+							len => MeshLighting::Lights(cursor.slice(-len as usize)),
+						},
+						textured_quads: cursor.u16_len_slice(),
+						textured_tris: cursor.u16_len_slice(),
+						solid_quads: cursor.u16_len_slice(),
+						solid_tris: cursor.u16_len_slice(),
+					}
+				}
+			}
+		}
+	};
+}
+pub(crate) use decl_mesh;
+
+decl_mesh!(Mesh, MeshLighting, MeshTexturedQuad, MeshTexturedTri, MeshSolidQuad, MeshSolidTri);
 
 bitfield! {
 	#[repr(C)]
@@ -389,6 +481,14 @@ impl MeshNode {
 			.as_ptr()
 			.cast::<MeshNode>();
 		unsafe { slice::from_raw_parts(ptr, model.num_meshes as usize - 1) }
+	}
+}
+
+pub(crate) fn get_packed_angles(xy: u16, yz: u16) -> U16Vec3 {
+	U16Vec3 {
+		x: (xy >> 4) & 1023,
+		y: ((xy & 15) << 6) | (yz >> 10),
+		z: yz & 1023,
 	}
 }
 

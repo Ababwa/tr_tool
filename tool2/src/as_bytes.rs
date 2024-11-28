@@ -1,6 +1,6 @@
 use std::{mem::{size_of, MaybeUninit}, ptr::slice_from_raw_parts_mut, slice::from_raw_parts};
 use glam::{I16Vec3, IVec3, IVec4, Mat4, U16Vec2};
-use tr_model::{tr1, tr2, tr3};
+use tr_model::{tr1, tr2, tr3, tr4};
 
 pub trait AsBytes {
 	fn as_bytes(&self) -> &[u8];
@@ -66,11 +66,15 @@ impl ReinterpretAsBytes for tr1::MeshTexturedQuad {}
 impl ReinterpretAsBytes for tr1::MeshTexturedTri {}
 impl ReinterpretAsBytes for tr1::MeshSolidQuad {}
 impl ReinterpretAsBytes for tr1::MeshSolidTri {}
-impl ReinterpretAsBytes for tr2::Color32Bit {}
-impl ReinterpretAsBytes for tr2::Color16Bit {}
+impl ReinterpretAsBytes for tr2::Color32BitBGR {}
+impl ReinterpretAsBytes for tr2::Color16BitARGB {}
 impl ReinterpretAsBytes for tr2::RoomVertex {}
 impl ReinterpretAsBytes for tr2::MeshSolidQuad {}
 impl ReinterpretAsBytes for tr2::MeshSolidTri {}
 impl ReinterpretAsBytes for tr3::RoomVertex {}
 impl ReinterpretAsBytes for tr3::RoomQuad {}
 impl ReinterpretAsBytes for tr3::RoomTri {}
+impl ReinterpretAsBytes for tr4::Color32BitRGB {}
+impl ReinterpretAsBytes for tr4::MeshQuad {}
+impl ReinterpretAsBytes for tr4::MeshTri {}
+impl ReinterpretAsBytes for tr4::ObjectTexture {}

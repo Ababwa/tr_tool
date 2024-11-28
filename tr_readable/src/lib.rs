@@ -1,6 +1,5 @@
-use std::{
-	io::{Read, Result}, mem::{size_of, transmute, MaybeUninit}, ops::Range, slice::from_raw_parts_mut,
-};
+use std::{io::{Cursor, Read, Result}, mem::{size_of, MaybeUninit}, slice::from_raw_parts_mut};
+use compress::zlib::Decoder;
 use shared::alloc;
 
 pub use tr_derive::Readable;
@@ -12,48 +11,57 @@ pub trait Readable {
 //impl helpers
 
 pub unsafe fn read_flat<R: Read, T>(reader: &mut R, ptr: *mut T) -> Result<()> {
-	let buf = from_raw_parts_mut(ptr as *mut u8, size_of::<T>());
+	let buf = from_raw_parts_mut(ptr.cast(), size_of::<T>());
 	reader.read_exact(buf)
 }
 
-pub unsafe fn read_val_flat<R: Read, T>(reader: &mut R) -> Result<T> {
+pub unsafe fn read_flat_get<R: Read, T>(reader: &mut R) -> Result<T> {
 	let mut val = MaybeUninit::<T>::uninit();
 	read_flat(reader, val.as_mut_ptr())?;
 	Ok(val.assume_init())
 }
 
-pub unsafe fn read_range_flat<R: Read, T, U>(reader: &mut R, start: *mut T, end: *mut U) -> Result<()> {
-	let buf = from_raw_parts_mut(start as *mut u8, end as usize - start as usize);
-	reader.read_exact(buf)
+pub unsafe fn read_boxed_flat_get<R: Read, T>(reader: &mut R) -> Result<Box<T>> {
+	let mut boxed = alloc::val::<T>();
+	read_flat(reader, boxed.as_mut_ptr())?;
+	Ok(boxed.assume_init())
 }
 
 pub unsafe fn read_boxed_flat<R: Read, T>(reader: &mut R, dest: *mut Box<T>) -> Result<()> {
-	let mut boxed = alloc::val::<T>();
-	read_flat(reader, boxed.as_mut_ptr())?;
-	let boxed = transmute::<_, Box<T>>(boxed);
-	dest.write(boxed);
+	dest.write(read_boxed_flat_get(reader)?);
 	Ok(())
 }
 
-pub unsafe fn read_boxed_slice_flat<R: Read, T>(
-	reader: &mut R, dest: *mut Box<[T]>, len: usize,
-) -> Result<()> {
+pub unsafe fn read_boxed_slice_flat_get<R: Read, T>(reader: &mut R, len: usize) -> Result<Box<[T]>> {
 	let mut boxed_slice = alloc::slice::<T>(len);
-	let Range { start, end } = boxed_slice.as_mut_ptr_range();
-	read_range_flat(reader, start, end)?;
-	let boxed_slice = transmute::<_, Box<[T]>>(boxed_slice);
-	dest.write(boxed_slice);
+	let buf = from_raw_parts_mut(boxed_slice.as_mut_ptr().cast(), size_of::<T>() * len);
+	reader.read_exact(buf)?;
+	Ok(boxed_slice.assume_init())
+}
+
+pub unsafe fn read_boxed_slice_flat<R: Read, T>(
+	reader: &mut R, len: usize, dest: *mut Box<[T]>,
+) -> Result<()> {
+	dest.write(read_boxed_slice_flat_get(reader, len)?);
 	Ok(())
 }
 
 pub unsafe fn read_boxed_slice_delegate<R: Read, T: Readable>(
-	reader: &mut R, dest: *mut Box<[T]>, len: usize,
+	reader: &mut R, len: usize, dest: *mut Box<[T]>,
 ) -> Result<()> {
 	let mut boxed_slice = alloc::slice::<T>(len);
 	for i in boxed_slice.iter_mut() {
 		Readable::read(reader, i.as_mut_ptr())?;
 	}
-	let boxed_slice = transmute::<_, Box<[T]>>(boxed_slice);
-	dest.write(boxed_slice);
+	dest.write(boxed_slice.assume_init());
 	Ok(())
+}
+
+pub fn zlib<R: Read>(reader: &mut R) -> Result<Decoder<Cursor<Box<[u8]>>>> {
+	unsafe {
+		let _uncompressed_size = read_flat_get::<_, u32>(reader)?;
+		let compressed_size = read_flat_get::<_, u32>(reader)?;
+		let buf = read_boxed_slice_flat_get(reader, compressed_size as usize)?;
+		Ok(Decoder::new(Cursor::new(buf)))
+	}
 }

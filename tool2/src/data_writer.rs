@@ -3,9 +3,7 @@ use glam::IVec3;
 use shared::alloc;
 use tr_model::{tr1, tr3};
 use crate::{
-	as_bytes::{ReinterpretAsBytes, ToBytes}, fixed_vec::FixedVec, geom_buffer::GeomBuffer,
-	tr_traits::{Level, MeshFace, MeshFaceType, RoomFace, RoomFaceType, RoomVertex, TexturedFace},
-	ObjectData, WrittenFaceArray, WrittenMesh,
+	as_bytes::{ReinterpretAsBytes, ToBytes}, fixed_vec::FixedVec, geom_buffer::GeomBuffer, tr_traits::{Level, ObjectTexture, RoomFace, RoomVertex, TexturedFace}, MeshFaceType, ObjectData, WrittenFaceArray, WrittenMesh
 };
 
 const MAX_FACES: usize = 65536;
@@ -120,7 +118,7 @@ impl DataWriter {
 		}
 	}
 	
-	pub fn write_room_face_array<L: Level, F: RoomFace, O: Fn(RoomFaceType, usize) -> ObjectData>(
+	pub fn write_room_face_array<L: Level, F: RoomFace, O: Fn(usize) -> ObjectData>(
 		&mut self, level: &L, vertex_array_offset: usize, faces: &[F], transform_index: usize,
 		object_data_maker: O,
 	) -> RoomFaceOffsets {
@@ -130,7 +128,7 @@ impl DataWriter {
 		let mut additive = original + faces.len();
 		let reverse = additive;
 		for (face_index, face) in faces.iter().enumerate() {
-			let blend_mode = level.object_textures()[face.object_texture_index() as usize].blend_mode;
+			let blend_mode = level.object_textures()[face.object_texture_index() as usize].blend_mode();
 			let is_additive = blend_mode == tr3::blend_mode::ADD;
 			let index = if is_additive {
 				additive -= 1;
@@ -142,7 +140,7 @@ impl DataWriter {
 				face_array_index, face_index, transform_index, self.object_data.len(),
 			);
 			self.face_buffer[index].write(face_instance);
-			self.object_data.push(object_data_maker(F::TYPE, face_index));
+			self.object_data.push(object_data_maker(face_index));
 			if face.double_sided() {
 				double_sided.push((face_instance, is_additive));
 			}
@@ -174,12 +172,12 @@ impl DataWriter {
 		&mut self, level: &L, face_array: &WrittenFaceArray<F>, transform_index: usize,
 		object_data_maker: O,
 	) -> MeshTexturedFaceOffsets
-	where L: Level, F: TexturedFace + MeshFace, O: Fn(MeshFaceType, usize) -> ObjectData {
+	where L: Level, F: TexturedFace, O: Fn(usize) -> ObjectData {
 		let opaque = self.num_written_faces;
 		let mut additive = opaque + face_array.faces.len();
 		let end = additive;
 		for (face_index, face) in face_array.faces.iter().enumerate() {
-			let blend_mode = level.object_textures()[face.object_texture_index() as usize].blend_mode;
+			let blend_mode = level.object_textures()[face.object_texture_index() as usize].blend_mode();
 			let index = if blend_mode == tr3::blend_mode::ADD {
 				additive -= 1;
 				additive
@@ -190,7 +188,7 @@ impl DataWriter {
 				face_array.index, face_index, transform_index, self.object_data.len(),
 			);
 			self.face_buffer[index].write(face_instance);
-			self.object_data.push(object_data_maker(F::TYPE, face_index));
+			self.object_data.push(object_data_maker(face_index));
 		}
 		self.num_written_faces = end;
 		let opaque = opaque as u32;
@@ -199,7 +197,7 @@ impl DataWriter {
 		MeshTexturedFaceOffsets { opaque, additive, end }
 	}
 	
-	fn mesh_solid_face_array<F: MeshFace, O: Fn(MeshFaceType, usize) -> ObjectData>(
+	fn mesh_solid_face_array<F, O: Fn(usize) -> ObjectData>(
 		&mut self, face_array: &WrittenFaceArray<F>, transform_index: usize, object_data_maker: O,
 	) -> Range<u32> {
 		let start = self.num_written_faces;
@@ -209,7 +207,7 @@ impl DataWriter {
 				face_array.index, face_index, transform_index, self.object_data.len(),
 			);
 			self.face_buffer[start + face_index].write(face_instance);
-			self.object_data.push(object_data_maker(F::TYPE, face_index));
+			self.object_data.push(object_data_maker(face_index));
 		}
 		self.num_written_faces = end;
 		let start = start as u32;
@@ -218,13 +216,25 @@ impl DataWriter {
 	}
 	
 	pub fn place_mesh<L: Level, O: Fn(MeshFaceType, usize) -> ObjectData>(
-		&mut self, level: &L, mesh: &WrittenMesh<L>, transfm_idx: usize, odm: O,
+		&mut self, level: &L, mesh: &WrittenMesh<L>, transform_index: usize, object_data_maker: O,
 	) -> MeshFaceOffsets {
 		MeshFaceOffsets {
-			textured_quads: self.mesh_textured_face_array(level, &mesh.textured_quads, transfm_idx, &odm),
-			textured_tris: self.mesh_textured_face_array(level, &mesh.textured_tris, transfm_idx, &odm),
-			solid_quads: self.mesh_solid_face_array(&mesh.solid_quads, transfm_idx, &odm),
-			solid_tris: self.mesh_solid_face_array(&mesh.solid_tris, transfm_idx, &odm),
+			textured_quads: self.mesh_textured_face_array(
+				level, &mesh.textured_quads, transform_index,
+				|face_index| object_data_maker(MeshFaceType::TexturedQuad, face_index),
+			),
+			textured_tris: self.mesh_textured_face_array(
+				level, &mesh.textured_tris, transform_index,
+				|face_index| object_data_maker(MeshFaceType::TexturedTri, face_index),
+			),
+			solid_quads: self.mesh_solid_face_array(
+				&mesh.solid_quads, transform_index,
+				|face_index| object_data_maker(MeshFaceType::SolidQuad, face_index),
+			),
+			solid_tris: self.mesh_solid_face_array(
+				&mesh.solid_tris, transform_index,
+				|face_index| object_data_maker(MeshFaceType::SolidTri, face_index),
+			),
 		}
 	}
 	

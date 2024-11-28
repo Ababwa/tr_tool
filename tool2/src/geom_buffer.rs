@@ -1,7 +1,7 @@
 use std::mem::size_of;
 use glam::Mat4;
 use tr_model::tr1;
-use crate::{as_bytes::AsBytes, multi_cursor::MultiCursorBuffer, tr_traits::{Face, Vertex}};
+use crate::{as_bytes::{AsBytes, ReinterpretAsBytes}, multi_cursor::MultiCursorBuffer, tr_traits::Face, PolyType};
 
 //2 MB
 pub const GEOM_BUFFER_SIZE: usize = 2097152;
@@ -30,6 +30,13 @@ pub struct GeomBuffer {
 	mc: MultiCursorBuffer,
 }
 
+fn texture_offset(poly_type: PolyType) -> u8 {
+	match poly_type {
+		PolyType::Quad => 4,
+		PolyType::Tri => 3,
+	}
+}
+
 impl GeomBuffer {
 	pub fn new() -> Self {
 		Self {
@@ -46,27 +53,30 @@ impl GeomBuffer {
 		}
 	}
 	
-	pub fn write_object_textures(&mut self, object_textures: &[tr1::ObjectTexture]) {
-		self.mc.get_writer(OBJECT_TEXTURES_CURSOR).write(object_textures.as_bytes()).unwrap();
+	pub fn write_object_textures<O: ReinterpretAsBytes>(&mut self, object_textures: &[O]) {
+		let mut object_textures_writer = self.mc.get_writer(OBJECT_TEXTURES_CURSOR);
+		object_textures_writer.write(&(size_of::<O>() as u16 / 2).to_le_bytes()).unwrap();
+		object_textures_writer.write(object_textures.as_bytes()).unwrap();
 	}
 	
 	pub fn write_sprite_textures(&mut self, sprite_textures: &[tr1::SpriteTexture]) {
 		self.mc.get_writer(SPRITE_TEXTURES_CURSOR).write(sprite_textures.as_bytes()).unwrap();
 	}
 	
-	pub fn write_vertex_array<V: Vertex>(&mut self, vertices: &[V]) -> usize {
+	pub fn write_vertex_array<V: ReinterpretAsBytes>(&mut self, vertices: &[V]) -> usize {
 		let mut geom_writer = self.mc.get_writer(GEOM_CURSOR);
-		let offset = geom_writer.pos() / 2;
+		geom_writer.align(16).unwrap();
+		let offset = geom_writer.pos() / 16;
 		geom_writer.write(&(size_of::<V>() as u16 / 2).to_le_bytes()).unwrap();
 		geom_writer.write(vertices.as_bytes()).unwrap();
 		offset
 	}
 	
-	pub fn write_face_array<'a, F: Face>(&mut self, faces: &'a [F], vertex_array_offset: usize) -> usize {
+	pub fn write_face_array<F: Face>(&mut self, faces: &[F], vertex_array_offset: usize) -> usize {
 		let mut geom_writer = self.mc.get_writer(GEOM_CURSOR);
 		let offset = geom_writer.pos();
-		geom_writer.write(&(vertex_array_offset as u32).to_le_bytes()).unwrap();
-		geom_writer.write(&(size_of::<F>() as u16 / 2).to_le_bytes()).unwrap();
+		geom_writer.write(&u16::try_from(vertex_array_offset).unwrap().to_le_bytes()).unwrap();
+		geom_writer.write(&[size_of::<F>() as u8 / 2, texture_offset(F::POLY_TYPE)]).unwrap();
 		geom_writer.write(faces.as_bytes()).unwrap();
 		let mut face_array_map_writer = self.mc.get_writer(FACE_ARRAY_MAP_CURSOR);
 		let index = face_array_map_writer.size() / 4;

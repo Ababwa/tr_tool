@@ -7,8 +7,7 @@ pub fn val<T>() -> Box<MaybeUninit<T>> {
 		if ptr.is_null() {
 			handle_alloc_error(layout);
 		}
-		let ptr = ptr as *mut MaybeUninit<T>;
-		Box::from_raw(ptr)
+		Box::from_raw(ptr.cast())
 	}
 }
 
@@ -23,7 +22,6 @@ pub fn slice<T>(len: usize) -> Box<[MaybeUninit<T>]> {
 		if ptr.is_null() {
 			handle_alloc_error(layout);
 		}
-		let ptr = slice_from_raw_parts_mut(ptr as *mut MaybeUninit<T>, len);
-		Box::from_raw(ptr)
+		Box::from_raw(slice_from_raw_parts_mut(ptr as *mut MaybeUninit<T>, len))
 	}
 }
