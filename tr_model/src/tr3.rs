@@ -6,8 +6,8 @@ use crate::{
 		decl_room_geom, AnimDispatch, Animation, Camera, CinematicFrame, Color24Bit, MeshNode, Model,
 		ObjectTexture, Portal, RoomFlags, Sectors, SoundSource, Sprite, SpriteSequence, SpriteTexture,
 		StateChange, StaticMesh, LIGHT_MAP_LEN, PALETTE_LEN,
-	}, tr2::{Atlases, BoxData, Color32BitBGR, Entity, Frame, Mesh, SOUND_MAP_LEN},
-	u16_cursor::U16Cursor,
+	},
+	tr2::{Atlases, BoxData, Color32BitRgb, Entity, Frame, Mesh, SOUND_MAP_LEN},
 };
 
 pub mod blend_mode {
@@ -36,7 +36,7 @@ pub struct Light {
 bitfield! {
 	#[repr(C)]
 	#[derive(Clone, Debug)]
-	pub struct Color16BitRGB(u16);
+	pub struct Color16BitRgb(u16);
 	u8;
 	pub r, _: 14, 10;
 	pub g, _: 9, 5;
@@ -50,7 +50,7 @@ pub struct RoomStaticMesh {
 	pub pos: IVec3,
 	/// Units are 1/65536 of a rotation.
 	pub angle: u16,
-	pub color: Color16BitRGB,
+	pub color: Color16BitRgb,
 	pub unused: u16,
 	/// Matched to `StaticMesh.id` in `Level.static_meshes`.
 	pub static_mesh_id: u16,
@@ -95,7 +95,7 @@ pub struct SoundDetails {
 pub struct Level {
 	#[flat] pub version: u32,
 	#[flat] #[boxed] pub palette_24bit: Box<[Color24Bit; PALETTE_LEN]>,
-	#[flat] #[boxed] pub palette_32bit: Box<[Color32BitBGR; PALETTE_LEN]>,
+	#[flat] #[boxed] pub palette_32bit: Box<[Color32BitRgb; PALETTE_LEN]>,
 	#[delegate] pub atlases: Atlases,
 	#[flat] pub unused: u32,
 	#[delegate] #[list(u16)] pub rooms: Box<[Room]>,
@@ -136,7 +136,7 @@ pub struct RoomVertex {
 	pub pos: I16Vec3,
 	pub unused: u16,
 	pub attrs: u16,
-	pub color: Color16BitRGB,
+	pub color: Color16BitRgb,
 }
 
 bitfield! {

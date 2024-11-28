@@ -19,6 +19,10 @@ pub trait RoomFace: TexturedFace {
 	fn double_sided(&self) -> bool;
 }
 
+pub trait MeshTexturedFace: TexturedFace {
+	fn additive(&self) -> bool;
+}
+
 pub trait SolidFace: Face {
 	fn color_index_24bit(&self) -> u8;
 	fn color_index_32bit(&self) -> Option<u8>;
@@ -61,8 +65,8 @@ pub trait ObjectTexture: ReinterpretAsBytes {
 }
 
 pub trait Mesh<'a> {
-	type TexturedQuad: TexturedFace;
-	type TexturedTri: TexturedFace;
+	type TexturedQuad: MeshTexturedFace;
+	type TexturedTri: MeshTexturedFace;
 	type SolidQuad: SolidFace;
 	type SolidTri: SolidFace;
 	fn vertices(&self) -> &'a [I16Vec3];
@@ -92,10 +96,10 @@ pub trait Level: Readable {
 	fn sprite_textures(&self) -> &[tr1::SpriteTexture];
 	fn mesh_offsets(&self) -> &[u32];
 	fn palette_24bit(&self) -> Option<&[tr1::Color24Bit; tr1::PALETTE_LEN]>;
-	fn palette_32bit(&self) -> Option<&[tr2::Color32BitBGR; tr1::PALETTE_LEN]>;
+	fn palette_32bit(&self) -> Option<&[tr2::Color32BitRgb; tr1::PALETTE_LEN]>;
 	fn atlases_palette(&self) -> Option<&[[u8; tr1::ATLAS_PIXELS]]>;
-	fn atlases_16bit(&self) -> Option<&[[tr2::Color16BitARGB; tr1::ATLAS_PIXELS]]>;
-	fn atlases_32bit(&self) -> Option<&[[tr4::Color32BitRGB; tr1::ATLAS_PIXELS]]>;
+	fn atlases_16bit(&self) -> Option<&[[tr2::Color16BitArgb; tr1::ATLAS_PIXELS]]>;
+	fn atlases_32bit(&self) -> Option<&[[tr4::Color32BitBbga; tr1::ATLAS_PIXELS]]>;
 	fn get_mesh_nodes(&self, model: &tr1::Model) -> &[tr1::MeshNode];
 	fn get_mesh(&self, mesh_offset: u32) -> Self::Mesh<'_>;
 	fn get_frame(&self, model: &tr1::Model) -> Self::Frame<'_>;
@@ -104,12 +108,12 @@ pub trait Level: Readable {
 
 //impl helpers
 
-fn to_radians(angle: u16) -> f32 {
-	angle as f32 / 1024.0 * TAU
+fn to_radians(angle: u16, divisor: f32) -> f32 {
+	angle as f32 / divisor * TAU
 }
 
 fn to_mat(angles: U16Vec3) -> Mat4 {
-	let [x, y, z] = angles.to_array().map(to_radians);
+	let [x, y, z] = angles.to_array().map(|a| to_radians(a, 1024.0));
 	Mat4::from_rotation_y(y) * Mat4::from_rotation_x(x) * Mat4::from_rotation_z(z)
 }
 
@@ -199,6 +203,14 @@ impl TexturedFace for tr1::MeshTexturedTri {
 	fn object_texture_index(&self) -> u16 { self.object_texture_index }
 }
 
+impl MeshTexturedFace for tr1::MeshTexturedQuad {
+	fn additive(&self) -> bool { false }
+}
+
+impl MeshTexturedFace for tr1::MeshTexturedTri {
+	fn additive(&self) -> bool { false }
+}
+
 impl<'a> Mesh<'a> for tr1::Mesh<'a> {
 	type TexturedQuad = tr1::MeshTexturedQuad;
 	type TexturedTri = tr1::MeshTexturedTri;
@@ -233,10 +245,10 @@ impl Level for tr1::Level {
 	fn sprite_textures(&self) -> &[tr1::SpriteTexture] { &self.sprite_textures }
 	fn mesh_offsets(&self) -> &[u32] { &self.mesh_offsets }
 	fn palette_24bit(&self) -> Option<&[tr1::Color24Bit; tr1::PALETTE_LEN]> { Some(&self.palette) }
-	fn palette_32bit(&self) -> Option<&[tr2::Color32BitBGR; tr1::PALETTE_LEN]> { None }
+	fn palette_32bit(&self) -> Option<&[tr2::Color32BitRgb; tr1::PALETTE_LEN]> { None }
 	fn atlases_palette(&self) -> Option<&[[u8; tr1::ATLAS_PIXELS]]> { Some(&self.atlases) }
-	fn atlases_16bit(&self) -> Option<&[[tr2::Color16BitARGB; tr1::ATLAS_PIXELS]]> { None }
-	fn atlases_32bit(&self) -> Option<&[[tr4::Color32BitRGB; tr1::ATLAS_PIXELS]]> { None }
+	fn atlases_16bit(&self) -> Option<&[[tr2::Color16BitArgb; tr1::ATLAS_PIXELS]]> { None }
+	fn atlases_32bit(&self) -> Option<&[[tr4::Color32BitBbga; tr1::ATLAS_PIXELS]]> { None }
 	fn get_mesh_nodes(&self, model: &tr1::Model) -> &[tr1::MeshNode] { self.get_mesh_nodes(model) }
 	fn get_mesh(&self, mesh_offset: u32) -> Self::Mesh<'_> { self.get_mesh(mesh_offset) }
 	fn get_frame(&self, model: &tr1::Model) -> Self::Frame<'_> { self.get_frame(model) }
@@ -313,7 +325,7 @@ impl<'a> Frame for tr2::Frame<'a> {
 			match rot {
 				tr2::FrameRotation::AllAxes(angles) => to_mat(angles),
 				tr2::FrameRotation::SingleAxis(axis, angle) => {
-					let angle = to_radians(angle);
+					let angle = to_radians(angle, 1024.0);
 					match axis {
 						tr2::Axis::X => Mat4::from_rotation_x(angle),
 						tr2::Axis::Y => Mat4::from_rotation_y(angle),
@@ -340,12 +352,12 @@ impl Level for tr2::Level {
 	fn sprite_textures(&self) -> &[tr1::SpriteTexture] { &self.sprite_textures }
 	fn mesh_offsets(&self) -> &[u32] { &self.mesh_offsets }
 	fn palette_24bit(&self) -> Option<&[tr1::Color24Bit; tr1::PALETTE_LEN]> { Some(&self.palette_24bit) }
-	fn palette_32bit(&self) -> Option<&[tr2::Color32BitBGR; tr1::PALETTE_LEN]> { Some(&self.palette_32bit) }
+	fn palette_32bit(&self) -> Option<&[tr2::Color32BitRgb; tr1::PALETTE_LEN]> { Some(&self.palette_32bit) }
 	fn atlases_palette(&self) -> Option<&[[u8; tr1::ATLAS_PIXELS]]> { Some(&self.atlases.atlases_palette) }
-	fn atlases_16bit(&self) -> Option<&[[tr2::Color16BitARGB; tr1::ATLAS_PIXELS]]> {
+	fn atlases_16bit(&self) -> Option<&[[tr2::Color16BitArgb; tr1::ATLAS_PIXELS]]> {
 		Some(&self.atlases.atlases_16bit)
 	}
-	fn atlases_32bit(&self) -> Option<&[[tr4::Color32BitRGB; tr1::ATLAS_PIXELS]]> { None }
+	fn atlases_32bit(&self) -> Option<&[[tr4::Color32BitBbga; tr1::ATLAS_PIXELS]]> { None }
 	fn get_mesh_nodes(&self, model: &tr1::Model) -> &[tr1::MeshNode] { self.get_mesh_nodes(model) }
 	fn get_mesh(&self, mesh_offset: u32) -> Self::Mesh<'_> { self.get_mesh(mesh_offset) }
 	fn get_frame(&self, model: &tr1::Model) -> Self::Frame<'_> { self.get_frame(model) }
@@ -417,12 +429,12 @@ impl Level for tr3::Level {
 	fn sprite_textures(&self) -> &[tr1::SpriteTexture] { &self.sprite_textures }
 	fn mesh_offsets(&self) -> &[u32] { &self.mesh_offsets }
 	fn palette_24bit(&self) -> Option<&[tr1::Color24Bit; tr1::PALETTE_LEN]> { Some(&self.palette_24bit) }
-	fn palette_32bit(&self) -> Option<&[tr2::Color32BitBGR; tr1::PALETTE_LEN]> { Some(&self.palette_32bit) }
+	fn palette_32bit(&self) -> Option<&[tr2::Color32BitRgb; tr1::PALETTE_LEN]> { Some(&self.palette_32bit) }
 	fn atlases_palette(&self) -> Option<&[[u8; tr1::ATLAS_PIXELS]]> { Some(&self.atlases.atlases_palette) }
-	fn atlases_16bit(&self) -> Option<&[[tr2::Color16BitARGB; tr1::ATLAS_PIXELS]]> {
+	fn atlases_16bit(&self) -> Option<&[[tr2::Color16BitArgb; tr1::ATLAS_PIXELS]]> {
 		Some(&self.atlases.atlases_16bit)
 	}
-	fn atlases_32bit(&self) -> Option<&[[tr4::Color32BitRGB; tr1::ATLAS_PIXELS]]> { None }
+	fn atlases_32bit(&self) -> Option<&[[tr4::Color32BitBbga; tr1::ATLAS_PIXELS]]> { None }
 	fn get_mesh_nodes(&self, model: &tr1::Model) -> &[tr1::MeshNode] { self.get_mesh_nodes(model) }
 	fn get_mesh(&self, mesh_offset: u32) -> Self::Mesh<'_> { self.get_mesh(mesh_offset) }
 	fn get_frame(&self, model: &tr1::Model) -> Self::Frame<'_> { self.get_frame(model) }
@@ -462,6 +474,14 @@ impl TexturedFace for tr4::MeshTri {
 	fn object_texture_index(&self) -> u16 { self.object_texture_index }
 }
 
+impl MeshTexturedFace for tr4::MeshQuad {
+	fn additive(&self) -> bool { self.flags.additive() }
+}
+
+impl MeshTexturedFace for tr4::MeshTri {
+	fn additive(&self) -> bool { self.flags.additive() }
+}
+
 impl<'a> Mesh<'a> for tr4::Mesh<'a> {
 	type TexturedQuad = tr4::MeshQuad;
 	type TexturedTri = tr4::MeshTri;
@@ -474,12 +494,31 @@ impl<'a> Mesh<'a> for tr4::Mesh<'a> {
 	fn solid_tris(&self) -> &'a [Self::SolidTri] { &[] }
 }
 
+impl<'a> Frame for tr4::Frame<'a> {
+	fn offset(&self) -> I16Vec3 { self.frame_data.offset }
+	fn iter_rotations(&self) -> impl Iterator<Item = Mat4> {
+		self.iter_rotations().map(|rot| {
+			match rot {
+				tr4::FrameRotation::AllAxes(angles) => to_mat(angles),
+				tr4::FrameRotation::SingleAxis(axis, angle) => {
+					let angle = to_radians(angle, 4096.0);
+					match axis {
+						tr2::Axis::X => Mat4::from_rotation_x(angle),
+						tr2::Axis::Y => Mat4::from_rotation_y(angle),
+						tr2::Axis::Z => Mat4::from_rotation_z(angle),
+					}
+				},
+			}
+		})
+	}
+}
+
 impl Level for tr4::Level {
 	type Room = tr4::Room;
 	type Entity = tr4::Entity;
 	type ObjectTexture = tr4::ObjectTexture;
 	type Mesh<'a> = tr4::Mesh<'a>;
-	type Frame<'a> = tr2::Frame<'a>;
+	type Frame<'a> = tr4::Frame<'a>;
 	fn static_meshes(&self) -> &[tr1::StaticMesh] { &self.level_data.static_meshes }
 	fn models(&self) -> &[tr1::Model] { &self.level_data.models }
 	fn sprite_sequences(&self) -> &[tr1::SpriteSequence] { &self.level_data.sprite_sequences }
@@ -489,12 +528,12 @@ impl Level for tr4::Level {
 	fn sprite_textures(&self) -> &[tr1::SpriteTexture] { &self.level_data.sprite_textures }
 	fn mesh_offsets(&self) -> &[u32] { &self.level_data.mesh_offsets }
 	fn palette_24bit(&self) -> Option<&[tr1::Color24Bit; tr1::PALETTE_LEN]> { None }
-	fn palette_32bit(&self) -> Option<&[tr2::Color32BitBGR; tr1::PALETTE_LEN]> { None }
+	fn palette_32bit(&self) -> Option<&[tr2::Color32BitRgb; tr1::PALETTE_LEN]> { None }
 	fn atlases_palette(&self) -> Option<&[[u8; tr1::ATLAS_PIXELS]]> { None }
-	fn atlases_16bit(&self) -> Option<&[[tr2::Color16BitARGB; tr1::ATLAS_PIXELS]]> {
+	fn atlases_16bit(&self) -> Option<&[[tr2::Color16BitArgb; tr1::ATLAS_PIXELS]]> {
 		Some(&self.atlases.atlases_16bit)
 	}
-	fn atlases_32bit(&self) -> Option<&[[tr4::Color32BitRGB; tr1::ATLAS_PIXELS]]> {
+	fn atlases_32bit(&self) -> Option<&[[tr4::Color32BitBbga; tr1::ATLAS_PIXELS]]> {
 		Some(&self.atlases.atlases_32bit)
 	}
 	fn get_mesh_nodes(&self, model: &tr1::Model) -> &[tr1::MeshNode] { self.get_mesh_nodes(model) }

@@ -1,32 +1,31 @@
-use std::{io::{Read, Result}, mem::transmute, ptr::addr_of_mut, slice::Iter};
+use std::{io::{Read, Result}, ptr::addr_of_mut};
 use bitfield::bitfield;
-use glam::{I16Vec3, IVec3, U16Vec3};
+use glam::{I16Vec3, IVec3};
 use shared::min_max::MinMax;
 use tr_readable::{read_boxed_slice_flat, read_flat_get, Readable};
-use crate::{
-	tr1::{
-		decl_box_data, decl_mesh, decl_room_geom, get_packed_angles, AnimDispatch, Animation, Camera, CinematicFrame, Color24Bit, MeshLighting, MeshNode, MeshTexturedQuad, MeshTexturedTri, Model, ObjectTexture, Portal, RoomFlags, RoomQuad, RoomTri, Sectors, SoundDetails, SoundSource, Sprite, SpriteSequence, SpriteTexture, StateChange, StaticMesh, ATLAS_PIXELS, LIGHT_MAP_LEN, PALETTE_LEN
-	}, u16_cursor::U16Cursor,
+use crate::tr1::{
+	decl_box_data, decl_mesh, decl_room_geom, AnimDispatch, Animation, Camera,
+	CinematicFrame, Color24Bit, MeshLighting, MeshNode, MeshTexturedQuad, MeshTexturedTri, Model,
+	ObjectTexture, Portal, RoomFlags, RoomQuad, RoomTri, Sectors, SoundDetails, SoundSource, Sprite,
+	SpriteSequence, SpriteTexture, StateChange, StaticMesh, ATLAS_PIXELS, LIGHT_MAP_LEN, PALETTE_LEN,
 };
 
 pub const SOUND_MAP_LEN: usize = 370;
 
 //model
 
-bitfield! {
-	#[repr(C)]
-	#[derive(Clone, Debug)]
-	pub struct Color32BitBGR(u32);
-	u8;
-	pub b, _: 23, 16;
-	pub g, _: 15, 8;
-	pub r, _: 7, 0;
+#[repr(C, align(4))]
+#[derive(Clone, Debug)]
+pub struct Color32BitRgb {
+	pub r: u8,
+	pub g: u8,
+	pub b: u8,
 }
 
 bitfield! {
 	#[repr(C)]
 	#[derive(Clone, Debug)]
-	pub struct Color16BitARGB(u16);
+	pub struct Color16BitArgb(u16);
 	u8;
 	pub a, _: 15;
 	pub r, _: 14, 10;
@@ -37,7 +36,7 @@ bitfield! {
 #[derive(Clone, Debug)]
 pub struct Atlases {
 	pub atlases_palette: Box<[[u8; ATLAS_PIXELS]]>,
-	pub atlases_16bit: Box<[[Color16BitARGB; ATLAS_PIXELS]]>,
+	pub atlases_16bit: Box<[[Color16BitArgb; ATLAS_PIXELS]]>,
 }
 
 impl Readable for Atlases {
@@ -116,7 +115,7 @@ pub struct Entity {
 pub struct Level {
 	#[flat] pub version: u32,
 	#[flat] #[boxed] pub palette_24bit: Box<[Color24Bit; PALETTE_LEN]>,
-	#[flat] #[boxed] pub palette_32bit: Box<[Color32BitBGR; PALETTE_LEN]>,
+	#[flat] #[boxed] pub palette_32bit: Box<[Color32BitRgb; PALETTE_LEN]>,
 	#[delegate] pub atlases: Atlases,
 	#[flat] pub unused: u32,
 	#[delegate] #[list(u16)] pub rooms: Box<[Room]>,
@@ -194,70 +193,84 @@ pub struct FrameData {
 }
 
 #[derive(Clone, Debug)]
-pub struct Frame<'a> {
-	pub num_meshes: usize,
-	pub frame_data: &'a FrameData,
+pub enum Axis {
+	X,
+	Y,
+	Z,
 }
 
-#[derive(Clone, Debug)]
-pub struct RotationIterator<'a> {
-	rotation_data: Iter<'a, u16>,
-	remaining: usize,
-}
-
-#[derive(Clone, Debug)]
-pub enum Axis { X, Y, Z }
-
-#[derive(Clone, Debug)]
-pub enum FrameRotation {
-	AllAxes(U16Vec3),
-	SingleAxis(Axis, u16),
-}
-
-impl Iterator for RotationIterator<'_> {
-	type Item = FrameRotation;
-	
-	fn next(&mut self) -> Option<Self::Item> {
-		if self.remaining == 0 {
-			return None;
+macro_rules! decl_frame {
+	(
+		$frame:ident, $frame_data:ty, $rotation_iterator:ident, $frame_rotation:ident, $axis:ty, $model:ty,
+		$single_angle_mask:literal
+	) => {
+		#[derive(Clone, Debug)]
+		pub struct $frame<'a> {
+			pub num_meshes: usize,
+			pub frame_data: &'a $frame_data,
 		}
-		self.remaining -= 1;
-		let word1 = *self.rotation_data.next().unwrap();
-		let rotation = match word1 >> 14 {
-			0 => {
-				let word2 = *self.rotation_data.next().unwrap();
-				let angles = get_packed_angles(word1, word2);
-				FrameRotation::AllAxes(angles)
-			},
-			axis => {
-				let axis = match axis {
-					1 => Axis::X,
-					2 => Axis::Y,
-					_ => Axis::Z,//only 3 possible
+
+		#[derive(Clone, Debug)]
+		pub struct $rotation_iterator<'a> {
+			rotation_data: std::slice::Iter<'a, u16>,
+			remaining: usize,
+		}
+
+		#[derive(Clone, Debug)]
+		pub enum $frame_rotation {
+			AllAxes(glam::U16Vec3),
+			SingleAxis($axis, u16),
+		}
+
+		impl std::iter::Iterator for $rotation_iterator<'_> {
+			type Item = $frame_rotation;
+			
+			fn next(&mut self) -> Option<Self::Item> {
+				if self.remaining == 0 {
+					return None;
+				}
+				self.remaining -= 1;
+				let word1 = *self.rotation_data.next().unwrap();
+				let rotation = match word1 >> 14 {
+					0 => {
+						let word2 = *self.rotation_data.next().unwrap();
+						let angles = crate::tr1::get_packed_angles(word1, word2);
+						Self::Item::AllAxes(angles)
+					},
+					axis => {
+						let axis = match axis {
+							1 => <$axis>::X,
+							2 => <$axis>::Y,
+							_ => <$axis>::Z,//only 3 possible
+						};
+						let angle = word1 & $single_angle_mask;
+						Self::Item::SingleAxis(axis, angle)
+					},
 				};
-				let angle = word1 & 1023;
-				FrameRotation::SingleAxis(axis, angle)
-			},
-		};
-		Some(rotation)
-	}
-}
-
-impl<'a> Frame<'a> {
-	pub(crate) fn get(frame_data: &'a [u16], model: &Model) -> Frame<'a> {
-		let frame_data = &frame_data[model.frame_byte_offset as usize / 2..];
-		let ptr = frame_data[..9].as_ptr() as usize;
-		let frame_data = unsafe { transmute([ptr, frame_data.len() - 9]) };
-		Frame { num_meshes: model.num_meshes as usize, frame_data }
-	}
-	
-	pub fn iter_rotations(&self) -> RotationIterator<'a> {
-		RotationIterator {
-			rotation_data: self.frame_data.rotation_data.iter(),
-			remaining: self.num_meshes,
+				Some(rotation)
+			}
 		}
-	}
+
+		impl<'a> $frame<'a> {
+			pub(crate) fn get(frame_data: &'a [u16], model: &$model) -> Self {
+				let frame_data = &frame_data[model.frame_byte_offset as usize / 2..];
+				let ptr = frame_data[..9].as_ptr() as usize;
+				let frame_data = unsafe { std::mem::transmute([ptr, frame_data.len() - 9]) };
+				Self { num_meshes: model.num_meshes as usize, frame_data }
+			}
+			
+			pub fn iter_rotations(&self) -> $rotation_iterator<'a> {
+				$rotation_iterator {
+					rotation_data: self.frame_data.rotation_data.iter(),
+					remaining: self.num_meshes,
+				}
+			}
+		}
+	};
 }
+pub(crate) use decl_frame;
+
+decl_frame!(Frame, FrameData, RotationIterator, FrameRotation, Axis, Model, 0x3FF);
 
 impl Level {
 	pub fn get_mesh(&self, mesh_offset: u32) -> Mesh {

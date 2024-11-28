@@ -1,7 +1,9 @@
 /*
-Terminology:
+Terms:
 An "offset" marks a starting point of some kind.
 An "index" points to an entry in an array.
+32-bit color type names list channels in byte-order.
+16-bit color type names list channels in bit-order, high first.
 */
 
 use std::{io::{Read, Result}, mem::transmute, ptr::addr_of_mut, slice};
@@ -10,14 +12,12 @@ use glam::{I16Vec2, I16Vec3, IVec3, U16Vec2, U16Vec3};
 use glam_traits::ext::U8Vec2;
 use shared::min_max::MinMax;
 use tr_readable::{read_boxed_slice_flat, read_flat, read_flat_get, Readable};
-use crate::u16_cursor::U16Cursor;
 
 pub const ATLAS_SIDE_LEN: usize = 256;
 pub const ATLAS_PIXELS: usize = ATLAS_SIDE_LEN * ATLAS_SIDE_LEN;
 pub const PALETTE_LEN: usize = 256;
 pub const LIGHT_MAP_LEN: usize = 32;
 pub const SOUND_MAP_LEN: usize = 256;
-pub const FRAME_SINGLE_ROT_MASK: u16 = 1023;
 
 pub mod blend_mode {
 	pub const OPAQUE: u16 = 0;
@@ -378,7 +378,7 @@ macro_rules! decl_room_geom {
 		
 		impl<'a> $room_geom<'a> {
 			pub(crate) fn get(geom_data: &'a [u16]) -> Self {
-				let mut cursor = U16Cursor::new(geom_data);
+				let mut cursor = crate::u16_cursor::U16Cursor::new(geom_data);
 				unsafe {
 					Self {
 						vertices: cursor.u16_len_slice(),
@@ -419,11 +419,11 @@ macro_rules! decl_mesh {
 	) => {
 		#[derive(Clone, Debug)]
 		pub struct $mesh<'a> {
-			pub center: I16Vec3,
+			pub center: glam::I16Vec3,
 			pub radius: i32,
 			/// If static mesh, relative to `RoomStaticMesh.pos`.
 			/// If entity mesh, relative to `Entity.pos`.
-			pub vertices: &'a [I16Vec3],
+			pub vertices: &'a [glam::I16Vec3],
 			pub lighting: $mesh_lighting<'a>,
 			pub textured_quads: &'a [$textured_quad],
 			pub textured_tris: &'a [$textured_tri],
@@ -433,15 +433,15 @@ macro_rules! decl_mesh {
 		
 		impl<'a> $mesh<'a> {
 			pub(crate) fn get(mesh_data: &'a [u16], mesh_offset: u32) -> Self {
-				let mut cursor = U16Cursor::new(&mesh_data[mesh_offset as usize / 2..]);
+				let mut cursor = crate::u16_cursor::U16Cursor::new(&mesh_data[mesh_offset as usize / 2..]);
 				unsafe {
 					Self {
 						center: cursor.read(),
 						radius: cursor.read(),
 						vertices: cursor.u16_len_slice(),
 						lighting: match cursor.next() as i16 {
-							len if len > 0 => MeshLighting::Normals(cursor.slice(len as usize)),
-							len => MeshLighting::Lights(cursor.slice(-len as usize)),
+							len if len > 0 => $mesh_lighting::Normals(cursor.slice(len as usize)),
+							len => $mesh_lighting::Lights(cursor.slice(-len as usize)),
 						},
 						textured_quads: cursor.u16_len_slice(),
 						textured_tris: cursor.u16_len_slice(),

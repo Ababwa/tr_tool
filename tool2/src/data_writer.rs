@@ -3,7 +3,7 @@ use glam::IVec3;
 use shared::alloc;
 use tr_model::{tr1, tr3};
 use crate::{
-	as_bytes::{ReinterpretAsBytes, ToBytes}, fixed_vec::FixedVec, geom_buffer::GeomBuffer, tr_traits::{Level, ObjectTexture, RoomFace, RoomVertex, TexturedFace}, MeshFaceType, ObjectData, WrittenFaceArray, WrittenMesh
+	as_bytes::{ReinterpretAsBytes, ToBytes}, fixed_vec::FixedVec, geom_buffer::GeomBuffer, tr_traits::{Level, MeshTexturedFace, ObjectTexture, RoomFace, RoomVertex}, MeshFaceType, ObjectData, WrittenFaceArray, WrittenMesh
 };
 
 const MAX_FACES: usize = 65536;
@@ -172,13 +172,13 @@ impl DataWriter {
 		&mut self, level: &L, face_array: &WrittenFaceArray<F>, transform_index: usize,
 		object_data_maker: O,
 	) -> MeshTexturedFaceOffsets
-	where L: Level, F: TexturedFace, O: Fn(usize) -> ObjectData {
+	where L: Level, F: MeshTexturedFace, O: Fn(usize) -> ObjectData {
 		let opaque = self.num_written_faces;
 		let mut additive = opaque + face_array.faces.len();
 		let end = additive;
 		for (face_index, face) in face_array.faces.iter().enumerate() {
 			let blend_mode = level.object_textures()[face.object_texture_index() as usize].blend_mode();
-			let index = if blend_mode == tr3::blend_mode::ADD {
+			let index = if blend_mode == tr3::blend_mode::ADD || face.additive() {
 				additive -= 1;
 				additive
 			} else {

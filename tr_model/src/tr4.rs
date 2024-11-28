@@ -7,20 +7,20 @@ use crate::{
 		AnimDispatch, Camera, Color24Bit, MeshLighting, MeshNode, Model, Portal, RoomFlags, Sectors,
 		SoundSource, SpriteSequence, SpriteTexture, StateChange, StaticMesh, ATLAS_PIXELS,
 	},
-	tr2::{BoxData, Color16BitARGB, Frame, SOUND_MAP_LEN}, tr3::{RoomGeom, RoomStaticMesh, SoundDetails},
+	tr2::{decl_frame, Axis, BoxData, Color16BitArgb, FrameData, SOUND_MAP_LEN},
+	tr3::{RoomGeom, RoomStaticMesh, SoundDetails},
 	u16_cursor::U16Cursor,
 };
 
 //model
 
-bitfield! {
-	#[repr(C)]
-	#[derive(Clone, Debug)]
-	pub struct Color32BitRGB(u32);
-	u8;
-	pub r, _: 23, 16;
-	pub g, _: 15, 8;
-	pub b, _: 7, 0;
+#[repr(C, align(4))]
+#[derive(Clone, Debug)]
+pub struct Color32BitBbga {
+	pub b: u8,
+	pub g: u8,
+	pub r: u8,
+	pub a: u8,
 }
 
 #[derive(Clone, Debug)]
@@ -28,9 +28,9 @@ pub struct Atlases {
 	pub num_room_atlases: u16,
 	pub num_obj_atlases: u16,
 	pub num_bump_atlases: u16,
-	pub atlases_32bit: Box<[[Color32BitRGB; ATLAS_PIXELS]]>,
-	pub atlases_16bit: Box<[[Color16BitARGB; ATLAS_PIXELS]]>,
-	pub misc_images: Box<[[Color32BitRGB; ATLAS_PIXELS]; 2]>,
+	pub atlases_32bit: Box<[[Color32BitBbga; ATLAS_PIXELS]]>,
+	pub atlases_16bit: Box<[[Color16BitArgb; ATLAS_PIXELS]]>,
+	pub misc_images: Box<[[Color32BitBbga; ATLAS_PIXELS]; 2]>,
 }
 
 impl Readable for Atlases {
@@ -74,7 +74,7 @@ pub struct Room {
 	#[flat] #[list(u32)] pub geom_data: Box<[u16]>,
 	#[flat] #[list(u16)] pub portals: Box<[Portal]>,
 	#[delegate] pub sectors: Sectors,
-	#[flat] pub color: Color32BitRGB,
+	#[flat] pub color: Color32BitBbga,
 	#[flat] #[list(u16)] pub lights: Box<[Light]>,
 	#[flat] #[list(u16)] pub room_static_meshes: Box<[RoomStaticMesh]>,
 	#[flat] pub alt_room_index: u16,
@@ -230,6 +230,19 @@ pub struct Level {
 
 //extraction
 
+impl Room {
+	pub fn get_geom(&self) -> RoomGeom {
+		RoomGeom::get(&self.geom_data)
+	}
+}
+
+bitfield! {
+	#[repr(C)]
+	#[derive(Clone, Debug)]
+	pub struct MeshFaceFlags(u16);
+	pub additive, _: 0;
+}
+
 macro_rules! decl_face_type {
 	($name:ident, $num_indices:literal) => {
 		#[repr(C)]
@@ -237,7 +250,7 @@ macro_rules! decl_face_type {
 		pub struct $name {
 			pub vertex_indices: [u16; $num_indices],
 			pub object_texture_index: u16,
-			pub effects: u16,
+			pub flags: MeshFaceFlags,
 		}
 	};
 }
@@ -275,11 +288,7 @@ impl<'a> Mesh<'a> {
 	}
 }
 
-impl Room {
-	pub fn get_geom(&self) -> RoomGeom {
-		RoomGeom::get(&self.geom_data)
-	}
-}
+decl_frame!(Frame, FrameData, RotationIterator, FrameRotation, Axis, Model, 0xFFF);
 
 impl Level {
 	pub fn get_mesh(&self, mesh_offset: u32) -> Mesh {

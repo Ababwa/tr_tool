@@ -293,7 +293,7 @@ fn texture_16bit_fs_main(vtf: TextureVTF) -> Out {
 @fragment
 fn texture_32bit_fs_main(vtf: TextureVTF) -> Out {
 	let color = textureLoad(atlases, vec2i(vtf.uv), vtf.atlas_index, 0).x;
-	if (color & 0xFF00FF) == 0xFF00FF {
+	if (color & 0xFF000000) == 0 {
 		discard;
 	} else {
 		let color = to_f32_color(

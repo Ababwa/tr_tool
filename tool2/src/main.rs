@@ -265,8 +265,8 @@ fn print_object_data<L: Level>(level: &L, object_data: &[ObjectData], index: u16
 			println!("color 24 bit: #{:06X}", color);
 		}
 		if let (Some(color_index), Some(palette)) = (color_index_32bit, level.palette_32bit()) {
-			let color = &palette[color_index as usize];
-			let [r, g, b] = [color.r(), color.g(), color.b()].map(|c| c as u32);
+			let &tr2::Color32BitRgb { r, g, b } = &palette[color_index as usize];
+			let [r, g, b] = [r, g, b].map(|c| c as u32);
 			let color = (r << 16) | (g << 8) | b;
 			println!("color 32 bit: #{:06X}", color);
 		}
@@ -787,6 +787,7 @@ fn parse_level<R: Read, L: Level>(
 		texture_bind_groups.push(TextureBindGroup { bind_group, texture_type: TextureType::Direct16Bit });
 	}
 	if let Some(atlases) = level.atlases_32bit() {
+		image::save_buffer("image.png", atlases.as_bytes(), 256, atlases.len() as u32 * 256, image::ColorType::Rgba8).unwrap();
 		let atlases_view = make_atlases_view(device, queue, atlases, TextureFormat::R32Uint);
 		let atlases_entry = (3, BindingResource::TextureView(&atlases_view));
 		let bind_group = make::bind_group(device, &bind_group_layouts.texture_direct, &[
