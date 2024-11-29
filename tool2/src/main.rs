@@ -78,18 +78,6 @@ struct WrittenMesh<'a, L: Level + 'a> {
 	solid_tris: WrittenFaceArray<'a, <L::Mesh<'a> as Mesh<'a>>::SolidTri>,
 }
 
-struct RoomData {
-	quads: RoomFaceOffsets,
-	tris: RoomFaceOffsets,
-	meshes: Vec<MeshFaceOffsets>,
-	sprites: Range<u32>,
-	center: Vec3,
-	radius: f32,
-}
-
-/// `[original_room_index, alt_room_index]`
-struct RenderRoom([usize; 2]);
-
 #[derive(Clone, Copy, Debug)]
 pub enum PolyType {
 	Quad,
@@ -323,6 +311,36 @@ struct SolidBindGroup {
 	solid_type: SolidType,
 }
 
+struct RenderRoom {
+	quads: RoomFaceOffsets,
+	tris: RoomFaceOffsets,
+	meshes: Vec<MeshFaceOffsets>,
+	sprites: Range<u32>,
+	center: Vec3,
+	radius: f32,
+}
+
+struct FlipRoomIndices {
+	original: usize,
+	flipped: usize,
+}
+
+impl FlipRoomIndices {
+	fn get(&self, flipped: bool) -> usize {
+		if flipped {
+			self.flipped
+		} else {
+			self.original
+		}
+	}
+}
+
+struct FlipGroup {
+	number: u8,
+	rooms: Vec<FlipRoomIndices>,
+	show_flipped: bool,
+}
+
 enum LevelStore {
 	Tr1(Box<tr1::Level>),
 	Tr2(Box<tr2::Level>),
@@ -351,10 +369,10 @@ struct LoadedLevel {
 	yaw: f32,
 	pitch: f32,
 	//rooms
-	rooms: Vec<RoomData>,
 	render_rooms: Vec<RenderRoom>,
+	static_room_indices: Vec<usize>,
+	flip_groups: Vec<FlipGroup>,
 	render_room_index: Option<usize>,//if None, render all
-	render_alt_rooms: bool,
 	//object data
 	level: LevelStore,
 	object_data: Vec<ObjectData>,
@@ -366,6 +384,8 @@ struct LoadedLevel {
 	key_states: KeyStates,
 	action_map: ActionMap,
 	frame_update_queue: Vec<Box<dyn FnOnce(&mut Self)>>,
+	//ui
+	show_render_options: bool,
 }
 
 struct BindGroupLayouts {
@@ -579,9 +599,9 @@ fn parse_level<R: Read, L: Level>(
 	}
 	//rooms
 	let mut data_writer = DataWriter::new(geom_buffer);
-	let mut room_indices = (0..level.rooms().len()).collect::<Vec<_>>();//rooms with alt will be removed
-	let mut render_rooms = Vec::with_capacity(level.rooms().len());//rooms.len is upper-bound
-	let rooms = level.rooms().iter().enumerate().map(|(room_index, room)| {
+	let mut static_room_indices = (0..level.rooms().len()).collect::<Vec<_>>();//flip rooms will be removed
+	let mut flip_groups = HashMap::<u8, Vec<FlipRoomIndices>>::new();
+	let render_rooms = level.rooms().iter().enumerate().map(|(room_index, room)| {
 		let room_pos = room.pos();
 		let room_geom = room.get_geom();
 		let room_vertices = room_geom.vertices();
@@ -696,11 +716,15 @@ fn parse_level<R: Read, L: Level>(
 				},
 			}
 		}
-		if room.alt_room_index() != u16::MAX {
-			let alt_room_index = room.alt_room_index() as usize;
-			room_indices.remove(room_indices.binary_search(&room_index).unwrap());
-			room_indices.remove(room_indices.binary_search(&alt_room_index).expect("alt room index"));
-			render_rooms.push(RenderRoom([room_index, alt_room_index]));
+		if room.flip_room_index() != u16::MAX {
+			let flip_room_index = room.flip_room_index() as usize;
+			static_room_indices.remove(static_room_indices.binary_search(&room_index).unwrap());
+			static_room_indices.remove(
+				static_room_indices.binary_search(&flip_room_index).expect("flip room index"),
+			);
+			flip_groups.entry(room.flip_group()).or_default().push(
+				FlipRoomIndices { original: room_index, flipped: flip_room_index },
+			);
 		}
 		let sprites_end = data_writer.sprite_offset();
 		let (center, radius) = room_geom
@@ -715,20 +739,20 @@ fn parse_level<R: Read, L: Level>(
 			})
 			.unwrap_or_default();
 		let center = center + room_pos.as_vec3();
-		RoomData { quads, tris, meshes, sprites: sprites_start..sprites_end, center, radius, }
+		RenderRoom { quads, tris, meshes, sprites: sprites_start..sprites_end, center, radius, }
 	}).collect::<Vec<_>>();
-	//remaining room indices have no alt
-	for room_index in room_indices {
-		render_rooms.push(RenderRoom([room_index; 2]));
-	}
-	render_rooms.sort_by_key(|rr| rr.0[0]);
+	let mut flip_groups = flip_groups
+		.into_iter()
+		.map(|(number, rooms)| FlipGroup { number, rooms, show_flipped: false })
+		.collect::<Vec<_>>();
+	flip_groups.sort_by_key(|f| f.number);
 	let Results { geom_buffer, face_buffer, sprite_buffer, object_data } = data_writer.done();
 	//bind groups
 	let geom_buffer = make::buffer(device, &geom_buffer, BufferUsages::STORAGE);
 	let (yaw, pitch) = yaw_pitch(Vec3::ONE);
-	let pos = rooms
+	let pos = render_rooms
 		.get(0)
-		.map(|&RoomData { center, radius, .. }| center - direction(yaw, pitch) * radius)
+		.map(|&RenderRoom { center, radius, .. }| center - direction(yaw, pitch) * radius)
 		.unwrap_or_default();
 	let camera_transform = make_camera_transform(pos, yaw, pitch);
 	let camera_transform_buffer = make::buffer(
@@ -787,7 +811,6 @@ fn parse_level<R: Read, L: Level>(
 		texture_bind_groups.push(TextureBindGroup { bind_group, texture_type: TextureType::Direct16Bit });
 	}
 	if let Some(atlases) = level.atlases_32bit() {
-		image::save_buffer("image.png", atlases.as_bytes(), 256, atlases.len() as u32 * 256, image::ColorType::Rgba8).unwrap();
 		let atlases_view = make_atlases_view(device, queue, atlases, TextureFormat::R32Uint);
 		let atlases_entry = (3, BindingResource::TextureView(&atlases_view));
 		let bind_group = make::bind_group(device, &bind_group_layouts.texture_direct, &[
@@ -830,10 +853,10 @@ fn parse_level<R: Read, L: Level>(
 		pos,
 		yaw,
 		pitch,
-		rooms,
 		render_rooms,
+		static_room_indices,
+		flip_groups,
 		render_room_index: None,
-		render_alt_rooms: false,
 		object_data,
 		level: level.store(),
 		click_handle: None,
@@ -843,6 +866,7 @@ fn parse_level<R: Read, L: Level>(
 		key_states: KeyStates::new(),
 		action_map,
 		frame_update_queue: vec![],
+		show_render_options: true,
 	})
 }
 
@@ -865,14 +889,9 @@ fn load_level(
 	}
 }
 
-fn draw_window<R, F: FnOnce(&mut egui::Ui) -> R>(ctx: &egui::Context, title: &str, contents: F) -> R {
-	egui::Window::new(title)
-		.collapsible(false)
-		.resizable(false)
-		.show(ctx, contents)
-		.unwrap()
-		.inner
-		.unwrap()
+fn draw_window<R, F>(ctx: &egui::Context, title: &str, open: &mut bool, contents: F) -> Option<R>
+where F: FnOnce(&mut egui::Ui) -> R {
+	egui::Window::new(title).resizable(false).open(open).show(ctx, contents)?.inner
 }
 
 fn selected_room_text(render_room_index: Option<usize>) -> String {
@@ -883,19 +902,33 @@ fn selected_room_text(render_room_index: Option<usize>) -> String {
 }
 
 fn render_options(loaded_level: &mut LoadedLevel, ui: &mut egui::Ui) {
-	ui.checkbox(&mut loaded_level.render_alt_rooms, "Alternate Rooms");
+	if !loaded_level.flip_groups.is_empty() {
+		ui.horizontal(|ui| {
+			ui.label("Flip groups");
+			for flip_group in &mut loaded_level.flip_groups {
+				ui.toggle_value(&mut flip_group.show_flipped, flip_group.number.to_string());
+			}
+		});
+	}
 	let old_render_room = loaded_level.render_room_index;
 	let room_combo = egui::ComboBox::from_label("Room");
 	room_combo.selected_text(selected_room_text(loaded_level.render_room_index)).show_ui(ui, |ui| {
 		ui.selectable_value(&mut loaded_level.render_room_index, None, selected_room_text(None));
 		for render_room_index in 0..loaded_level.render_rooms.len() {
 			ui.selectable_value(
-				&mut loaded_level.render_room_index,
-				Some(render_room_index),
+				&mut loaded_level.render_room_index, Some(render_room_index),
 				selected_room_text(Some(render_room_index)),
 			);
 		}
 	});
+	if let (true, Some(render_room_index)) = (
+		loaded_level.render_room_index != old_render_room, loaded_level.render_room_index,
+	) {
+		let RenderRoom { center, radius, .. } = loaded_level.render_rooms[render_room_index];
+		loaded_level.frame_update_queue.push(Box::new(move |loaded_level| {
+			loaded_level.pos = center - direction(loaded_level.yaw, loaded_level.pitch) * radius;
+		}));
+	}
 	if loaded_level.texture_bind_groups.len() > 1 {
 		let texture_combo = egui::ComboBox::from_label("Textures").selected_text(
 			loaded_level
@@ -910,8 +943,8 @@ fn render_options(loaded_level: &mut LoadedLevel, ui: &mut egui::Ui) {
 			},
 		);
 	}
-	if let (Some(solid_bind_group_index), true) = (
-		&mut loaded_level.solid_bind_group_index, loaded_level.solid_bind_groups.len() > 1
+	if let (true, Some(solid_bind_group_index)) = (
+		loaded_level.solid_bind_groups.len() > 1, &mut loaded_level.solid_bind_group_index
 	) {
 		let solid_combo = egui::ComboBox::from_label("Solid Color Palette").selected_text(
 			loaded_level
@@ -924,16 +957,6 @@ fn render_options(loaded_level: &mut LoadedLevel, ui: &mut egui::Ui) {
 				loaded_level.solid_bind_groups[index].solid_type.label()
 			},
 		);
-	}
-	if let (true, Some(render_room_index)) = (
-		loaded_level.render_room_index != old_render_room, loaded_level.render_room_index,
-	) {
-		let RoomData { center, radius, .. } = loaded_level.rooms[
-			loaded_level.render_rooms[render_room_index].0[loaded_level.render_alt_rooms as usize]
-		];
-		loaded_level.frame_update_queue.push(Box::new(move |loaded_level| {
-			loaded_level.pos = center - (direction(loaded_level.yaw, loaded_level.pitch) * radius);
-		}));
 	}
 }
 
@@ -961,14 +984,17 @@ impl Gui for TrTool {
 		if let Some(loaded_level) = &mut self.loaded_level {
 			loaded_level.key_states.set(key_code, state.is_pressed());
 		}
-		match (self.modifiers, state, key_code, repeat) {
-			(_, ElementState::Pressed, KeyCode::Escape, false) => target.exit(),
-			(_, ElementState::Pressed, KeyCode::KeyP, _) => self.print = true,
-			(ModifiersState::CONTROL, ElementState::Pressed, KeyCode::KeyO, false) => {
+		match (self.modifiers, state, key_code, repeat, &mut self.loaded_level) {
+			(_, ElementState::Pressed, KeyCode::Escape, false, _) => target.exit(),
+			(_, ElementState::Pressed, KeyCode::KeyP, _, _) => self.print = true,
+			(ModifiersState::CONTROL, ElementState::Pressed, KeyCode::KeyO, false, _) => {
 				if let Some(loaded_level) = &mut self.loaded_level {
 					loaded_level.set_mouse_control(window, false);
 				}
 				self.file_dialog.select_file();
+			},
+			(_, ElementState::Pressed, KeyCode::KeyR, false, Some(loaded_level)) => {
+				loaded_level.show_render_options ^= true;
 			},
 			_ => {},
 		}
@@ -1085,13 +1111,20 @@ impl Gui for TrTool {
 				timestamp_writes: None,
 				occlusion_query_set: None,
 			});
-			let render_room_range = match loaded_level.render_room_index {
-				Some(render_room_index) => render_room_index..render_room_index + 1,
-				None => 0..loaded_level.render_rooms.len(),
+			let room_indices = match loaded_level.render_room_index {
+				Some(render_room_index) => vec![render_room_index],
+				None => loaded_level
+					.flip_groups
+					.iter()
+					.map(|f| f.rooms.iter().map(|r| r.get(f.show_flipped)))
+					.flatten()
+					.chain(loaded_level.static_room_indices.iter().copied())
+					.collect(),
 			};
-			let rooms = render_room_range.map(|render_room_index| &loaded_level.rooms[
-				loaded_level.render_rooms[render_room_index].0[loaded_level.render_alt_rooms as usize]
-			]).collect::<Vec<_>>();
+			let rooms = room_indices
+				.into_iter()
+				.map(|room_index| &loaded_level.render_rooms[room_index])
+				.collect::<Vec<_>>();
 			let solid_bind_group = loaded_level.solid_bind_group_index.map(
 				|solid_bind_group_index| &loaded_level.solid_bind_groups[solid_bind_group_index]
 			);
@@ -1178,14 +1211,17 @@ impl Gui for TrTool {
 				});
 			},
 			Some(loaded_level) => {
-				draw_window(ctx, "Render Options", |ui| render_options(loaded_level, ui));
+				if loaded_level.show_render_options {
+					let mut show = true;
+					draw_window(ctx, "Render Options", &mut show, |ui| render_options(loaded_level, ui));
+					loaded_level.show_render_options = show;
+				}
 			}
 		}
 		if let Some(error) = &self.error {
-			if draw_window(ctx, "Error", |ui| {
-				ui.label(error);
-				ui.button("OK").clicked()
-			}) {
+			let mut show = true;
+			draw_window(ctx, "Error", &mut show, |ui| _ = ui.label(error));
+			if !show {
 				self.error = None;
 			}
 		}

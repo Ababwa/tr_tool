@@ -72,7 +72,7 @@ pub struct Room {
 	#[flat] #[list(u16)] pub lights: Box<[Light]>,
 	#[flat] #[list(u16)] pub room_static_meshes: Box<[RoomStaticMesh]>,
 	/// Index into `Level.rooms`.
-	#[flat] pub alt_room_index: u16,
+	#[flat] pub flip_room_index: u16,
 	#[flat] pub flags: RoomFlags,
 	#[flat] pub water_details: u8,
 	#[flat] pub reverb: u8,

@@ -50,7 +50,8 @@ pub trait Room {
 	fn pos(&self) -> IVec3;
 	fn get_geom(&self) -> Self::RoomGeom<'_>;
 	fn room_static_meshes(&self) -> &[Self::RoomStaticMesh];
-	fn alt_room_index(&self) -> u16;
+	fn flip_room_index(&self) -> u16;
+	fn flip_group(&self) -> u8;
 }
 
 pub trait Entity {
@@ -166,7 +167,8 @@ impl Room for tr1::Room {
 	fn pos(&self) -> IVec3 { IVec3::new(self.x, 0, self.z) }
 	fn get_geom(&self) -> Self::RoomGeom<'_> { self.get_geom() }
 	fn room_static_meshes(&self) -> &[Self::RoomStaticMesh] { &self.room_static_meshes }
-	fn alt_room_index(&self) -> u16 { self.alt_room_index }
+	fn flip_room_index(&self) -> u16 { self.flip_room_index }
+	fn flip_group(&self) -> u8 { 0 }
 }
 
 impl Entity for tr1::Entity {
@@ -283,7 +285,8 @@ impl Room for tr2::Room {
 	fn pos(&self) -> IVec3 { IVec3::new(self.x, 0, self.z) }
 	fn get_geom(&self) -> Self::RoomGeom<'_> { self.get_geom() }
 	fn room_static_meshes(&self) -> &[Self::RoomStaticMesh] { &self.room_static_meshes }
-	fn alt_room_index(&self) -> u16 { self.alt_room_index }
+	fn flip_room_index(&self) -> u16 { self.flip_room_index }
+	fn flip_group(&self) -> u8 { 0 }
 }
 
 impl Entity for tr2::Entity {
@@ -411,7 +414,8 @@ impl Room for tr3::Room {
 	fn pos(&self) -> IVec3 { IVec3::new(self.x, 0, self.z) }
 	fn get_geom(&self) -> Self::RoomGeom<'_> { self.get_geom() }
 	fn room_static_meshes(&self) -> &[Self::RoomStaticMesh] { &self.room_static_meshes }
-	fn alt_room_index(&self) -> u16 { self.alt_room_index }
+	fn flip_room_index(&self) -> u16 { self.flip_room_index }
+	fn flip_group(&self) -> u8 { 0 }
 }
 
 impl Level for tr3::Level {
@@ -449,7 +453,8 @@ impl Room for tr4::Room {
 	fn pos(&self) -> IVec3 { IVec3::new(self.x, 0, self.z) }
 	fn get_geom(&self) -> Self::RoomGeom<'_> { self.get_geom() }
 	fn room_static_meshes(&self) -> &[Self::RoomStaticMesh] { &self.room_static_meshes }
-	fn alt_room_index(&self) -> u16 { self.alt_room_index }
+	fn flip_room_index(&self) -> u16 { self.flip_room_index }
+	fn flip_group(&self) -> u8 { self.flip_group }
 }
 
 impl Entity for tr4::Entity {

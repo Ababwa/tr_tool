@@ -56,9 +56,8 @@ if solid, texture_index is an index into palette
 
 //byte offsets into data
 const OBJECT_TEXTURES_OFFSET: u32 = 1048576;
-const TRANSFORMS_OFFSET: u32 = 1310720;
-const SPRITE_TEXTURES_OFFSET: u32 = 1572864;
-const FACE_ARRAY_MAP_OFFSET: u32 = 1835008;
+const TRANSFORMS_OFFSET: u32 = 1572864;
+const SPRITE_TEXTURES_OFFSET: u32 = 1835008;
 
 @group(0) @binding(1) var<uniform> camera_transform: mat4x4f;
 @group(0) @binding(2) var<uniform> perspective_transform: mat4x4f;
@@ -92,7 +91,7 @@ struct PositionTexture {
 
 fn get_position_texture(face: vec2u, face_vertex_index: u32) -> PositionTexture {
 	//unpack face instance
-	let face_array_index = face.x & 0xFFFF;
+	let face_array_offset = (face.x & 0xFFFF) * 8;
 	let face_index = face.x >> 16;
 	let transform_index = face.y & 0xFFFF;
 	let object_id = face.y >> 16;
@@ -105,7 +104,6 @@ fn get_position_texture(face: vec2u, face_vertex_index: u32) -> PositionTexture 
 		bitcast<vec4f>(data[transform_offset_v4 + 3]),
 	);
 	//position
-	let face_array_offset = get_data_u32(FACE_ARRAY_MAP_OFFSET / 4 + face_array_index);
 	let vertex_array_offset = get_data_u16(face_array_offset) * 8;
 	let vertex_size = get_data_u16(vertex_array_offset);
 	let face_info_packed = get_data_u16(face_array_offset + 1);

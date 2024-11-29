@@ -10,21 +10,17 @@ pub const GEOM_BUFFER_SIZE: usize = 2097152;
 const GEOM_CURSOR: usize = 0;
 const GEOM_OFFSET: usize = 0;
 
-//1048576..1310720, len: 262144 (1/8 buffer)
+//1048576..1572864, len: 524288 (1/4 buffer)
 const OBJECT_TEXTURES_CURSOR: usize = 1;
 const OBJECT_TEXTURES_OFFSET: usize = 1048576;
 
-//1310720..1572864, len: 262144 (1/8 buffer)
-const TRANSFORMS_CURSOR: usize = 2;
-const TRANSFORMS_OFFSET: usize = 1310720;
-
 //1572864..1835008, len: 262144 (1/8 buffer)
-const SPRITE_TEXTURES_CURSOR: usize = 3;
-const SPRITE_TEXTURES_OFFSET: usize = 1572864;
+const TRANSFORMS_CURSOR: usize = 2;
+const TRANSFORMS_OFFSET: usize = 1572864;
 
 //1835008..2097152, len: 262144 (1/8 buffer)
-const FACE_ARRAY_MAP_CURSOR: usize = 4;
-const FACE_ARRAY_MAP_OFFSET: usize = 1835008;
+const SPRITE_TEXTURES_CURSOR: usize = 3;
+const SPRITE_TEXTURES_OFFSET: usize = 1835008;
 
 pub struct GeomBuffer {
 	mc: MultiCursorBuffer,
@@ -47,7 +43,6 @@ impl GeomBuffer {
 					OBJECT_TEXTURES_OFFSET,
 					TRANSFORMS_OFFSET,
 					SPRITE_TEXTURES_OFFSET,
-					FACE_ARRAY_MAP_OFFSET,
 				],
 			),
 		}
@@ -74,14 +69,12 @@ impl GeomBuffer {
 	
 	pub fn write_face_array<F: Face>(&mut self, faces: &[F], vertex_array_offset: usize) -> usize {
 		let mut geom_writer = self.mc.get_writer(GEOM_CURSOR);
-		let offset = geom_writer.pos();
+		geom_writer.align(16).unwrap();
+		let offset = geom_writer.pos() / 16;
 		geom_writer.write(&u16::try_from(vertex_array_offset).unwrap().to_le_bytes()).unwrap();
 		geom_writer.write(&[size_of::<F>() as u8 / 2, texture_offset(F::POLY_TYPE)]).unwrap();
 		geom_writer.write(faces.as_bytes()).unwrap();
-		let mut face_array_map_writer = self.mc.get_writer(FACE_ARRAY_MAP_CURSOR);
-		let index = face_array_map_writer.size() / 4;
-		face_array_map_writer.write(&(offset as u32 / 2).to_le_bytes()).unwrap();
-		index
+		offset
 	}
 	
 	pub fn write_transform(&mut self, transform: &Mat4) -> usize {
@@ -96,7 +89,6 @@ impl GeomBuffer {
 		println!("OBJECT_TEXTURES bytes: {}", self.mc.get_size(OBJECT_TEXTURES_CURSOR));
 		println!("TRANSFORM bytes: {}", self.mc.get_size(TRANSFORMS_CURSOR));
 		println!("SPRITE_TEXTURES bytes: {}", self.mc.get_size(SPRITE_TEXTURES_CURSOR));
-		println!("FACE_MAP bytes: {}", self.mc.get_size(FACE_ARRAY_MAP_CURSOR));
 		self.mc.into_buffer()
 	}
 }
