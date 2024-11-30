@@ -1,51 +1,36 @@
-use std::{io::{Read, Result}, ptr::addr_of_mut};
+use std::{mem::transmute, slice::Iter};
 use bitfield::bitfield;
-use glam::{I16Vec3, IVec3, U16Vec2, UVec2, Vec3};
-use tr_readable::{read_boxed_flat, read_boxed_slice_flat, read_flat, zlib, Readable};
+use glam::{I16Vec3, IVec3, U16Vec2, U16Vec3, UVec2, Vec3};
+use tr_readable::{Readable, ToLen};
 use crate::{
-	tr1::{
-		AnimDispatch, Camera, Color24Bit, MeshLighting, MeshNode, Model, Portal, RoomFlags, Sectors,
-		SoundSource, SpriteSequence, SpriteTexture, StateChange, StaticMesh, ATLAS_PIXELS,
-	},
-	tr2::{decl_frame, Axis, BoxData, Color16BitArgb, FrameData, SOUND_MAP_LEN},
-	tr3::{RoomGeom, RoomStaticMesh, SoundDetails},
-	u16_cursor::U16Cursor,
+	get_room_geom, tr1::{
+		get_packed_angles, AnimDispatch, Camera, Color24Bit, MeshLighting, MeshNode, Model, Portal, RoomFlags, Sector, SoundSource, SpriteSequence, SpriteTexture, StateChange, StaticMesh, ATLAS_PIXELS
+	}, tr2::{decl_frame, Axis, Color16BitArgb, FrameData, TrBox, SOUND_MAP_LEN},
+	tr3::{RoomGeom, RoomStaticMesh, SoundDetails}, u16_cursor::U16Cursor,
 };
 
 //model
 
+#[derive(Clone, Debug)]
+pub struct NumAtlases {
+	pub num_room_atlases: u16,
+	pub num_obj_atlases: u16,
+	pub num_bump_atlases: u16,
+}
+
+impl ToLen for NumAtlases {
+	fn get_len(&self) -> usize {
+		(self.num_room_atlases + self.num_obj_atlases + self.num_bump_atlases) as usize
+	}
+}
+
 #[repr(C, align(4))]
 #[derive(Clone, Debug)]
-pub struct Color32BitBbga {
+pub struct Color32BitBgra {
 	pub b: u8,
 	pub g: u8,
 	pub r: u8,
 	pub a: u8,
-}
-
-#[derive(Clone, Debug)]
-pub struct Atlases {
-	pub num_room_atlases: u16,
-	pub num_obj_atlases: u16,
-	pub num_bump_atlases: u16,
-	pub atlases_32bit: Box<[[Color32BitBbga; ATLAS_PIXELS]]>,
-	pub atlases_16bit: Box<[[Color16BitArgb; ATLAS_PIXELS]]>,
-	pub misc_images: Box<[[Color32BitBbga; ATLAS_PIXELS]; 2]>,
-}
-
-impl Readable for Atlases {
-	unsafe fn read<R: Read>(reader: &mut R, this: *mut Self) -> Result<()> {
-		read_flat(reader, addr_of_mut!((*this).num_room_atlases))?;
-		read_flat(reader, addr_of_mut!((*this).num_obj_atlases))?;
-		read_flat(reader, addr_of_mut!((*this).num_bump_atlases))?;
-		let num_atlases = (
-			(*this).num_room_atlases + (*this).num_obj_atlases + (*this).num_bump_atlases
-		) as usize;
-		read_boxed_slice_flat(&mut zlib(reader)?, num_atlases, addr_of_mut!((*this).atlases_32bit))?;
-		read_boxed_slice_flat(&mut zlib(reader)?, num_atlases, addr_of_mut!((*this).atlases_16bit))?;
-		read_boxed_flat(&mut zlib(reader)?, addr_of_mut!((*this).misc_images))?;
-		Ok(())
-	}
 }
 
 #[repr(C, packed(2))]
@@ -66,22 +51,23 @@ pub struct Light {
 #[derive(Readable, Clone, Debug)]
 pub struct Room {
 	/// World coord.
-	#[flat] pub x: i32,
+	pub x: i32,
 	/// World coord.
-	#[flat] pub z: i32,
-	#[flat] pub y_bottom: i32,
-	#[flat] pub y_top: i32,
-	#[flat] #[list(u32)] pub geom_data: Box<[u16]>,
-	#[flat] #[list(u16)] pub portals: Box<[Portal]>,
-	#[delegate] pub sectors: Sectors,
-	#[flat] pub color: Color32BitBbga,
-	#[flat] #[list(u16)] pub lights: Box<[Light]>,
-	#[flat] #[list(u16)] pub room_static_meshes: Box<[RoomStaticMesh]>,
-	#[flat] pub flip_room_index: u16,
-	#[flat] pub flags: RoomFlags,
-	#[flat] pub water_details: u8,
-	#[flat] pub reverb: u8,
-	#[flat] pub flip_group: u8,
+	pub z: i32,
+	pub y_bottom: i32,
+	pub y_top: i32,
+	#[list(u32)] pub geom_data: Box<[u16]>,
+	#[list(u16)] pub portals: Box<[Portal]>,
+	pub sectors_size: U16Vec2,
+	#[list(sectors_size)] pub sectors: Box<[Sector]>,
+	pub color: Color32BitBgra,
+	#[list(u16)] pub lights: Box<[Light]>,
+	#[list(u16)] pub room_static_meshes: Box<[RoomStaticMesh]>,
+	pub flip_room_index: u16,
+	pub flags: RoomFlags,
+	pub water_details: u8,
+	pub reverb: u8,
+	pub flip_group: u8,
 }
 
 #[repr(C)]
@@ -180,59 +166,65 @@ pub struct Ai {
 
 #[derive(Readable, Clone, Debug)]
 pub struct LevelData {
-	#[flat] pub unused: u32,
-	#[delegate] #[list(u16)] pub rooms: Box<[Room]>,
-	#[flat] #[list(u32)] pub floor_data: Box<[u16]>,
-	#[flat] #[list(u32)] pub mesh_data: Box<[u16]>,
+	pub unused: u32,
+	#[list(u16)] #[delegate] pub rooms: Box<[Room]>,
+	#[list(u32)] pub floor_data: Box<[u16]>,
+	#[list(u32)] pub mesh_data: Box<[u16]>,
 	/// Byte offsets into `Level.mesh_data`.
-	#[flat] #[list(u32)] pub mesh_offsets: Box<[u32]>,
-	#[flat] #[list(u32)] pub animations: Box<[Animation]>,
-	#[flat] #[list(u32)] pub state_changes: Box<[StateChange]>,
-	#[flat] #[list(u32)] pub anim_dispatches: Box<[AnimDispatch]>,
-	#[flat] #[list(u32)] pub anim_commands: Box<[u16]>,
-	#[flat] #[list(u32)] pub mesh_node_data: Box<[u32]>,
-	#[flat] #[list(u32)] pub frame_data: Box<[u16]>,
-	#[flat] #[list(u32)] pub models: Box<[Model]>,
-	#[flat] #[list(u32)] pub static_meshes: Box<[StaticMesh]>,
-	#[flat] pub spr: [u8; 3],
-	#[flat] #[list(u32)] pub sprite_textures: Box<[SpriteTexture]>,
-	#[flat] #[list(u32)] pub sprite_sequences: Box<[SpriteSequence]>,
-	#[flat] #[list(u32)] pub cameras: Box<[Camera]>,
-	#[flat] #[list(u32)] pub flyby_cameras: Box<[FlybyCamera]>,
-	#[flat] #[list(u32)] pub sound_sources: Box<[SoundSource]>,
-	#[delegate] pub box_data: BoxData,
-	#[flat] #[list(u32)] pub animated_textures: Box<[u16]>,
-	#[flat] pub animated_textures_uv_count: u8,
-	#[flat] pub tex: [u8; 3],
-	#[flat] #[list(u32)] pub object_textures: Box<[ObjectTexture]>,
-	#[flat] #[list(u32)] pub entities: Box<[Entity]>,
-	#[flat] #[list(u32)] pub ais: Box<[Ai]>,
-	#[flat] #[list(u16)] pub demo_data: Box<[u8]>,
-	#[flat] #[boxed] pub sound_map: Box<[u16; SOUND_MAP_LEN]>,
-	#[flat] #[list(u32)] pub sound_details: Box<[SoundDetails]>,
-	#[flat] #[list(u32)] pub sample_indices: Box<[u32]>,
-	#[flat] pub zero: [u8; 6],
+	#[list(u32)] pub mesh_offsets: Box<[u32]>,
+	#[list(u32)] pub animations: Box<[Animation]>,
+	#[list(u32)] pub state_changes: Box<[StateChange]>,
+	#[list(u32)] pub anim_dispatches: Box<[AnimDispatch]>,
+	#[list(u32)] pub anim_commands: Box<[u16]>,
+	#[list(u32)] pub mesh_node_data: Box<[u32]>,
+	#[list(u32)] pub frame_data: Box<[u16]>,
+	#[list(u32)] pub models: Box<[Model]>,
+	#[list(u32)] pub static_meshes: Box<[StaticMesh]>,
+	pub spr: [u8; 3],
+	#[list(u32)] pub sprite_textures: Box<[SpriteTexture]>,
+	#[list(u32)] pub sprite_sequences: Box<[SpriteSequence]>,
+	#[list(u32)] pub cameras: Box<[Camera]>,
+	#[list(u32)] pub flyby_cameras: Box<[FlybyCamera]>,
+	#[list(u32)] pub sound_sources: Box<[SoundSource]>,
+	#[list(u32)] pub boxes: Box<[TrBox]>,
+	#[list(u32)] pub overlap_data: Box<[u16]>,
+	#[list(boxes)] pub zone_data: Box<[[u16; 10]]>,
+	#[list(u32)] pub animated_textures: Box<[u16]>,
+	pub animated_textures_uv_count: u8,
+	pub tex: [u8; 3],
+	#[list(u32)] pub object_textures: Box<[ObjectTexture]>,
+	#[list(u32)] pub entities: Box<[Entity]>,
+	#[list(u32)] pub ais: Box<[Ai]>,
+	#[list(u16)] pub demo_data: Box<[u8]>,
+	#[boxed] pub sound_map: Box<[u16; SOUND_MAP_LEN]>,
+	#[list(u32)] pub sound_details: Box<[SoundDetails]>,
+	#[list(u32)] pub sample_indices: Box<[u32]>,
+	pub zero: [u8; 6],
 }
 
 #[derive(Readable, Clone, Debug)]
 pub struct Sample {
-	#[flat] pub uncompressed_size: u32,
-	#[flat] #[list(u32)] pub data: Box<[u8]>,
+	pub uncompressed_size: u32,
+	#[list(u32)] pub data: Box<[u8]>,
 }
 
 #[derive(Readable, Clone, Debug)]
 pub struct Level {
-	#[flat] pub version: u32,
-	#[delegate] pub atlases: Atlases,
-	#[zlib] pub level_data: LevelData,
-	#[delegate] #[list(u32)] pub samples: Box<[Sample]>,
+	pub version: u32,
+	pub num_atlases: NumAtlases,
+	#[zlib] #[list(num_atlases)] pub atlases_32bit: Box<[[Color32BitBgra; ATLAS_PIXELS]]>,
+	#[zlib] #[list(num_atlases)] pub atlases_16bit: Box<[[Color16BitArgb; ATLAS_PIXELS]]>,
+	#[zlib] #[boxed] pub misc_images: Box<[[Color32BitBgra; ATLAS_PIXELS]; 2]>,
+	#[zlib] #[delegate] pub level_data: LevelData,
+	#[list(u32)] #[delegate] pub samples: Box<[Sample]>,
 }
 
 //extraction
 
 impl Room {
 	pub fn get_geom(&self) -> RoomGeom {
-		RoomGeom::get(&self.geom_data)
+		let (vertices, quads, tris, sprites) = unsafe { get_room_geom(&self.geom_data) };
+		RoomGeom { vertices, quads, tris, sprites }
 	}
 }
 
@@ -288,7 +280,7 @@ impl<'a> Mesh<'a> {
 	}
 }
 
-decl_frame!(Frame, FrameData, RotationIterator, FrameRotation, Axis, Model, 0xFFF);
+decl_frame!(Frame, RotationIterator, FrameRotation, 0xFFF);
 
 impl Level {
 	pub fn get_mesh(&self, mesh_offset: u32) -> Mesh {

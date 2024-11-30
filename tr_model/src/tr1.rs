@@ -6,12 +6,13 @@ An "index" points to an entry in an array.
 16-bit color type names list channels in bit-order, high first.
 */
 
-use std::{io::{Read, Result}, mem::transmute, ptr::addr_of_mut, slice};
+use std::{mem::transmute, slice::from_raw_parts};
 use bitfield::bitfield;
 use glam::{I16Vec2, I16Vec3, IVec3, U16Vec2, U16Vec3};
 use glam_traits::ext::U8Vec2;
 use shared::min_max::MinMax;
-use tr_readable::{read_boxed_slice_flat, read_flat, read_flat_get, Readable};
+use tr_readable::Readable;
+use crate::{get_room_geom, u16_cursor::U16Cursor};
 
 pub const ATLAS_SIDE_LEN: usize = 256;
 pub const ATLAS_PIXELS: usize = ATLAS_SIDE_LEN * ATLAS_SIDE_LEN;
@@ -45,21 +46,6 @@ pub struct Sector {
 	pub ceiling: i8,
 }
 
-#[derive(Clone, Debug)]
-pub struct Sectors {
-	pub size: U16Vec2,
-	pub sectors: Box<[Sector]>,
-}
-
-impl Readable for Sectors {
-	unsafe fn read<R: Read>(reader: &mut R, this: *mut Self) -> Result<()> {
-		read_flat(reader, addr_of_mut!((*this).size))?;
-		let len = (*this).size.element_product() as usize;
-		read_boxed_slice_flat(reader, len, addr_of_mut!((*this).sectors))?;
-		Ok(())
-	}
-}
-
 #[repr(C, packed(2))]
 #[derive(Clone, Debug)]
 pub struct Light {
@@ -90,20 +76,21 @@ bitfield! {
 #[derive(Readable, Clone, Debug)]
 pub struct Room {
 	/// World coord.
-	#[flat] pub x: i32,
+	pub x: i32,
 	/// World coord.
-	#[flat] pub z: i32,
-	#[flat] pub y_bottom: i32,
-	#[flat] pub y_top: i32,
-	#[flat] #[list(u32)] pub geom_data: Box<[u16]>,
-	#[flat] #[list(u16)] pub portals: Box<[Portal]>,
-	#[delegate] pub sectors: Sectors,
-	#[flat] pub ambient_light: u16,
-	#[flat] #[list(u16)] pub lights: Box<[Light]>,
-	#[flat] #[list(u16)] pub room_static_meshes: Box<[RoomStaticMesh]>,
+	pub z: i32,
+	pub y_bottom: i32,
+	pub y_top: i32,
+	#[list(u32)] pub geom_data: Box<[u16]>,
+	#[list(u16)] pub portals: Box<[Portal]>,
+	pub sectors_size: U16Vec2,
+	#[list(sectors_size)] pub sectors: Box<[Sector]>,
+	pub ambient_light: u16,
+	#[list(u16)] pub lights: Box<[Light]>,
+	#[list(u16)] pub room_static_meshes: Box<[RoomStaticMesh]>,
 	/// Index into `Level.rooms`.
-	#[flat] pub flip_room_index: u16,
-	#[flat] pub flags: RoomFlags,
+	pub flip_room_index: u16,
+	pub flags: RoomFlags,
 }
 
 #[repr(C)]
@@ -222,39 +209,14 @@ pub struct SoundSource {
 	pub flags: u16,
 }
 
-macro_rules! decl_box_data {
-	($tr_box:ident, $box_data:ident, $scalar:ty, $zone_mult:literal) => {
-		#[repr(C)]
-		#[derive(Clone, Debug)]
-		pub struct $tr_box {
-			pub z: MinMax<$scalar>,
-			pub x: MinMax<$scalar>,
-			pub y: i16,
-			pub overlap: u16,
-		}
-		
-		#[derive(Clone, Debug)]
-		pub struct $box_data {
-			pub boxes: Box<[$tr_box]>,
-			pub overlap_data: Box<[u16]>,
-			pub zone_data: Box<[u16]>,
-		}
-		
-		impl Readable for $box_data {
-			unsafe fn read<R: Read>(reader: &mut R, this: *mut Self) -> Result<()> {
-				let num_boxes = read_flat_get::<_, u32>(reader)? as usize;
-				read_boxed_slice_flat(reader, num_boxes, addr_of_mut!((*this).boxes))?;
-				let num_overlaps = read_flat_get::<_, u32>(reader)? as usize;
-				read_boxed_slice_flat(reader, num_overlaps, addr_of_mut!((*this).overlap_data))?;
-				read_boxed_slice_flat(reader, num_boxes * $zone_mult, addr_of_mut!((*this).zone_data))?;
-				Ok(())
-			}
-		}
-	};
+#[repr(C)]
+#[derive(Clone, Debug)]
+pub struct TrBox {
+	pub z: MinMax<u32>,
+	pub x: MinMax<u32>,
+	pub y: i16,
+	pub overlap: u16,
 }
-pub(crate) use decl_box_data;
-
-decl_box_data!(TrBox, BoxData, u32, 6);
 
 #[repr(C, packed(2))]
 #[derive(Clone, Debug)]
@@ -301,38 +263,40 @@ pub struct SoundDetails {
 
 #[derive(Readable, Clone, Debug)]
 pub struct Level {
-	#[flat] pub version: u32,
-	#[flat] #[list(u32)] pub atlases: Box<[[u8; ATLAS_PIXELS]]>,
-	#[flat] pub unused: u32,
-	#[delegate] #[list(u16)] pub rooms: Box<[Room]>,
-	#[flat] #[list(u32)] pub floor_data: Box<[u16]>,
-	#[flat] #[list(u32)] pub mesh_data: Box<[u16]>,
+	pub version: u32,
+	#[list(u32)] pub atlases: Box<[[u8; ATLAS_PIXELS]]>,
+	pub unused: u32,
+	#[list(u16)] #[delegate] pub rooms: Box<[Room]>,
+	#[list(u32)] pub floor_data: Box<[u16]>,
+	#[list(u32)] pub mesh_data: Box<[u16]>,
 	/// Byte offsets into `Level.mesh_data`.
-	#[flat] #[list(u32)] pub mesh_offsets: Box<[u32]>,
-	#[flat] #[list(u32)] pub animations: Box<[Animation]>,
-	#[flat] #[list(u32)] pub state_changes: Box<[StateChange]>,
-	#[flat] #[list(u32)] pub anim_dispatches: Box<[AnimDispatch]>,
-	#[flat] #[list(u32)] pub anim_commands: Box<[u16]>,
-	#[flat] #[list(u32)] pub mesh_node_data: Box<[u32]>,
-	#[flat] #[list(u32)] pub frame_data: Box<[u16]>,
-	#[flat] #[list(u32)] pub models: Box<[Model]>,
-	#[flat] #[list(u32)] pub static_meshes: Box<[StaticMesh]>,
-	#[flat] #[list(u32)] pub object_textures: Box<[ObjectTexture]>,
-	#[flat] #[list(u32)] pub sprite_textures: Box<[SpriteTexture]>,
-	#[flat] #[list(u32)] pub sprite_sequences: Box<[SpriteSequence]>,
-	#[flat] #[list(u32)] pub cameras: Box<[Camera]>,
-	#[flat] #[list(u32)] pub sound_sources: Box<[SoundSource]>,
-	#[delegate] pub box_data: BoxData,
-	#[flat] #[list(u32)] pub animated_textures: Box<[u16]>,
-	#[flat] #[list(u32)] pub entities: Box<[Entity]>,
-	#[flat] #[boxed] pub light_map: Box<[[u8; PALETTE_LEN]; LIGHT_MAP_LEN]>,
-	#[flat] #[boxed] pub palette: Box<[Color24Bit; PALETTE_LEN]>,
-	#[flat] #[list(u16)] pub cinematic_frames: Box<[CinematicFrame]>,
-	#[flat] #[list(u16)] pub demo_data: Box<[u8]>,
-	#[flat] #[boxed] pub sound_map: Box<[u16; SOUND_MAP_LEN]>,
-	#[flat] #[list(u32)] pub sound_details: Box<[SoundDetails]>,
-	#[flat] #[list(u32)] pub sample_data: Box<[u8]>,
-	#[flat] #[list(u32)] pub sample_indices: Box<[u32]>,
+	#[list(u32)] pub mesh_offsets: Box<[u32]>,
+	#[list(u32)] pub animations: Box<[Animation]>,
+	#[list(u32)] pub state_changes: Box<[StateChange]>,
+	#[list(u32)] pub anim_dispatches: Box<[AnimDispatch]>,
+	#[list(u32)] pub anim_commands: Box<[u16]>,
+	#[list(u32)] pub mesh_node_data: Box<[u32]>,
+	#[list(u32)] pub frame_data: Box<[u16]>,
+	#[list(u32)] pub models: Box<[Model]>,
+	#[list(u32)] pub static_meshes: Box<[StaticMesh]>,
+	#[list(u32)] pub object_textures: Box<[ObjectTexture]>,
+	#[list(u32)] pub sprite_textures: Box<[SpriteTexture]>,
+	#[list(u32)] pub sprite_sequences: Box<[SpriteSequence]>,
+	#[list(u32)] pub cameras: Box<[Camera]>,
+	#[list(u32)] pub sound_sources: Box<[SoundSource]>,
+	#[list(u32)] pub boxes: Box<[TrBox]>,
+	#[list(u32)] pub overlap_data: Box<[u16]>,
+	#[list(boxes)] pub zone_data: Box<[[u16; 6]]>,
+	#[list(u32)] pub animated_textures: Box<[u16]>,
+	#[list(u32)] pub entities: Box<[Entity]>,
+	#[boxed] pub light_map: Box<[[u8; PALETTE_LEN]; LIGHT_MAP_LEN]>,
+	#[boxed] pub palette: Box<[Color24Bit; PALETTE_LEN]>,
+	#[list(u16)] pub cinematic_frames: Box<[CinematicFrame]>,
+	#[list(u16)] pub demo_data: Box<[u8]>,
+	#[boxed] pub sound_map: Box<[u16; SOUND_MAP_LEN]>,
+	#[list(u32)] pub sound_details: Box<[SoundDetails]>,
+	#[list(u32)] pub sample_data: Box<[u8]>,
+	#[list(u32)] pub sample_indices: Box<[u32]>,
 }
 
 //extraction
@@ -366,38 +330,18 @@ pub struct Sprite {
 	pub sprite_texture_index: u16,
 }
 
-macro_rules! decl_room_geom {
-	($room_geom:ident, $room_vertex:ty, $room_quad:ty, $room_tri:ty, $sprite:ty) => {
-		#[derive(Clone, Debug)]
-		pub struct $room_geom<'a> {
-			pub vertices: &'a [$room_vertex],
-			pub quads: &'a [$room_quad],
-			pub tris: &'a [$room_tri],
-			pub sprites: &'a [$sprite],
-		}
-		
-		impl<'a> $room_geom<'a> {
-			pub(crate) fn get(geom_data: &'a [u16]) -> Self {
-				let mut cursor = crate::u16_cursor::U16Cursor::new(geom_data);
-				unsafe {
-					Self {
-						vertices: cursor.u16_len_slice(),
-						quads: cursor.u16_len_slice(),
-						tris: cursor.u16_len_slice(),
-						sprites: cursor.u16_len_slice(),
-					}
-				}
-			}
-		}
-	};
+#[derive(Clone, Debug)]
+pub struct RoomGeom<'a> {
+	pub vertices: &'a [RoomVertex],
+	pub quads: &'a [RoomQuad],
+	pub tris: &'a [RoomTri],
+	pub sprites: &'a [Sprite],
 }
-pub(crate) use decl_room_geom;
-
-decl_room_geom!(RoomGeom, RoomVertex, RoomQuad, RoomTri, Sprite);
 
 impl Room {
 	pub fn get_geom(&self) -> RoomGeom {
-		RoomGeom::get(&self.geom_data)
+		let (vertices, quads, tris, sprites) = unsafe { get_room_geom(&self.geom_data) };
+		RoomGeom { vertices, quads, tris, sprites }
 	}
 }
 
@@ -419,11 +363,11 @@ macro_rules! decl_mesh {
 	) => {
 		#[derive(Clone, Debug)]
 		pub struct $mesh<'a> {
-			pub center: glam::I16Vec3,
+			pub center: I16Vec3,
 			pub radius: i32,
 			/// If static mesh, relative to `RoomStaticMesh.pos`.
 			/// If entity mesh, relative to `Entity.pos`.
-			pub vertices: &'a [glam::I16Vec3],
+			pub vertices: &'a [I16Vec3],
 			pub lighting: $mesh_lighting<'a>,
 			pub textured_quads: &'a [$textured_quad],
 			pub textured_tris: &'a [$textured_tri],
@@ -433,7 +377,7 @@ macro_rules! decl_mesh {
 		
 		impl<'a> $mesh<'a> {
 			pub(crate) fn get(mesh_data: &'a [u16], mesh_offset: u32) -> Self {
-				let mut cursor = crate::u16_cursor::U16Cursor::new(&mesh_data[mesh_offset as usize / 2..]);
+				let mut cursor = U16Cursor::new(&mesh_data[mesh_offset as usize / 2..]);
 				unsafe {
 					Self {
 						center: cursor.read(),
@@ -480,7 +424,7 @@ impl MeshNode {
 			[..(model.num_meshes as usize - 1) * (size_of::<MeshNode>() / 4)]//bound check
 			.as_ptr()
 			.cast::<MeshNode>();
-		unsafe { slice::from_raw_parts(ptr, model.num_meshes as usize - 1) }
+		unsafe { from_raw_parts(ptr, model.num_meshes as usize - 1) }
 	}
 }
 

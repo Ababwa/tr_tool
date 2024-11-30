@@ -100,7 +100,7 @@ pub trait Level: Readable {
 	fn palette_32bit(&self) -> Option<&[tr2::Color32BitRgb; tr1::PALETTE_LEN]>;
 	fn atlases_palette(&self) -> Option<&[[u8; tr1::ATLAS_PIXELS]]>;
 	fn atlases_16bit(&self) -> Option<&[[tr2::Color16BitArgb; tr1::ATLAS_PIXELS]]>;
-	fn atlases_32bit(&self) -> Option<&[[tr4::Color32BitBbga; tr1::ATLAS_PIXELS]]>;
+	fn atlases_32bit(&self) -> Option<&[[tr4::Color32BitBgra; tr1::ATLAS_PIXELS]]>;
 	fn get_mesh_nodes(&self, model: &tr1::Model) -> &[tr1::MeshNode];
 	fn get_mesh(&self, mesh_offset: u32) -> Self::Mesh<'_>;
 	fn get_frame(&self, model: &tr1::Model) -> Self::Frame<'_>;
@@ -250,7 +250,7 @@ impl Level for tr1::Level {
 	fn palette_32bit(&self) -> Option<&[tr2::Color32BitRgb; tr1::PALETTE_LEN]> { None }
 	fn atlases_palette(&self) -> Option<&[[u8; tr1::ATLAS_PIXELS]]> { Some(&self.atlases) }
 	fn atlases_16bit(&self) -> Option<&[[tr2::Color16BitArgb; tr1::ATLAS_PIXELS]]> { None }
-	fn atlases_32bit(&self) -> Option<&[[tr4::Color32BitBbga; tr1::ATLAS_PIXELS]]> { None }
+	fn atlases_32bit(&self) -> Option<&[[tr4::Color32BitBgra; tr1::ATLAS_PIXELS]]> { None }
 	fn get_mesh_nodes(&self, model: &tr1::Model) -> &[tr1::MeshNode] { self.get_mesh_nodes(model) }
 	fn get_mesh(&self, mesh_offset: u32) -> Self::Mesh<'_> { self.get_mesh(mesh_offset) }
 	fn get_frame(&self, model: &tr1::Model) -> Self::Frame<'_> { self.get_frame(model) }
@@ -356,11 +356,11 @@ impl Level for tr2::Level {
 	fn mesh_offsets(&self) -> &[u32] { &self.mesh_offsets }
 	fn palette_24bit(&self) -> Option<&[tr1::Color24Bit; tr1::PALETTE_LEN]> { Some(&self.palette_24bit) }
 	fn palette_32bit(&self) -> Option<&[tr2::Color32BitRgb; tr1::PALETTE_LEN]> { Some(&self.palette_32bit) }
-	fn atlases_palette(&self) -> Option<&[[u8; tr1::ATLAS_PIXELS]]> { Some(&self.atlases.atlases_palette) }
+	fn atlases_palette(&self) -> Option<&[[u8; tr1::ATLAS_PIXELS]]> { Some(&self.atlases_palette) }
 	fn atlases_16bit(&self) -> Option<&[[tr2::Color16BitArgb; tr1::ATLAS_PIXELS]]> {
-		Some(&self.atlases.atlases_16bit)
+		Some(&self.atlases_16bit)
 	}
-	fn atlases_32bit(&self) -> Option<&[[tr4::Color32BitBbga; tr1::ATLAS_PIXELS]]> { None }
+	fn atlases_32bit(&self) -> Option<&[[tr4::Color32BitBgra; tr1::ATLAS_PIXELS]]> { None }
 	fn get_mesh_nodes(&self, model: &tr1::Model) -> &[tr1::MeshNode] { self.get_mesh_nodes(model) }
 	fn get_mesh(&self, mesh_offset: u32) -> Self::Mesh<'_> { self.get_mesh(mesh_offset) }
 	fn get_frame(&self, model: &tr1::Model) -> Self::Frame<'_> { self.get_frame(model) }
@@ -434,11 +434,11 @@ impl Level for tr3::Level {
 	fn mesh_offsets(&self) -> &[u32] { &self.mesh_offsets }
 	fn palette_24bit(&self) -> Option<&[tr1::Color24Bit; tr1::PALETTE_LEN]> { Some(&self.palette_24bit) }
 	fn palette_32bit(&self) -> Option<&[tr2::Color32BitRgb; tr1::PALETTE_LEN]> { Some(&self.palette_32bit) }
-	fn atlases_palette(&self) -> Option<&[[u8; tr1::ATLAS_PIXELS]]> { Some(&self.atlases.atlases_palette) }
+	fn atlases_palette(&self) -> Option<&[[u8; tr1::ATLAS_PIXELS]]> { Some(&self.atlases_palette) }
 	fn atlases_16bit(&self) -> Option<&[[tr2::Color16BitArgb; tr1::ATLAS_PIXELS]]> {
-		Some(&self.atlases.atlases_16bit)
+		Some(&self.atlases_16bit)
 	}
-	fn atlases_32bit(&self) -> Option<&[[tr4::Color32BitBbga; tr1::ATLAS_PIXELS]]> { None }
+	fn atlases_32bit(&self) -> Option<&[[tr4::Color32BitBgra; tr1::ATLAS_PIXELS]]> { None }
 	fn get_mesh_nodes(&self, model: &tr1::Model) -> &[tr1::MeshNode] { self.get_mesh_nodes(model) }
 	fn get_mesh(&self, mesh_offset: u32) -> Self::Mesh<'_> { self.get_mesh(mesh_offset) }
 	fn get_frame(&self, model: &tr1::Model) -> Self::Frame<'_> { self.get_frame(model) }
@@ -536,10 +536,10 @@ impl Level for tr4::Level {
 	fn palette_32bit(&self) -> Option<&[tr2::Color32BitRgb; tr1::PALETTE_LEN]> { None }
 	fn atlases_palette(&self) -> Option<&[[u8; tr1::ATLAS_PIXELS]]> { None }
 	fn atlases_16bit(&self) -> Option<&[[tr2::Color16BitArgb; tr1::ATLAS_PIXELS]]> {
-		Some(&self.atlases.atlases_16bit)
+		Some(&self.atlases_16bit)
 	}
-	fn atlases_32bit(&self) -> Option<&[[tr4::Color32BitBbga; tr1::ATLAS_PIXELS]]> {
-		Some(&self.atlases.atlases_32bit)
+	fn atlases_32bit(&self) -> Option<&[[tr4::Color32BitBgra; tr1::ATLAS_PIXELS]]> {
+		Some(&self.atlases_32bit)
 	}
 	fn get_mesh_nodes(&self, model: &tr1::Model) -> &[tr1::MeshNode] { self.get_mesh_nodes(model) }
 	fn get_mesh(&self, mesh_offset: u32) -> Self::Mesh<'_> { self.get_mesh(mesh_offset) }

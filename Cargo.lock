@@ -2364,6 +2364,7 @@ name = "tr_readable"
 version = "0.1.0"
 dependencies = [
  "compress",
+ "glam",
  "shared",
  "tr_derive",
 ]

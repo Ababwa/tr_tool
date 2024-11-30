@@ -74,7 +74,7 @@ impl ReinterpretAsBytes for tr2::MeshSolidTri {}
 impl ReinterpretAsBytes for tr3::RoomVertex {}
 impl ReinterpretAsBytes for tr3::RoomQuad {}
 impl ReinterpretAsBytes for tr3::RoomTri {}
-impl ReinterpretAsBytes for tr4::Color32BitBbga {}
+impl ReinterpretAsBytes for tr4::Color32BitBgra {}
 impl ReinterpretAsBytes for tr4::MeshQuad {}
 impl ReinterpretAsBytes for tr4::MeshTri {}
 impl ReinterpretAsBytes for tr4::ObjectTexture {}
