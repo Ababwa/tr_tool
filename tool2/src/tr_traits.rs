@@ -28,16 +28,6 @@ pub trait SolidFace: Face {
 	fn color_index_32bit(&self) -> Option<u8>;
 }
 
-pub trait RoomGeom<'a> {
-	type RoomVertex: RoomVertex;
-	type RoomQuad: RoomFace;
-	type RoomTri: RoomFace;
-	fn vertices(&self) -> &'a [Self::RoomVertex];
-	fn quads(&self) -> &'a [Self::RoomQuad];
-	fn tris(&self) -> &'a [Self::RoomTri];
-	fn sprites(&self) -> &'a [tr1::Sprite];
-}
-
 pub trait RoomStaticMesh {
 	fn static_mesh_id(&self) -> u16;
 	fn pos(&self) -> IVec3;
@@ -45,10 +35,15 @@ pub trait RoomStaticMesh {
 }
 
 pub trait Room {
-	type RoomGeom<'a>: RoomGeom<'a> where Self: 'a;
+	type RoomVertex: RoomVertex;
+	type RoomQuad: RoomFace;
+	type RoomTri: RoomFace;
 	type RoomStaticMesh: RoomStaticMesh;
 	fn pos(&self) -> IVec3;
-	fn get_geom(&self) -> Self::RoomGeom<'_>;
+	fn vertices(&self) -> &[Self::RoomVertex];
+	fn quads(&self) -> &[Self::RoomQuad];
+	fn tris(&self) -> &[Self::RoomTri];
+	fn sprites(&self) -> &[tr1::Sprite];
 	fn room_static_meshes(&self) -> &[Self::RoomStaticMesh];
 	fn flip_room_index(&self) -> u16;
 	fn flip_group(&self) -> u8;
@@ -145,16 +140,6 @@ impl RoomFace for tr1::RoomTri {
 	fn double_sided(&self) -> bool { false }
 }
 
-impl<'a> RoomGeom<'a> for tr1::RoomGeom<'a> {
-	type RoomVertex = tr1::RoomVertex;
-	type RoomQuad = tr1::RoomQuad;
-	type RoomTri = tr1::RoomTri;
-	fn vertices(&self) -> &'a [Self::RoomVertex] { self.vertices }
-	fn quads(&self) -> &'a [Self::RoomQuad] { self.quads }
-	fn tris(&self) -> &'a [Self::RoomTri] { self.tris }
-	fn sprites(&self) -> &'a [tr1::Sprite] { self.sprites }
-}
-
 impl RoomStaticMesh for tr1::RoomStaticMesh {
 	fn static_mesh_id(&self) -> u16 { self.static_mesh_id }
 	fn pos(&self) -> IVec3 { self.pos }
@@ -162,10 +147,15 @@ impl RoomStaticMesh for tr1::RoomStaticMesh {
 }
 
 impl Room for tr1::Room {
-	type RoomGeom<'a> = tr1::RoomGeom<'a>;
+	type RoomVertex = tr1::RoomVertex;
+	type RoomQuad = tr1::RoomQuad;
+	type RoomTri = tr1::RoomTri;
 	type RoomStaticMesh = tr1::RoomStaticMesh;
 	fn pos(&self) -> IVec3 { IVec3::new(self.x, 0, self.z) }
-	fn get_geom(&self) -> Self::RoomGeom<'_> { self.get_geom() }
+	fn vertices(&self) -> &[Self::RoomVertex] { &self.vertices }
+	fn quads(&self) -> &[Self::RoomQuad] { &self.quads }
+	fn tris(&self) -> &[Self::RoomTri] { &self.tris }
+	fn sprites(&self) -> &[tr1::Sprite] { &self.sprites }
 	fn room_static_meshes(&self) -> &[Self::RoomStaticMesh] { &self.room_static_meshes }
 	fn flip_room_index(&self) -> u16 { self.flip_room_index }
 	fn flip_group(&self) -> u8 { 0 }
@@ -263,16 +253,6 @@ impl RoomVertex for tr2::RoomVertex {
 	fn pos(&self) -> I16Vec3 { self.pos }
 }
 
-impl<'a> RoomGeom<'a> for tr2::RoomGeom<'a> {
-	type RoomVertex = tr2::RoomVertex;
-	type RoomQuad = tr1::RoomQuad;
-	type RoomTri = tr1::RoomTri;
-	fn vertices(&self) -> &'a [Self::RoomVertex] { self.vertices }
-	fn quads(&self) -> &'a [Self::RoomQuad] { self.quads }
-	fn tris(&self) -> &'a [Self::RoomTri] { self.tris }
-	fn sprites(&self) -> &'a [tr1::Sprite] { self.sprites }
-}
-
 impl RoomStaticMesh for tr2::RoomStaticMesh {
 	fn static_mesh_id(&self) -> u16 { self.static_mesh_id }
 	fn pos(&self) -> IVec3 { self.pos }
@@ -280,10 +260,15 @@ impl RoomStaticMesh for tr2::RoomStaticMesh {
 }
 
 impl Room for tr2::Room {
-	type RoomGeom<'a> = tr2::RoomGeom<'a>;
+	type RoomVertex = tr2::RoomVertex;
+	type RoomQuad = tr1::RoomQuad;
+	type RoomTri = tr1::RoomTri;
 	type RoomStaticMesh = tr2::RoomStaticMesh;
 	fn pos(&self) -> IVec3 { IVec3::new(self.x, 0, self.z) }
-	fn get_geom(&self) -> Self::RoomGeom<'_> { self.get_geom() }
+	fn vertices(&self) -> &[Self::RoomVertex] { &self.vertices }
+	fn quads(&self) -> &[Self::RoomQuad] { &self.quads }
+	fn tris(&self) -> &[Self::RoomTri] { &self.tris }
+	fn sprites(&self) -> &[tr1::Sprite] { &self.sprites }
 	fn room_static_meshes(&self) -> &[Self::RoomStaticMesh] { &self.room_static_meshes }
 	fn flip_room_index(&self) -> u16 { self.flip_room_index }
 	fn flip_group(&self) -> u8 { 0 }
@@ -392,16 +377,6 @@ impl RoomFace for tr3::RoomTri {
 	fn double_sided(&self) -> bool { self.texture.double_sided() }
 }
 
-impl<'a> RoomGeom<'a> for tr3::RoomGeom<'a> {
-	type RoomVertex = tr3::RoomVertex;
-	type RoomQuad = tr3::RoomQuad;
-	type RoomTri = tr3::RoomTri;
-	fn vertices(&self) -> &'a [Self::RoomVertex] { self.vertices }
-	fn quads(&self) -> &'a [Self::RoomQuad] { self.quads }
-	fn tris(&self) -> &'a [Self::RoomTri] { self.tris }
-	fn sprites(&self) -> &'a [tr1::Sprite] { self.sprites }
-}
-
 impl RoomStaticMesh for tr3::RoomStaticMesh {
 	fn static_mesh_id(&self) -> u16 { self.static_mesh_id }
 	fn pos(&self) -> IVec3 { self.pos }
@@ -409,10 +384,15 @@ impl RoomStaticMesh for tr3::RoomStaticMesh {
 }
 
 impl Room for tr3::Room {
-	type RoomGeom<'a> = tr3::RoomGeom<'a>;
+	type RoomVertex = tr3::RoomVertex;
+	type RoomQuad = tr3::RoomQuad;
+	type RoomTri = tr3::RoomTri;
 	type RoomStaticMesh = tr3::RoomStaticMesh;
 	fn pos(&self) -> IVec3 { IVec3::new(self.x, 0, self.z) }
-	fn get_geom(&self) -> Self::RoomGeom<'_> { self.get_geom() }
+	fn vertices(&self) -> &[Self::RoomVertex] { &self.vertices }
+	fn quads(&self) -> &[Self::RoomQuad] { &self.quads }
+	fn tris(&self) -> &[Self::RoomTri] { &self.tris }
+	fn sprites(&self) -> &[tr1::Sprite] { &self.sprites }
 	fn room_static_meshes(&self) -> &[Self::RoomStaticMesh] { &self.room_static_meshes }
 	fn flip_room_index(&self) -> u16 { self.flip_room_index }
 	fn flip_group(&self) -> u8 { 0 }
@@ -448,10 +428,15 @@ impl Level for tr3::Level {
 //tr4
 
 impl Room for tr4::Room {
-	type RoomGeom<'a> = tr3::RoomGeom<'a>;
+	type RoomVertex = tr3::RoomVertex;
+	type RoomQuad = tr3::RoomQuad;
+	type RoomTri = tr3::RoomTri;
 	type RoomStaticMesh = tr3::RoomStaticMesh;
 	fn pos(&self) -> IVec3 { IVec3::new(self.x, 0, self.z) }
-	fn get_geom(&self) -> Self::RoomGeom<'_> { self.get_geom() }
+	fn vertices(&self) -> &[Self::RoomVertex] { &self.vertices }
+	fn quads(&self) -> &[Self::RoomQuad] { &self.quads }
+	fn tris(&self) -> &[Self::RoomTri] { &self.tris }
+	fn sprites(&self) -> &[tr1::Sprite] { &self.sprites }
 	fn room_static_meshes(&self) -> &[Self::RoomStaticMesh] { &self.room_static_meshes }
 	fn flip_room_index(&self) -> u16 { self.flip_room_index }
 	fn flip_group(&self) -> u8 { self.flip_group }

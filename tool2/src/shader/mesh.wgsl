@@ -215,7 +215,7 @@ fn sprite_vs_main(
 	let vertex = vec4f(vec3f(sprite.xyz), 1.0);
 	var position_camera = camera_transform * vertex;
 	position_camera.x += world_offset.x;
-	position_camera.y -= world_offset.y - 24;//24: move sprites up to prevent ground clipping
+	position_camera.y -= world_offset.y - 0;//constant: move sprites up to prevent ground clipping
 	let position = perspective_transform * position_camera;
 	let uv_int = sprite_pos + sprite_size * uv_index;
 	let uv = vec2f(uv_int);

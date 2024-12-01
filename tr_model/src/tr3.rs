@@ -3,7 +3,7 @@ use glam::{I16Vec3, IVec3};
 use tr_readable::Readable;
 use crate::{
 	tr1::{
-		decl_room_geom, AnimDispatch, Animation, Camera, CinematicFrame, Color24Bit, MeshNode, Model,
+		AnimDispatch, Animation, Camera, CinematicFrame, Color24Bit, MeshNode, Model,
 		NumSectors, ObjectTexture, Portal, RoomFlags, Sector, SoundSource, Sprite, SpriteSequence,
 		SpriteTexture, StateChange, StaticMesh, ATLAS_PIXELS, LIGHT_MAP_LEN, PALETTE_LEN,
 	},
@@ -64,7 +64,11 @@ pub struct Room {
 	pub z: i32,
 	pub y_bottom: i32,
 	pub y_top: i32,
-	#[list(u32)] pub geom_data: Box<[u16]>,
+	pub geom_data_size: u32,
+	#[list(u16)] pub vertices: Box<[RoomVertex]>,
+	#[list(u16)] pub quads: Box<[RoomQuad]>,
+	#[list(u16)] pub tris: Box<[RoomTri]>,
+	#[list(u16)] pub sprites: Box<[Sprite]>,
 	#[list(u16)] pub portals: Box<[Portal]>,
 	pub num_sectors: NumSectors,
 	#[list(num_sectors)] pub sectors: Box<[Sector]>,
@@ -164,14 +168,6 @@ macro_rules! decl_face_type {
 
 decl_face_type!(RoomQuad, 4);
 decl_face_type!(RoomTri, 3);
-
-decl_room_geom!(RoomGeom, RoomVertex, RoomQuad, RoomTri, Sprite);
-
-impl Room {
-	pub fn get_geom(&self) -> RoomGeom {
-		RoomGeom::get(&self.geom_data)
-	}
-}
 
 impl Level {
 	pub fn get_mesh(&self, mesh_offset: u32) -> Mesh {

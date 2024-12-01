@@ -28,6 +28,35 @@ pub mod blend_mode {
 
 #[repr(C)]
 #[derive(Clone, Debug)]
+pub struct RoomVertex {
+	/// Relative to room
+	pub pos: I16Vec3,
+	pub light: u16,
+}
+
+macro_rules! decl_face_type {
+	($name:ident, $num_indices:literal, $texture_field:ident) => {
+		#[repr(C)]
+		#[derive(Clone, Debug)]
+		pub struct $name {
+			pub vertex_indices: [u16; $num_indices],
+			pub $texture_field: u16,
+		}
+	};
+}
+
+decl_face_type!(RoomQuad, 4, object_texture_index);
+decl_face_type!(RoomTri, 3, object_texture_index);
+
+#[repr(C)]
+#[derive(Clone, Debug)]
+pub struct Sprite {
+	pub vertex_index: u16,
+	pub sprite_texture_index: u16,
+}
+
+#[repr(C)]
+#[derive(Clone, Debug)]
 pub struct Portal {
 	pub adjoining_room_index: u16,
 	pub normal: I16Vec3,
@@ -37,13 +66,13 @@ pub struct Portal {
 #[repr(C)]
 #[derive(Clone, Debug)]
 pub struct NumSectors {
+	pub z: u16,
 	pub x: u16,
-	pub y: u16,
 }
 
 impl ToLen for NumSectors {
 	fn get_len(&self) -> usize {
-		(self.x * self.y) as usize
+		(self.z * self.x) as usize
 	}
 }
 
@@ -93,7 +122,11 @@ pub struct Room {
 	pub z: i32,
 	pub y_bottom: i32,
 	pub y_top: i32,
-	#[list(u32)] pub geom_data: Box<[u16]>,
+	pub geom_data_size: u32,
+	#[list(u16)] pub vertices: Box<[RoomVertex]>,
+	#[list(u16)] pub quads: Box<[RoomQuad]>,
+	#[list(u16)] pub tris: Box<[RoomTri]>,
+	#[list(u16)] pub sprites: Box<[Sprite]>,
 	#[list(u16)] pub portals: Box<[Portal]>,
 	pub num_sectors: NumSectors,
 	#[list(num_sectors)] pub sectors: Box<[Sector]>,
@@ -313,69 +346,34 @@ pub struct Level {
 
 //extraction
 
-#[repr(C)]
-#[derive(Clone, Debug)]
-pub struct RoomVertex {
-	/// Relative to room
-	pub pos: I16Vec3,
-	pub light: u16,
-}
-
-macro_rules! decl_face_type {
-	($name:ident, $num_indices:literal, $texture_field:ident) => {
-		#[repr(C)]
-		#[derive(Clone, Debug)]
-		pub struct $name {
-			pub vertex_indices: [u16; $num_indices],
-			pub $texture_field: u16,
-		}
-	};
-}
-
-decl_face_type!(RoomQuad, 4, object_texture_index);
-decl_face_type!(RoomTri, 3, object_texture_index);
-
-#[repr(C)]
-#[derive(Clone, Debug)]
-pub struct Sprite {
-	pub vertex_index: u16,
-	pub sprite_texture_index: u16,
-}
-
-macro_rules! decl_room_geom {
-	($room_geom:ident, $room_vertex:ty, $room_quad:ty, $room_tri:ty, $sprite:ty) => {
-		#[derive(Clone, Debug)]
-		pub struct $room_geom<'a> {
-			pub vertices: &'a [$room_vertex],
-			pub quads: &'a [$room_quad],
-			pub tris: &'a [$room_tri],
-			pub sprites: &'a [$sprite],
-		}
+// macro_rules! decl_room_geom {
+// 	($room_geom:ident, $room_vertex:ty, $room_quad:ty, $room_tri:ty, $sprite:ty) => {
+// 		#[derive(Clone, Debug)]
+// 		pub struct $room_geom<'a> {
+// 			pub vertices: &'a [$room_vertex],
+// 			pub quads: &'a [$room_quad],
+// 			pub tris: &'a [$room_tri],
+// 			pub sprites: &'a [$sprite],
+// 		}
 		
-		impl<'a> $room_geom<'a> {
-			pub(crate) fn get(geom_data: &'a [u16]) -> Self {
-				let mut cursor = crate::u16_cursor::U16Cursor::new(geom_data);
-				unsafe {
-					Self {
-						vertices: cursor.u16_len_slice(),
-						quads: cursor.u16_len_slice(),
-						tris: cursor.u16_len_slice(),
-						sprites: cursor.u16_len_slice(),
-					}
-				}
-			}
-		}
-	};
-}
-pub(crate) use decl_room_geom;
+// 		impl<'a> $room_geom<'a> {
+// 			pub(crate) fn get(geom_data: &'a [u16]) -> Self {
+// 				let mut cursor = crate::u16_cursor::U16Cursor::new(geom_data);
+// 				unsafe {
+// 					Self {
+// 						vertices: cursor.u16_len_slice(),
+// 						quads: cursor.u16_len_slice(),
+// 						tris: cursor.u16_len_slice(),
+// 						sprites: cursor.u16_len_slice(),
+// 					}
+// 				}
+// 			}
+// 		}
+// 	};
+// }
+// pub(crate) use decl_room_geom;
 
-decl_room_geom!(RoomGeom, RoomVertex, RoomQuad, RoomTri, Sprite);
-
-impl Room {
-	pub fn get_geom(&self) -> RoomGeom {
-		RoomGeom::get(&self.geom_data)
-	}
-}
+// decl_room_geom!(RoomGeom, RoomVertex, RoomQuad, RoomTri, Sprite);
 
 #[derive(Clone, Debug)]
 pub enum MeshLighting<'a> {

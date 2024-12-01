@@ -4,12 +4,10 @@ use glam::{I16Vec3, IVec3, U16Vec2, U16Vec3, UVec2, Vec3};
 use tr_readable::{Readable, ToLen};
 use crate::{
 	tr1::{
-		get_packed_angles, AnimDispatch, Camera, Color24Bit, MeshLighting, MeshNode, Model, NumSectors,
-		Portal, RoomFlags, Sector, SoundSource, SpriteSequence, SpriteTexture, StateChange, StaticMesh,
-		ATLAS_PIXELS,
+		get_packed_angles, AnimDispatch, Camera, Color24Bit, MeshLighting, MeshNode, Model, NumSectors, Portal, RoomFlags, Sector, SoundSource, Sprite, SpriteSequence, SpriteTexture, StateChange, StaticMesh, ATLAS_PIXELS
 	},
 	tr2::{decl_frame, Axis, Color16BitArgb, FrameData, TrBox, SOUND_MAP_LEN},
-	tr3::{RoomGeom, RoomStaticMesh, SoundDetails}, u16_cursor::U16Cursor,
+	tr3::{RoomQuad, RoomStaticMesh, RoomTri, RoomVertex, SoundDetails}, u16_cursor::U16Cursor,
 };
 
 //model
@@ -59,7 +57,11 @@ pub struct Room {
 	pub z: i32,
 	pub y_bottom: i32,
 	pub y_top: i32,
-	#[list(u32)] pub geom_data: Box<[u16]>,
+	pub geom_data_size: u32,
+	#[list(u16)] pub vertices: Box<[RoomVertex]>,
+	#[list(u16)] pub quads: Box<[RoomQuad]>,
+	#[list(u16)] pub tris: Box<[RoomTri]>,
+	#[list(u16)] pub sprites: Box<[Sprite]>,
 	#[list(u16)] pub portals: Box<[Portal]>,
 	pub num_sectors: NumSectors,
 	#[list(num_sectors)] pub sectors: Box<[Sector]>,
@@ -202,7 +204,7 @@ pub struct LevelData {
 	#[boxed] pub sound_map: Box<[u16; SOUND_MAP_LEN]>,
 	#[list(u32)] pub sound_details: Box<[SoundDetails]>,
 	#[list(u32)] pub sample_indices: Box<[u32]>,
-	pub zero: [u8; 6],
+	pub padding: [u8; 6],
 }
 
 #[derive(Readable, Clone, Debug)]
@@ -223,12 +225,6 @@ pub struct Level {
 }
 
 //extraction
-
-impl Room {
-	pub fn get_geom(&self) -> RoomGeom {
-		RoomGeom::get(&self.geom_data)
-	}
-}
 
 bitfield! {
 	#[repr(C)]

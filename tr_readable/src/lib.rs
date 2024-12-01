@@ -18,6 +18,19 @@ impl<T> ToLen for Box<[T]> {
 	}
 }
 
+macro_rules! impl_to_len_prim {
+	($type:ty) => {
+		impl ToLen for $type {
+			fn get_len(&self) -> usize {
+				*self as usize
+			}
+		}
+	};
+}
+
+impl_to_len_prim!(u16);
+impl_to_len_prim!(u32);
+
 //impl helpers
 
 pub unsafe fn read_into<R: Read, T>(reader: &mut R, ptr: *mut T) -> Result<()> {

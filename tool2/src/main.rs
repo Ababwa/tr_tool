@@ -25,7 +25,7 @@ use gui::Gui;
 use shared::min_max::{MinMax, VecMinMaxFromIterator};
 use tr_model::{tr1, tr2, tr3, tr4};
 use tr_traits::{
-	Entity, Face, Frame, Level, Mesh, ObjectTexture, Room, RoomFace, RoomGeom, RoomStaticMesh, RoomVertex, SolidFace, TexturedFace
+	Entity, Face, Frame, Level, Mesh, ObjectTexture, Room, RoomFace, RoomStaticMesh, RoomVertex, SolidFace, TexturedFace
 };
 use wgpu::{
 	BindGroup, BindGroupLayout, BindingResource, BlendComponent, BlendFactor, BlendOperation, BlendState,
@@ -179,14 +179,14 @@ fn print_object_data<L: Level>(level: &L, object_data: &[ObjectData], index: u16
 	};
 	let mesh_face = match data {
 		ObjectData::RoomFace { room_index, face_type, face_index } => {
-			let room_geom = level.rooms()[room_index as usize].get_geom();
+			let room = &level.rooms()[room_index as usize];
 			let (double_sided, object_texture_index) = match face_type {
 				PolyType::Quad => {
-					let quad = &room_geom.quads()[face_index as usize];
+					let quad = &room.quads()[face_index as usize];
 					(quad.double_sided(), quad.object_texture_index())
 				},
 				PolyType::Tri => {
-					let tri = &room_geom.tris()[face_index as usize];
+					let tri = &room.tris()[face_index as usize];
 					(tri.double_sided(), tri.object_texture_index())
 				},
 			};
@@ -603,8 +603,7 @@ fn parse_level<R: Read, L: Level>(
 	let mut flip_groups = HashMap::<u8, Vec<FlipRoomIndices>>::new();
 	let render_rooms = level.rooms().iter().enumerate().map(|(room_index, room)| {
 		let room_pos = room.pos();
-		let room_geom = room.get_geom();
-		let room_vertices = room_geom.vertices();
+		let room_vertices = room.vertices();
 		let sprites_start = data_writer.sprite_offset();
 		let mut meshes = vec![];
 		//room geom
@@ -613,11 +612,11 @@ fn parse_level<R: Read, L: Level>(
 			let transform = Mat4::from_translation(room_pos.as_vec3());
 			let transform_index = data_writer.geom_buffer.write_transform(&transform);
 			let quads = data_writer.write_room_face_array(
-				level.as_ref(), vertex_array_offset, room_geom.quads(), transform_index,
+				level.as_ref(), vertex_array_offset, room.quads(), transform_index,
 				|face_index| ObjectData::room_face(room_index, PolyType::Quad, face_index),
 			);
 			let tris = data_writer.write_room_face_array(
-				level.as_ref(), vertex_array_offset, room_geom.tris(), transform_index,
+				level.as_ref(), vertex_array_offset, room.tris(), transform_index,
 				|face_index| ObjectData::room_face(room_index, PolyType::Tri, face_index)
 			);
 			(quads, tris)
@@ -653,7 +652,7 @@ fn parse_level<R: Read, L: Level>(
 			);
 		}
 		//room sprites
-		data_writer.write_room_sprites(room_pos, room_vertices, room_geom.sprites(), |sprite_index| {
+		data_writer.write_room_sprites(room_pos, room_vertices, room.sprites(), |sprite_index| {
 			ObjectData::room_sprite(room_index, sprite_index)
 		});
 		//entities
@@ -727,8 +726,7 @@ fn parse_level<R: Read, L: Level>(
 			);
 		}
 		let sprites_end = data_writer.sprite_offset();
-		let (center, radius) = room_geom
-			.vertices()
+		let (center, radius) = room_vertices
 			.iter()
 			.map(|v| v.pos())
 			.min_max()

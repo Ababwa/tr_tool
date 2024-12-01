@@ -4,7 +4,7 @@ use glam::{I16Vec3, IVec3, U16Vec3};
 use shared::min_max::MinMax;
 use tr_readable::Readable;
 use crate::tr1::{
-	decl_mesh, decl_room_geom, get_packed_angles, AnimDispatch, Animation, Camera, CinematicFrame,
+	decl_mesh, get_packed_angles, AnimDispatch, Animation, Camera, CinematicFrame,
 	Color24Bit, MeshLighting, MeshNode, MeshTexturedQuad, MeshTexturedTri, Model, NumSectors, ObjectTexture,
 	Portal, RoomFlags, RoomQuad, RoomTri, Sector, SoundDetails, SoundSource, Sprite, SpriteSequence,
 	SpriteTexture, StateChange, StaticMesh, ATLAS_PIXELS, LIGHT_MAP_LEN, PALETTE_LEN,
@@ -31,6 +31,16 @@ bitfield! {
 	pub r, _: 14, 10;
 	pub g, _: 9, 5;
 	pub b, _: 4, 0;
+}
+
+#[repr(C)]
+#[derive(Clone, Debug)]
+pub struct RoomVertex {
+	/// Relative to room
+	pub pos: I16Vec3,
+	pub unused: u16,
+	pub attrs: u16,
+	pub light: u16,
 }
 
 #[repr(C)]
@@ -64,7 +74,11 @@ pub struct Room {
 	pub z: i32,
 	pub y_bottom: i32,
 	pub y_top: i32,
-	#[list(u32)] pub geom_data: Box<[u16]>,
+	pub geom_data_size: u32,
+	#[list(u16)] pub vertices: Box<[RoomVertex]>,
+	#[list(u16)] pub quads: Box<[RoomQuad]>,
+	#[list(u16)] pub tris: Box<[RoomTri]>,
+	#[list(u16)] pub sprites: Box<[Sprite]>,
 	#[list(u16)] pub portals: Box<[Portal]>,
 	pub num_sectors: NumSectors,
 	#[list(num_sectors)] pub sectors: Box<[Sector]>,
@@ -144,24 +158,6 @@ pub struct Level {
 }
 
 //extraction
-
-#[repr(C)]
-#[derive(Clone, Debug)]
-pub struct RoomVertex {
-	/// Relative to room
-	pub pos: I16Vec3,
-	pub unused: u16,
-	pub attrs: u16,
-	pub light: u16,
-}
-
-decl_room_geom!(RoomGeom, RoomVertex, RoomQuad, RoomTri, Sprite);
-
-impl Room {
-	pub fn get_geom(&self) -> RoomGeom {
-		RoomGeom::get(&self.geom_data)
-	}
-}
 
 macro_rules! decl_solid_face_type {
 	($name:ident, $num_indices:literal) => {
