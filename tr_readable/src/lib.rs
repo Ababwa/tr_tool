@@ -1,6 +1,5 @@
 use std::{io::{Cursor, Read, Result}, mem::{size_of, MaybeUninit}, slice::from_raw_parts_mut};
 use compress::zlib::Decoder;
-use glam::U16Vec2;
 use shared::alloc;
 
 pub use tr_derive::Readable;
@@ -13,12 +12,11 @@ pub trait ToLen {
 	fn get_len(&self) -> usize;
 }
 
-impl ToLen for u8 { fn get_len(&self) -> usize { *self as usize } }
-impl ToLen for u16 { fn get_len(&self) -> usize { *self as usize } }
-impl ToLen for u32 { fn get_len(&self) -> usize { *self as usize } }
-impl ToLen for u64 { fn get_len(&self) -> usize { *self as usize } }
-impl<T> ToLen for Box<[T]> { fn get_len(&self) -> usize { self.len() } }
-impl ToLen for U16Vec2 { fn get_len(&self) -> usize { self.element_product() as usize } }
+impl<T> ToLen for Box<[T]> {
+	fn get_len(&self) -> usize {
+		self.len()
+	}
+}
 
 //impl helpers
 

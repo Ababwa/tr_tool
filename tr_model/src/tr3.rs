@@ -1,12 +1,13 @@
 use bitfield::bitfield;
-use glam::{I16Vec3, IVec3, U16Vec2};
+use glam::{I16Vec3, IVec3};
 use tr_readable::Readable;
 use crate::{
-	get_room_geom, tr1::{
-		AnimDispatch, Animation, Camera, CinematicFrame, Color24Bit, MeshNode, Model, ObjectTexture, Portal,
-		RoomFlags, Sector, SoundSource, Sprite, SpriteSequence, SpriteTexture, StateChange, StaticMesh,
-		ATLAS_PIXELS, LIGHT_MAP_LEN, PALETTE_LEN,
-	}, tr2::{Color16BitArgb, Color32BitRgb, Entity, Frame, Mesh, TrBox, SOUND_MAP_LEN},
+	tr1::{
+		decl_room_geom, AnimDispatch, Animation, Camera, CinematicFrame, Color24Bit, MeshNode, Model,
+		NumSectors, ObjectTexture, Portal, RoomFlags, Sector, SoundSource, Sprite, SpriteSequence,
+		SpriteTexture, StateChange, StaticMesh, ATLAS_PIXELS, LIGHT_MAP_LEN, PALETTE_LEN,
+	},
+	tr2::{Color16BitArgb, Color32BitRgb, Entity, Frame, Mesh, TrBox, SOUND_MAP_LEN},
 };
 
 pub mod blend_mode {
@@ -65,8 +66,8 @@ pub struct Room {
 	pub y_top: i32,
 	#[list(u32)] pub geom_data: Box<[u16]>,
 	#[list(u16)] pub portals: Box<[Portal]>,
-	pub sectors_size: U16Vec2,
-	#[list(sectors_size)] pub sectors: Box<[Sector]>,
+	pub num_sectors: NumSectors,
+	#[list(num_sectors)] pub sectors: Box<[Sector]>,
 	pub ambient_light: u16,
 	pub unused1: u16,
 	#[list(u16)] pub lights: Box<[Light]>,
@@ -164,18 +165,11 @@ macro_rules! decl_face_type {
 decl_face_type!(RoomQuad, 4);
 decl_face_type!(RoomTri, 3);
 
-#[derive(Clone, Debug)]
-pub struct RoomGeom<'a> {
-	pub vertices: &'a [RoomVertex],
-	pub quads: &'a [RoomQuad],
-	pub tris: &'a [RoomTri],
-	pub sprites: &'a [Sprite],
-}
+decl_room_geom!(RoomGeom, RoomVertex, RoomQuad, RoomTri, Sprite);
 
 impl Room {
 	pub fn get_geom(&self) -> RoomGeom {
-		let (vertices, quads, tris, sprites) = unsafe { get_room_geom(&self.geom_data) };
-		RoomGeom { vertices, quads, tris, sprites }
+		RoomGeom::get(&self.geom_data)
 	}
 }
 

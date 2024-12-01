@@ -1,15 +1,13 @@
 use std::{mem::transmute, slice::Iter};
 use bitfield::bitfield;
-use glam::{I16Vec3, IVec3, U16Vec2, U16Vec3};
+use glam::{I16Vec3, IVec3, U16Vec3};
 use shared::min_max::MinMax;
 use tr_readable::Readable;
-use crate::{
-	get_room_geom, tr1::{
-		decl_mesh, get_packed_angles, AnimDispatch, Animation, Camera, CinematicFrame, Color24Bit,
-		MeshLighting, MeshNode, MeshTexturedQuad, MeshTexturedTri, Model, ObjectTexture, Portal, RoomFlags,
-		RoomQuad, RoomTri, Sector, SoundDetails, SoundSource, Sprite, SpriteSequence, SpriteTexture,
-		StateChange, StaticMesh, ATLAS_PIXELS, LIGHT_MAP_LEN, PALETTE_LEN,
-	}, u16_cursor::U16Cursor
+use crate::tr1::{
+	decl_mesh, decl_room_geom, get_packed_angles, AnimDispatch, Animation, Camera, CinematicFrame,
+	Color24Bit, MeshLighting, MeshNode, MeshTexturedQuad, MeshTexturedTri, Model, NumSectors, ObjectTexture,
+	Portal, RoomFlags, RoomQuad, RoomTri, Sector, SoundDetails, SoundSource, Sprite, SpriteSequence,
+	SpriteTexture, StateChange, StaticMesh, ATLAS_PIXELS, LIGHT_MAP_LEN, PALETTE_LEN,
 };
 
 pub const SOUND_MAP_LEN: usize = 370;
@@ -68,8 +66,8 @@ pub struct Room {
 	pub y_top: i32,
 	#[list(u32)] pub geom_data: Box<[u16]>,
 	#[list(u16)] pub portals: Box<[Portal]>,
-	pub sectors_size: U16Vec2,
-	#[list(sectors_size)] pub sectors: Box<[Sector]>,
+	pub num_sectors: NumSectors,
+	#[list(num_sectors)] pub sectors: Box<[Sector]>,
 	pub ambient_light: u16,
 	pub unused: u16,
 	pub light_mode: u16,
@@ -157,18 +155,11 @@ pub struct RoomVertex {
 	pub light: u16,
 }
 
-#[derive(Clone, Debug)]
-pub struct RoomGeom<'a> {
-	pub vertices: &'a [RoomVertex],
-	pub quads: &'a [RoomQuad],
-	pub tris: &'a [RoomTri],
-	pub sprites: &'a [Sprite],
-}
+decl_room_geom!(RoomGeom, RoomVertex, RoomQuad, RoomTri, Sprite);
 
 impl Room {
 	pub fn get_geom(&self) -> RoomGeom {
-		let (vertices, quads, tris, sprites) = unsafe { get_room_geom(&self.geom_data) };
-		RoomGeom { vertices, quads, tris, sprites }
+		RoomGeom::get(&self.geom_data)
 	}
 }
 

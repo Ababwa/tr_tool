@@ -11,8 +11,7 @@ use bitfield::bitfield;
 use glam::{I16Vec2, I16Vec3, IVec3, U16Vec2, U16Vec3};
 use glam_traits::ext::U8Vec2;
 use shared::min_max::MinMax;
-use tr_readable::Readable;
-use crate::{get_room_geom, u16_cursor::U16Cursor};
+use tr_readable::{Readable, ToLen};
 
 pub const ATLAS_SIDE_LEN: usize = 256;
 pub const ATLAS_PIXELS: usize = ATLAS_SIDE_LEN * ATLAS_SIDE_LEN;
@@ -33,6 +32,19 @@ pub struct Portal {
 	pub adjoining_room_index: u16,
 	pub normal: I16Vec3,
 	pub vertices: [I16Vec3; 4],
+}
+
+#[repr(C)]
+#[derive(Clone, Debug)]
+pub struct NumSectors {
+	pub x: u16,
+	pub y: u16,
+}
+
+impl ToLen for NumSectors {
+	fn get_len(&self) -> usize {
+		(self.x * self.y) as usize
+	}
 }
 
 #[repr(C)]
@@ -83,8 +95,8 @@ pub struct Room {
 	pub y_top: i32,
 	#[list(u32)] pub geom_data: Box<[u16]>,
 	#[list(u16)] pub portals: Box<[Portal]>,
-	pub sectors_size: U16Vec2,
-	#[list(sectors_size)] pub sectors: Box<[Sector]>,
+	pub num_sectors: NumSectors,
+	#[list(num_sectors)] pub sectors: Box<[Sector]>,
 	pub ambient_light: u16,
 	#[list(u16)] pub lights: Box<[Light]>,
 	#[list(u16)] pub room_static_meshes: Box<[RoomStaticMesh]>,
@@ -330,18 +342,38 @@ pub struct Sprite {
 	pub sprite_texture_index: u16,
 }
 
-#[derive(Clone, Debug)]
-pub struct RoomGeom<'a> {
-	pub vertices: &'a [RoomVertex],
-	pub quads: &'a [RoomQuad],
-	pub tris: &'a [RoomTri],
-	pub sprites: &'a [Sprite],
+macro_rules! decl_room_geom {
+	($room_geom:ident, $room_vertex:ty, $room_quad:ty, $room_tri:ty, $sprite:ty) => {
+		#[derive(Clone, Debug)]
+		pub struct $room_geom<'a> {
+			pub vertices: &'a [$room_vertex],
+			pub quads: &'a [$room_quad],
+			pub tris: &'a [$room_tri],
+			pub sprites: &'a [$sprite],
+		}
+		
+		impl<'a> $room_geom<'a> {
+			pub(crate) fn get(geom_data: &'a [u16]) -> Self {
+				let mut cursor = crate::u16_cursor::U16Cursor::new(geom_data);
+				unsafe {
+					Self {
+						vertices: cursor.u16_len_slice(),
+						quads: cursor.u16_len_slice(),
+						tris: cursor.u16_len_slice(),
+						sprites: cursor.u16_len_slice(),
+					}
+				}
+			}
+		}
+	};
 }
+pub(crate) use decl_room_geom;
+
+decl_room_geom!(RoomGeom, RoomVertex, RoomQuad, RoomTri, Sprite);
 
 impl Room {
 	pub fn get_geom(&self) -> RoomGeom {
-		let (vertices, quads, tris, sprites) = unsafe { get_room_geom(&self.geom_data) };
-		RoomGeom { vertices, quads, tris, sprites }
+		RoomGeom::get(&self.geom_data)
 	}
 }
 
@@ -363,11 +395,11 @@ macro_rules! decl_mesh {
 	) => {
 		#[derive(Clone, Debug)]
 		pub struct $mesh<'a> {
-			pub center: I16Vec3,
+			pub center: glam::I16Vec3,
 			pub radius: i32,
 			/// If static mesh, relative to `RoomStaticMesh.pos`.
 			/// If entity mesh, relative to `Entity.pos`.
-			pub vertices: &'a [I16Vec3],
+			pub vertices: &'a [glam::I16Vec3],
 			pub lighting: $mesh_lighting<'a>,
 			pub textured_quads: &'a [$textured_quad],
 			pub textured_tris: &'a [$textured_tri],
@@ -377,7 +409,7 @@ macro_rules! decl_mesh {
 		
 		impl<'a> $mesh<'a> {
 			pub(crate) fn get(mesh_data: &'a [u16], mesh_offset: u32) -> Self {
-				let mut cursor = U16Cursor::new(&mesh_data[mesh_offset as usize / 2..]);
+				let mut cursor = crate::u16_cursor::U16Cursor::new(&mesh_data[mesh_offset as usize / 2..]);
 				unsafe {
 					Self {
 						center: cursor.read(),
@@ -395,7 +427,7 @@ macro_rules! decl_mesh {
 				}
 			}
 		}
-	};
+	}
 }
 pub(crate) use decl_mesh;
 
@@ -421,9 +453,9 @@ impl MeshNode {
 	pub(crate) fn get<'a>(mesh_node_data: &'a [u32], model: &Model) -> &'a [Self] {
 		let ptr = mesh_node_data
 			[model.mesh_node_offset as usize..]
-			[..(model.num_meshes as usize - 1) * (size_of::<MeshNode>() / 4)]//bound check
+			[..(model.num_meshes as usize - 1) * (size_of::<Self>() / 4)]//bound check
 			.as_ptr()
-			.cast::<MeshNode>();
+			.cast::<Self>();
 		unsafe { from_raw_parts(ptr, model.num_meshes as usize - 1) }
 	}
 }

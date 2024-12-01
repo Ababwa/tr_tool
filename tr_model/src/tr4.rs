@@ -3,9 +3,12 @@ use bitfield::bitfield;
 use glam::{I16Vec3, IVec3, U16Vec2, U16Vec3, UVec2, Vec3};
 use tr_readable::{Readable, ToLen};
 use crate::{
-	get_room_geom, tr1::{
-		get_packed_angles, AnimDispatch, Camera, Color24Bit, MeshLighting, MeshNode, Model, Portal, RoomFlags, Sector, SoundSource, SpriteSequence, SpriteTexture, StateChange, StaticMesh, ATLAS_PIXELS
-	}, tr2::{decl_frame, Axis, Color16BitArgb, FrameData, TrBox, SOUND_MAP_LEN},
+	tr1::{
+		get_packed_angles, AnimDispatch, Camera, Color24Bit, MeshLighting, MeshNode, Model, NumSectors,
+		Portal, RoomFlags, Sector, SoundSource, SpriteSequence, SpriteTexture, StateChange, StaticMesh,
+		ATLAS_PIXELS,
+	},
+	tr2::{decl_frame, Axis, Color16BitArgb, FrameData, TrBox, SOUND_MAP_LEN},
 	tr3::{RoomGeom, RoomStaticMesh, SoundDetails}, u16_cursor::U16Cursor,
 };
 
@@ -58,8 +61,8 @@ pub struct Room {
 	pub y_top: i32,
 	#[list(u32)] pub geom_data: Box<[u16]>,
 	#[list(u16)] pub portals: Box<[Portal]>,
-	pub sectors_size: U16Vec2,
-	#[list(sectors_size)] pub sectors: Box<[Sector]>,
+	pub num_sectors: NumSectors,
+	#[list(num_sectors)] pub sectors: Box<[Sector]>,
 	pub color: Color32BitBgra,
 	#[list(u16)] pub lights: Box<[Light]>,
 	#[list(u16)] pub room_static_meshes: Box<[RoomStaticMesh]>,
@@ -223,8 +226,7 @@ pub struct Level {
 
 impl Room {
 	pub fn get_geom(&self) -> RoomGeom {
-		let (vertices, quads, tris, sprites) = unsafe { get_room_geom(&self.geom_data) };
-		RoomGeom { vertices, quads, tris, sprites }
+		RoomGeom::get(&self.geom_data)
 	}
 }
 
