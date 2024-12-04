@@ -1,6 +1,6 @@
 use std::{mem::{size_of, MaybeUninit}, ptr::slice_from_raw_parts_mut, slice::from_raw_parts};
 use glam::{I16Vec3, IVec3, IVec4, Mat4, U16Vec2};
-use tr_model::{tr1, tr2, tr3, tr4};
+use tr_model::{tr1, tr2, tr3, tr4, tr5};
 
 pub trait AsBytes {
 	fn as_bytes(&self) -> &[u8];
@@ -60,21 +60,23 @@ impl ReinterpretAsBytes for tr1::Color24Bit {}
 impl ReinterpretAsBytes for tr1::ObjectTexture {}
 impl ReinterpretAsBytes for tr1::SpriteTexture {}
 impl ReinterpretAsBytes for tr1::RoomVertex {}
-impl ReinterpretAsBytes for tr1::RoomQuad {}
-impl ReinterpretAsBytes for tr1::RoomTri {}
-impl ReinterpretAsBytes for tr1::MeshTexturedQuad {}
-impl ReinterpretAsBytes for tr1::MeshTexturedTri {}
-impl ReinterpretAsBytes for tr1::MeshSolidQuad {}
-impl ReinterpretAsBytes for tr1::MeshSolidTri {}
+impl ReinterpretAsBytes for tr1::TexturedQuad {}
+impl ReinterpretAsBytes for tr1::TexturedTri {}
+impl ReinterpretAsBytes for tr1::SolidQuad {}
+impl ReinterpretAsBytes for tr1::SolidTri {}
 impl ReinterpretAsBytes for tr2::Color32BitRgb {}
 impl ReinterpretAsBytes for tr2::Color16BitArgb {}
 impl ReinterpretAsBytes for tr2::RoomVertex {}
-impl ReinterpretAsBytes for tr2::MeshSolidQuad {}
-impl ReinterpretAsBytes for tr2::MeshSolidTri {}
+impl ReinterpretAsBytes for tr2::SolidQuad {}
+impl ReinterpretAsBytes for tr2::SolidTri {}
 impl ReinterpretAsBytes for tr3::RoomVertex {}
-impl ReinterpretAsBytes for tr3::RoomQuad {}
-impl ReinterpretAsBytes for tr3::RoomTri {}
+impl ReinterpretAsBytes for tr3::DsQuad {}
+impl ReinterpretAsBytes for tr3::DsTri {}
 impl ReinterpretAsBytes for tr4::Color32BitBgra {}
-impl ReinterpretAsBytes for tr4::MeshQuad {}
-impl ReinterpretAsBytes for tr4::MeshTri {}
+impl ReinterpretAsBytes for tr4::EffectsQuad {}
+impl ReinterpretAsBytes for tr4::EffectsTri {}
 impl ReinterpretAsBytes for tr4::ObjectTexture {}
+impl ReinterpretAsBytes for tr5::RoomVertex {}
+impl ReinterpretAsBytes for tr5::ObjectTexture {}
+impl ReinterpretAsBytes for tr5::EffectsQuad {}
+impl ReinterpretAsBytes for tr5::EffectsTri {}

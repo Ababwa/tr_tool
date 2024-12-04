@@ -1,6 +1,9 @@
 use proc_macro2::TokenStream;
 use quote::quote;
-use syn::{parse::Parser, parse2, punctuated::Punctuated, Data, DataStruct, DeriveInput, Error, Field, Fields, FieldsNamed, Ident, Meta, MetaList, Path, Token};
+use syn::{
+	parse::Parser, parse2, punctuated::Punctuated, Data, DataStruct, DeriveInput, Error, Field, Fields,
+	FieldsNamed, Ident, Meta, MetaList, Path, Token,
+};
 
 trait AttrReceiver: Sized {
 	fn get(meta: Meta) -> Result<Self, Option<Error>>;
@@ -16,7 +19,7 @@ impl AttrReceiver for bool {
 	}
 }
 
-//#[attr(arg)]
+//#[attr(ident)]
 impl AttrReceiver for Option<Ident> {
 	fn get(meta: Meta) -> Result<Self, Option<Error>> {
 		match meta {
@@ -29,7 +32,21 @@ impl AttrReceiver for Option<Ident> {
 	}
 }
 
-//#[attr] or #[attr(arg1, arg2, ..)]
+//#[attr(ident1, ident2, ..)]
+impl AttrReceiver for Option<Vec<Ident>> {
+	fn get(meta: Meta) -> Result<Self, Option<Error>> {
+		match meta {
+			Meta::Path(_) => Ok(None),
+			Meta::List(MetaList { tokens, .. }) => match Punctuated::<Ident, Token![,]>::parse_terminated.parse2(tokens) {
+				Ok(iter) => Ok(Some(iter.into_iter().collect())),
+				Err(e) => Err(Some(e)),
+			},
+			_ => Err(None),
+		}
+	}
+}
+
+//#[attr] or #[attr(path1, path2, ..)]
 impl AttrReceiver for Option<Option<Vec<Path>>> {
 	fn get(meta: Meta) -> Result<Self, Option<Error>> {
 		match meta {
@@ -83,6 +100,8 @@ parse_attrs_fn!(
 		zlib: bool,
 		list: Option<Ident>,
 		delegate: Option<Option<Vec<Path>>>,
+		seek_start: Option<Ident>,
+		seek: Option<Vec<Ident>>,
 	}
 );
 
@@ -106,20 +125,20 @@ fn get_delegate_init(delegate_args: Option<Vec<Path>>, ptr: TokenStream, initial
 	Ok(quote! { #func(reader, #ptr #args)?; })
 }
 
-fn get_field_init(field: Field, initialized_fields: &[Ident]) -> Result<TokenStream, String> {
-	let FieldAttrs { boxed, zlib, delegate, list } = parse_field_attrs(field.attrs)?;
+fn get_field_init(field: Field, initialized_fields: &[Ident], seek_starts: &mut Vec<Ident>) -> Result<TokenStream, String> {
+	let FieldAttrs { boxed, zlib, delegate, list, seek_start, seek } = parse_field_attrs(field.attrs)?;
 	let field_ident = field.ident.unwrap();
-	let field_init = if let Some(len_arg) = list {
+	let mut field_init = if let Some(len_arg) = list {
 		if boxed {
 			return Err("`list` field cannot also be `boxed`".to_string());
 		}
 		let get_len = if matches!(len_arg.to_string().as_str(), "u8" | "u16" | "u32" | "u64") {
-			 quote! {
+			quote! {
 				let len = tr_readable::read_get::<_, #len_arg>(reader)? as usize;
 			}
 		} else if initialized_fields.contains(&len_arg) {
 			quote! {
-				let len = tr_readable::ToLen::get_len(&(*this).#len_arg);
+				let len = tr_readable::ToLen::get_len(&(*this).#len_arg)?;
 			}
 		} else {
 			return Err("`list` argument must either be a unsigned integer type or a preceding field".to_string());
@@ -138,34 +157,62 @@ fn get_field_init(field: Field, initialized_fields: &[Ident]) -> Result<TokenStr
 			},
 		};
 		quote! {
-			#get_len
-			let mut slice = shared::alloc::slice(len);
-			#slice_init
-			field_ptr.write(slice.assume_init());
+			{
+				#get_len
+				let mut slice = shared::alloc::slice(len);
+				#slice_init
+				(&raw mut (*this).#field_ident).write(slice.assume_init());
+			}
 		}
 	} else if let Some(delegate_args) = delegate {
-		get_delegate_init(delegate_args, quote! { field_ptr }, initialized_fields)?
-	} else {
-		if boxed {
-			quote! {
+		get_delegate_init(delegate_args, quote! { &raw mut (*this).#field_ident }, initialized_fields)?
+	} else if boxed {
+		quote! {
+			{
 				let mut boxed = shared::alloc::val();
 				tr_readable::read_into(reader, boxed.as_mut_ptr())?;
-				field_ptr.write(boxed.assume_init());
+				(&raw mut (*this).#field_ident).write(boxed.assume_init());
 			}
-		} else {
-			quote! { tr_readable::read_into(reader, field_ptr)?; }
 		}
-	};
-	let mut field_init = quote!{
-		let field_ptr = &raw mut (*this).#field_ident;
-		#field_init
+	} else {
+		quote! { tr_readable::read_into(reader, &raw mut (*this).#field_ident)?; }
 	};
 	if zlib {
 		field_init = quote! {
-			let reader = &mut tr_readable::zlib(reader)?;
-			#field_init
+			{
+				let reader = &mut tr_readable::zlib(reader)?;
+				#field_init
+			}
 		};
 	}
+	let mut seek_tokens = quote! {};
+	if let Some(seek_start) = seek_start {
+		seek_tokens = quote! {
+			#seek_tokens
+			let #seek_start = reader.stream_position()?;
+		};
+		seek_starts.push(seek_start);
+	}
+	if let Some(seek) = seek {
+		let [seek_start, seek_arg] = &seek[..] else {
+			return Err("`seek` must be given two arguments".to_string());
+		};
+		if !seek_starts.contains(seek_start) {
+			return Err("the first argument to `seek` must be previously declared with `seek_start`".to_string());
+		}
+		if !initialized_fields.contains(seek_arg) {
+			return Err("the second argument to `seek` must be a preceding field".to_string());
+		}
+		// println!("seeking: {} to {}", reader.stream_position()?, #seek_start + (*this).#seek_arg as u64);
+		seek_tokens = quote! {
+			#seek_tokens
+			reader.seek(std::io::SeekFrom::Start(#seek_start + (*this).#seek_arg as u64))?;
+		};
+	}
+	field_init = quote! {
+		#seek_tokens
+		#field_init
+	};
 	Ok(field_init)
 }
 
@@ -177,22 +224,23 @@ pub fn derive_readable_impl(input: DeriveInput) -> TokenStream {
 	};
 	let mut body = quote! {};
 	let mut initialized_fields = vec![];
+	let mut seeks_starts = vec![];
 	for field in fields {
 		let field_ident = field.ident.clone().unwrap();//safe to unwrap, named fields only
-		let field_init = match get_field_init(field, &initialized_fields) {
+		let field_init = match get_field_init(field, &initialized_fields, &mut seeks_starts) {
 			Ok(init) => init,
 			Err(e) => panic!("{}: {}", field_ident, e),
 		};
 		initialized_fields.push(field_ident);
 		body = quote! {
 			#body
-			{ #field_init }
+			#field_init
 		};
 	}
 	let (impl_generics, ty_generics, where_clause) = input.generics.split_for_impl();
 	quote! {
 		impl #impl_generics tr_readable::Readable for #type_name #ty_generics #where_clause {
-			unsafe fn read<R: std::io::Read>(reader: &mut R, this: *mut Self) -> std::io::Result<()> {
+			unsafe fn read<R: std::io::Read + std::io::Seek>(reader: &mut R, this: *mut Self) -> std::io::Result<()> {
 				#body
 				Ok(())
 			}

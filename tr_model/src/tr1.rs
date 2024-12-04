@@ -6,7 +6,7 @@ An "index" points to an entry in an array.
 16-bit color type names list channels in bit-order, high first.
 */
 
-use std::{mem::transmute, slice::from_raw_parts};
+use std::{io::Result, mem::transmute, slice::from_raw_parts};
 use bitfield::bitfield;
 use glam::{I16Vec2, I16Vec3, IVec3, U16Vec2, U16Vec3};
 use glam_traits::ext::U8Vec2;
@@ -45,8 +45,8 @@ macro_rules! decl_face_type {
 	};
 }
 
-decl_face_type!(RoomQuad, 4, object_texture_index);
-decl_face_type!(RoomTri, 3, object_texture_index);
+decl_face_type!(TexturedQuad, 4, object_texture_index);
+decl_face_type!(TexturedTri, 3, object_texture_index);
 
 #[repr(C)]
 #[derive(Clone, Debug)]
@@ -71,8 +71,8 @@ pub struct NumSectors {
 }
 
 impl ToLen for NumSectors {
-	fn get_len(&self) -> usize {
-		(self.z * self.x) as usize
+	fn get_len(&self) -> Result<usize> {
+		Ok((self.z * self.x) as usize)
 	}
 }
 
@@ -124,8 +124,8 @@ pub struct Room {
 	pub y_top: i32,
 	pub geom_data_size: u32,
 	#[list(u16)] pub vertices: Box<[RoomVertex]>,
-	#[list(u16)] pub quads: Box<[RoomQuad]>,
-	#[list(u16)] pub tris: Box<[RoomTri]>,
+	#[list(u16)] pub quads: Box<[TexturedQuad]>,
+	#[list(u16)] pub tris: Box<[TexturedTri]>,
 	#[list(u16)] pub sprites: Box<[Sprite]>,
 	#[list(u16)] pub portals: Box<[Portal]>,
 	pub num_sectors: NumSectors,
@@ -346,45 +346,14 @@ pub struct Level {
 
 //extraction
 
-// macro_rules! decl_room_geom {
-// 	($room_geom:ident, $room_vertex:ty, $room_quad:ty, $room_tri:ty, $sprite:ty) => {
-// 		#[derive(Clone, Debug)]
-// 		pub struct $room_geom<'a> {
-// 			pub vertices: &'a [$room_vertex],
-// 			pub quads: &'a [$room_quad],
-// 			pub tris: &'a [$room_tri],
-// 			pub sprites: &'a [$sprite],
-// 		}
-		
-// 		impl<'a> $room_geom<'a> {
-// 			pub(crate) fn get(geom_data: &'a [u16]) -> Self {
-// 				let mut cursor = crate::u16_cursor::U16Cursor::new(geom_data);
-// 				unsafe {
-// 					Self {
-// 						vertices: cursor.u16_len_slice(),
-// 						quads: cursor.u16_len_slice(),
-// 						tris: cursor.u16_len_slice(),
-// 						sprites: cursor.u16_len_slice(),
-// 					}
-// 				}
-// 			}
-// 		}
-// 	};
-// }
-// pub(crate) use decl_room_geom;
-
-// decl_room_geom!(RoomGeom, RoomVertex, RoomQuad, RoomTri, Sprite);
-
 #[derive(Clone, Debug)]
 pub enum MeshLighting<'a> {
 	Normals(&'a [I16Vec3]),
 	Lights(&'a [u16]),
 }
 
-decl_face_type!(MeshTexturedQuad, 4, object_texture_index);
-decl_face_type!(MeshTexturedTri, 3, object_texture_index);
-decl_face_type!(MeshSolidQuad, 4, color_index);
-decl_face_type!(MeshSolidTri, 3, color_index);
+decl_face_type!(SolidQuad, 4, color_index);
+decl_face_type!(SolidTri, 3, color_index);
 
 macro_rules! decl_mesh {
 	(
@@ -429,7 +398,7 @@ macro_rules! decl_mesh {
 }
 pub(crate) use decl_mesh;
 
-decl_mesh!(Mesh, MeshLighting, MeshTexturedQuad, MeshTexturedTri, MeshSolidQuad, MeshSolidTri);
+decl_mesh!(Mesh, MeshLighting, TexturedQuad, TexturedTri, SolidQuad, SolidTri);
 
 bitfield! {
 	#[repr(C)]
@@ -448,13 +417,13 @@ pub struct MeshNode {
 }
 
 impl MeshNode {
-	pub(crate) fn get<'a>(mesh_node_data: &'a [u32], model: &Model) -> &'a [Self] {
+	pub(crate) fn get<'a>(mesh_node_data: &'a [u32], mesh_node_offset: u32, num_meshes: u16) -> &'a [Self] {
 		let ptr = mesh_node_data
-			[model.mesh_node_offset as usize..]
-			[..(model.num_meshes as usize - 1) * (size_of::<Self>() / 4)]//bound check
+			[mesh_node_offset as usize..]
+			[..(num_meshes as usize - 1) * (size_of::<Self>() / 4)]//bound check
 			.as_ptr()
 			.cast::<Self>();
-		unsafe { from_raw_parts(ptr, model.num_meshes as usize - 1) }
+		unsafe { from_raw_parts(ptr, num_meshes as usize - 1) }
 	}
 }
 
@@ -491,7 +460,7 @@ impl Level {
 	}
 	
 	pub fn get_mesh_nodes(&self, model: &Model) -> &[MeshNode] {
-		MeshNode::get(&self.mesh_node_data, model)
+		MeshNode::get(&self.mesh_node_data, model.mesh_node_offset, model.num_meshes)
 	}
 	
 	pub fn get_frame(&self, model: &Model) -> &Frame {

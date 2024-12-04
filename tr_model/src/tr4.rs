@@ -1,13 +1,16 @@
-use std::{mem::transmute, slice::Iter};
+use std::{io::Result, mem::transmute, slice::Iter};
 use bitfield::bitfield;
 use glam::{I16Vec3, IVec3, U16Vec2, U16Vec3, UVec2, Vec3};
 use tr_readable::{Readable, ToLen};
 use crate::{
 	tr1::{
-		get_packed_angles, AnimDispatch, Camera, Color24Bit, MeshLighting, MeshNode, Model, NumSectors, Portal, RoomFlags, Sector, SoundSource, Sprite, SpriteSequence, SpriteTexture, StateChange, StaticMesh, ATLAS_PIXELS
+		get_packed_angles, AnimDispatch, Camera, Color24Bit, MeshLighting, MeshNode, Model, NumSectors,
+		Portal, RoomFlags, Sector, SoundSource, Sprite, SpriteSequence, SpriteTexture, StateChange,
+		StaticMesh, ATLAS_PIXELS,
 	},
 	tr2::{decl_frame, Axis, Color16BitArgb, FrameData, TrBox, SOUND_MAP_LEN},
-	tr3::{RoomQuad, RoomStaticMesh, RoomTri, RoomVertex, SoundDetails}, u16_cursor::U16Cursor,
+	tr3::{DsQuad, RoomStaticMesh, DsTri, RoomVertex, SoundDetails},
+	u16_cursor::U16Cursor,
 };
 
 //model
@@ -20,8 +23,8 @@ pub struct NumAtlases {
 }
 
 impl ToLen for NumAtlases {
-	fn get_len(&self) -> usize {
-		(self.num_room_atlases + self.num_obj_atlases + self.num_bump_atlases) as usize
+	fn get_len(&self) -> Result<usize> {
+		Ok((self.num_room_atlases + self.num_obj_atlases + self.num_bump_atlases) as usize)
 	}
 }
 
@@ -59,8 +62,8 @@ pub struct Room {
 	pub y_top: i32,
 	pub geom_data_size: u32,
 	#[list(u16)] pub vertices: Box<[RoomVertex]>,
-	#[list(u16)] pub quads: Box<[RoomQuad]>,
-	#[list(u16)] pub tris: Box<[RoomTri]>,
+	#[list(u16)] pub quads: Box<[DsQuad]>,
+	#[list(u16)] pub tris: Box<[DsTri]>,
 	#[list(u16)] pub sprites: Box<[Sprite]>,
 	#[list(u16)] pub portals: Box<[Portal]>,
 	pub num_sectors: NumSectors,
@@ -136,7 +139,7 @@ pub struct ObjectTexture {
 	pub flags: u16,
 	/// Units are 1/256 of a pixel.
 	pub uvs: [U16Vec2; 4],
-	pub unused: [u32; 2],
+	pub unused: [u16; 4],
 	pub size: UVec2,
 }
 
@@ -229,7 +232,7 @@ pub struct Level {
 bitfield! {
 	#[repr(C)]
 	#[derive(Clone, Debug)]
-	pub struct MeshFaceFlags(u16);
+	pub struct FaceEffects(u16);
 	pub additive, _: 0;
 }
 
@@ -240,13 +243,13 @@ macro_rules! decl_face_type {
 		pub struct $name {
 			pub vertex_indices: [u16; $num_indices],
 			pub object_texture_index: u16,
-			pub flags: MeshFaceFlags,
+			pub flags: FaceEffects,
 		}
 	};
 }
 
-decl_face_type!(MeshQuad, 4);
-decl_face_type!(MeshTri, 3);
+decl_face_type!(EffectsQuad, 4);
+decl_face_type!(EffectsTri, 3);
 
 pub struct Mesh<'a> {
 	pub center: I16Vec3,
@@ -255,12 +258,12 @@ pub struct Mesh<'a> {
 	/// If entity mesh, relative to `Entity.pos`.
 	pub vertices: &'a [I16Vec3],
 	pub lighting: MeshLighting<'a>,
-	pub quads: &'a [MeshQuad],
-	pub tris: &'a [MeshTri],
+	pub quads: &'a [EffectsQuad],
+	pub tris: &'a [EffectsTri],
 }
 
 impl<'a> Mesh<'a> {
-	fn get(mesh_data: &'a [u16], mesh_offset: u32) -> Self {
+	pub(crate) fn get(mesh_data: &'a [u16], mesh_offset: u32) -> Self {
 		let mut cursor = U16Cursor::new(&mesh_data[mesh_offset as usize / 2..]);
 		unsafe {
 			Self {
@@ -286,10 +289,10 @@ impl Level {
 	}
 	
 	pub fn get_mesh_nodes(&self, model: &Model) -> &[MeshNode] {
-		MeshNode::get(&self.level_data.mesh_node_data, model)
+		MeshNode::get(&self.level_data.mesh_node_data, model.mesh_node_offset, model.num_meshes)
 	}
 	
 	pub fn get_frame(&self, model: &Model) -> Frame {
-		Frame::get(&self.level_data.frame_data, model)
+		Frame::get(&self.level_data.frame_data, model.frame_byte_offset, model.num_meshes)
 	}
 }

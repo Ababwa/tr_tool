@@ -3,9 +3,9 @@ use glam::{I16Vec3, IVec3};
 use tr_readable::Readable;
 use crate::{
 	tr1::{
-		AnimDispatch, Animation, Camera, CinematicFrame, Color24Bit, MeshNode, Model,
-		NumSectors, ObjectTexture, Portal, RoomFlags, Sector, SoundSource, Sprite, SpriteSequence,
-		SpriteTexture, StateChange, StaticMesh, ATLAS_PIXELS, LIGHT_MAP_LEN, PALETTE_LEN,
+		AnimDispatch, Animation, Camera, CinematicFrame, Color24Bit, MeshNode, Model, NumSectors,
+		ObjectTexture, Portal, RoomFlags, Sector, SoundSource, Sprite, SpriteSequence, SpriteTexture,
+		StateChange, StaticMesh, ATLAS_PIXELS, LIGHT_MAP_LEN, PALETTE_LEN,
 	},
 	tr2::{Color16BitArgb, Color32BitRgb, Entity, Frame, Mesh, TrBox, SOUND_MAP_LEN},
 };
@@ -22,6 +22,38 @@ pub mod light_type {
 }
 
 //model
+
+#[repr(C)]
+#[derive(Clone, Debug)]
+pub struct RoomVertex {
+	/// Relative to room
+	pub pos: I16Vec3,
+	pub unused: u16,
+	pub attrs: u16,
+	pub color: Color16BitRgb,
+}
+
+bitfield! {
+	#[repr(C)]
+	#[derive(Clone, Debug)]
+	pub struct DsFaceTexture(u16);
+	pub double_sided, _: 15;
+	pub object_texture_index, _: 14, 0;
+}
+
+macro_rules! decl_face_type {
+	($name:ident, $num_indices:literal) => {
+		#[repr(C)]
+		#[derive(Clone, Debug)]
+		pub struct $name {
+			pub vertex_indices: [u16; $num_indices],
+			pub texture: DsFaceTexture,
+		}
+	};
+}
+
+decl_face_type!(DsQuad, 4);
+decl_face_type!(DsTri, 3);
 
 #[repr(C)]
 #[derive(Clone, Debug)]
@@ -66,8 +98,8 @@ pub struct Room {
 	pub y_top: i32,
 	pub geom_data_size: u32,
 	#[list(u16)] pub vertices: Box<[RoomVertex]>,
-	#[list(u16)] pub quads: Box<[RoomQuad]>,
-	#[list(u16)] pub tris: Box<[RoomTri]>,
+	#[list(u16)] pub quads: Box<[DsQuad]>,
+	#[list(u16)] pub tris: Box<[DsTri]>,
 	#[list(u16)] pub sprites: Box<[Sprite]>,
 	#[list(u16)] pub portals: Box<[Portal]>,
 	pub num_sectors: NumSectors,
@@ -137,48 +169,16 @@ pub struct Level {
 
 //extraction
 
-#[repr(C)]
-#[derive(Clone, Debug)]
-pub struct RoomVertex {
-	/// Relative to room
-	pub pos: I16Vec3,
-	pub unused: u16,
-	pub attrs: u16,
-	pub color: Color16BitRgb,
-}
-
-bitfield! {
-	#[repr(C)]
-	#[derive(Clone, Debug)]
-	pub struct RoomFaceTexture(u16);
-	pub double_sided, _: 15;
-	pub object_texture_index, _: 14, 0;
-}
-
-macro_rules! decl_face_type {
-	($name:ident, $num_indices:literal) => {
-		#[repr(C)]
-		#[derive(Clone, Debug)]
-		pub struct $name {
-			pub vertex_indices: [u16; $num_indices],
-			pub texture: RoomFaceTexture,
-		}
-	};
-}
-
-decl_face_type!(RoomQuad, 4);
-decl_face_type!(RoomTri, 3);
-
 impl Level {
 	pub fn get_mesh(&self, mesh_offset: u32) -> Mesh {
 		Mesh::get(&self.mesh_data, mesh_offset)
 	}
 	
 	pub fn get_mesh_nodes(&self, model: &Model) -> &[MeshNode] {
-		MeshNode::get(&self.mesh_node_data, model)
+		MeshNode::get(&self.mesh_node_data, model.mesh_node_offset, model.num_meshes)
 	}
 	
 	pub fn get_frame(&self, model: &Model) -> Frame {
-		Frame::get(&self.frame_data, model)
+		Frame::get(&self.frame_data, model.frame_byte_offset, model.num_meshes)
 	}
 }

@@ -62,7 +62,7 @@ impl GeomBuffer {
 		let mut geom_writer = self.mc.get_writer(GEOM_CURSOR);
 		geom_writer.align(16).unwrap();
 		let offset = geom_writer.pos() / 16;
-		geom_writer.write(&(size_of::<V>() as u16 / 2).to_le_bytes()).unwrap();
+		geom_writer.write(&(size_of::<V>() as u32 / 2).to_le_bytes()).unwrap();
 		geom_writer.write(vertices.as_bytes()).unwrap();
 		offset
 	}

@@ -4,10 +4,10 @@ use glam::{I16Vec3, IVec3, U16Vec3};
 use shared::min_max::MinMax;
 use tr_readable::Readable;
 use crate::tr1::{
-	decl_mesh, get_packed_angles, AnimDispatch, Animation, Camera, CinematicFrame,
-	Color24Bit, MeshLighting, MeshNode, MeshTexturedQuad, MeshTexturedTri, Model, NumSectors, ObjectTexture,
-	Portal, RoomFlags, RoomQuad, RoomTri, Sector, SoundDetails, SoundSource, Sprite, SpriteSequence,
-	SpriteTexture, StateChange, StaticMesh, ATLAS_PIXELS, LIGHT_MAP_LEN, PALETTE_LEN,
+	decl_mesh, get_packed_angles, AnimDispatch, Animation, Camera, CinematicFrame, Color24Bit, MeshLighting,
+	MeshNode, Model, NumSectors, ObjectTexture, Portal, RoomFlags, Sector, SoundDetails, SoundSource,
+	Sprite, SpriteSequence, SpriteTexture, StateChange, StaticMesh, TexturedQuad, TexturedTri, ATLAS_PIXELS,
+	LIGHT_MAP_LEN, PALETTE_LEN,
 };
 
 pub const SOUND_MAP_LEN: usize = 370;
@@ -76,8 +76,8 @@ pub struct Room {
 	pub y_top: i32,
 	pub geom_data_size: u32,
 	#[list(u16)] pub vertices: Box<[RoomVertex]>,
-	#[list(u16)] pub quads: Box<[RoomQuad]>,
-	#[list(u16)] pub tris: Box<[RoomTri]>,
+	#[list(u16)] pub quads: Box<[TexturedQuad]>,
+	#[list(u16)] pub tris: Box<[TexturedTri]>,
 	#[list(u16)] pub sprites: Box<[Sprite]>,
 	#[list(u16)] pub portals: Box<[Portal]>,
 	pub num_sectors: NumSectors,
@@ -171,10 +171,10 @@ macro_rules! decl_solid_face_type {
 	};
 }
 
-decl_solid_face_type!(MeshSolidQuad, 4);
-decl_solid_face_type!(MeshSolidTri, 3);
+decl_solid_face_type!(SolidQuad, 4);
+decl_solid_face_type!(SolidTri, 3);
 
-decl_mesh!(Mesh, MeshLighting, MeshTexturedQuad, MeshTexturedTri, MeshSolidQuad, MeshSolidTri);
+decl_mesh!(Mesh, MeshLighting, TexturedQuad, TexturedTri, SolidQuad, SolidTri);
 
 #[repr(C)]
 #[derive(Debug)]
@@ -241,11 +241,11 @@ macro_rules! decl_frame {
 		}
 
 		impl<'a> $frame<'a> {
-			pub(crate) fn get(frame_data: &'a [u16], model: &Model) -> Self {
-				let frame_data = &frame_data[model.frame_byte_offset as usize / 2..];
+			pub(crate) fn get(frame_data: &'a [u16], frame_byte_offset: u32, num_meshes: u16) -> Self {
+				let frame_data = &frame_data[frame_byte_offset as usize / 2..];
 				let ptr = frame_data[..9].as_ptr() as usize;
 				let frame_data = unsafe { transmute([ptr, frame_data.len() - 9]) };
-				Self { num_meshes: model.num_meshes as usize, frame_data }
+				Self { num_meshes: num_meshes as usize, frame_data }
 			}
 			
 			pub fn iter_rotations(&self) -> $rotation_iterator<'a> {
@@ -267,10 +267,10 @@ impl Level {
 	}
 	
 	pub fn get_mesh_nodes(&self, model: &Model) -> &[MeshNode] {
-		MeshNode::get(&self.mesh_node_data, model)
+		MeshNode::get(&self.mesh_node_data, model.mesh_node_offset, model.num_meshes)
 	}
 	
 	pub fn get_frame(&self, model: &Model) -> Frame {
-		Frame::get(&self.frame_data, model)
+		Frame::get(&self.frame_data, model.frame_byte_offset, model.num_meshes)
 	}
 }

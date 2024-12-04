@@ -3,7 +3,9 @@ use glam::IVec3;
 use shared::alloc;
 use tr_model::{tr1, tr3};
 use crate::{
-	as_bytes::{ReinterpretAsBytes, ToBytes}, fixed_vec::FixedVec, geom_buffer::GeomBuffer, tr_traits::{Level, MeshTexturedFace, ObjectTexture, RoomFace, RoomVertex}, MeshFaceType, ObjectData, WrittenFaceArray, WrittenMesh
+	as_bytes::{ReinterpretAsBytes, ToBytes}, fixed_vec::FixedVec, geom_buffer::GeomBuffer,
+	tr_traits::{Level, MeshTexturedFace, ObjectTexture, RoomFace, RoomVertex}, MeshFaceType, ObjectData,
+	WrittenFaceArray, WrittenMesh,
 };
 
 const MAX_FACES: usize = 65536;
