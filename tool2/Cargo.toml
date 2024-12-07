@@ -10,7 +10,6 @@ egui-wgpu = "0.26.2"
 egui-winit = "0.26.2"
 env_logger = "0.11.1"
 glam = { workspace = true }
-glam-traits = { workspace = true }
 image = { version = "0.24.9", default-features = false, features = ["png"] }
 pollster = "0.3.0"
 shared = { workspace = true }

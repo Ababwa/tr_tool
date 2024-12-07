@@ -159,7 +159,7 @@ fn get_field_init(field: Field, initialized_fields: &[Ident], seek_starts: &mut 
 		quote! {
 			{
 				#get_len
-				let mut slice = shared::alloc::slice(len);
+				let mut slice = Box::new_uninit_slice(len);
 				#slice_init
 				(&raw mut (*this).#field_ident).write(slice.assume_init());
 			}
@@ -169,7 +169,7 @@ fn get_field_init(field: Field, initialized_fields: &[Ident], seek_starts: &mut 
 	} else if boxed {
 		quote! {
 			{
-				let mut boxed = shared::alloc::val();
+				let mut boxed = Box::new_uninit();
 				tr_readable::read_into(reader, boxed.as_mut_ptr())?;
 				(&raw mut (*this).#field_ident).write(boxed.assume_init());
 			}

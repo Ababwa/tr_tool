@@ -2,7 +2,6 @@ use std::{
 	io::{Cursor, Read, Result, Seek, SeekFrom}, mem::{size_of, MaybeUninit}, slice::from_raw_parts_mut,
 };
 use compress::zlib::Decoder;
-use shared::alloc;
 
 pub use tr_derive::Readable;
 
@@ -52,7 +51,7 @@ pub unsafe fn read_get<R: Read, T>(reader: &mut R) -> Result<T> {
 }
 
 pub unsafe fn read_slice_get<R: Read, T>(reader: &mut R, len: usize) -> Result<Box<[T]>> {
-	let mut slice = alloc::slice(len);
+	let mut slice = Box::new_uninit_slice(len);
 	read_into_slice(reader, slice.as_mut_ptr(), len)?;
 	Ok(slice.assume_init())
 }
@@ -62,7 +61,7 @@ pub fn zlib<R: Read + Seek>(reader: &mut R) -> Result<Cursor<Box<[u8]>>> {
 		let uncompressed_size = read_get::<_, u32>(reader)?;
 		let compressed_size = read_get::<_, u32>(reader)?;
 		let start = reader.stream_position()?;
-		let mut slice = alloc::slice(uncompressed_size as usize);
+		let mut slice = Box::new_uninit_slice(uncompressed_size as usize);
 		let mut zlib_reader = Decoder::new(reader.take(compressed_size as u64));
 		read_into_slice(&mut zlib_reader, slice.as_mut_ptr(), slice.len())?;
 		reader.seek(SeekFrom::Start(start + compressed_size as u64))?;

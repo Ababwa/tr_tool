@@ -1,13 +1,9 @@
-use std::{mem::{size_of, MaybeUninit}, ptr::slice_from_raw_parts_mut, slice::from_raw_parts};
+use std::{mem::{size_of, MaybeUninit}, slice::from_raw_parts};
 use glam::{I16Vec3, IVec3, IVec4, Mat4, U16Vec2};
 use tr_model::{tr1, tr2, tr3, tr4, tr5};
 
 pub trait AsBytes {
 	fn as_bytes(&self) -> &[u8];
-}
-
-pub trait ToBytes {
-	fn to_bytes(self) -> Box<[u8]>;
 }
 
 pub trait ReinterpretAsBytes {}
@@ -24,23 +20,6 @@ impl<T: ReinterpretAsBytes> AsBytes for [T] {
 	fn as_bytes(&self) -> &[u8] {
 		unsafe {
 			from_raw_parts(self.as_ptr().cast(), self.len() * size_of::<T>())
-		}
-	}
-}
-
-impl<T: ReinterpretAsBytes> ToBytes for Box<T> {
-	fn to_bytes(self) -> Box<[u8]> {
-		unsafe {
-			Box::from_raw(slice_from_raw_parts_mut(Box::into_raw(self).cast(), size_of::<T>()))
-		}
-	}
-}
-
-impl<T: ReinterpretAsBytes> ToBytes for Box<[T]> {
-	fn to_bytes(self) -> Box<[u8]> {
-		let len = self.len() * size_of::<T>();
-		unsafe {
-			Box::from_raw(slice_from_raw_parts_mut(Box::into_raw(self).cast(), len))
 		}
 	}
 }

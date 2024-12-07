@@ -48,18 +48,12 @@ pub fn bind_group_layout(device: &Device, entries: &[(u32, BindingType, ShaderSt
 	})
 }
 
-pub fn bind_group(
-	device: &Device, layout: &BindGroupLayout, entries: &[(u32, BindingResource)],
-) -> BindGroup {
-	device.create_bind_group(&BindGroupDescriptor {
-		label: None,
-		layout,
-		entries: &entries
-			.iter()
-			.cloned()
-			.map(|(binding, resource)| BindGroupEntry { binding, resource })
-			.collect::<Vec<_>>(),
-	})
+pub fn entry(binding: u32, resource: BindingResource) -> BindGroupEntry {
+	BindGroupEntry { binding, resource }
+}
+
+pub fn bind_group(device: &Device, layout: &BindGroupLayout, entries: &[BindGroupEntry]) -> BindGroup {
+	device.create_bind_group(&BindGroupDescriptor { label: None, layout, entries })
 }
 
 pub fn texture_desc(

@@ -5,5 +5,4 @@ edition = "2021"
 
 [dependencies]
 compress = { version = "0.2.1", default-features = false, features = ["zlib"] }
-shared = { path = "../shared" }
 tr_derive = { path = "../tr_derive" }

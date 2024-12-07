@@ -1,4 +1,4 @@
-use std::f32::consts::TAU;
+use std::{f32::consts::TAU, fmt::Debug};
 use glam::{I16Vec3, IVec3, Mat4, U16Vec3, Vec3};
 use tr_model::{tr1, tr2, tr3, tr4, tr5, Readable};
 use crate::{as_bytes::ReinterpretAsBytes, PolyType};
@@ -26,7 +26,7 @@ pub trait RoomVertex: ReinterpretAsBytes {
 	fn pos(&self) -> Vec3;
 }
 
-pub trait Face: ReinterpretAsBytes {
+pub trait Face: ReinterpretAsBytes + Debug {
 	const POLY_TYPE: PolyType;
 }
 
@@ -61,7 +61,7 @@ pub trait Room {
 	fn pos(&self) -> IVec3;
 	fn vertices(&self) -> &[Self::RoomVertex];
 	fn geom(&self) -> impl IntoIterator<Item = RoomGeom<Self::RoomVertex, Self::RoomQuad, Self::RoomTri>>;
-	fn sprites(&self) -> Option<&[tr1::Sprite]>;
+	fn sprites(&self) -> &[tr1::Sprite];
 	fn room_static_meshes(&self) -> &[Self::RoomStaticMesh];
 	fn flip_room_index(&self) -> u16;
 	fn flip_group(&self) -> u8;
@@ -75,6 +75,7 @@ pub trait Entity {
 }
 
 pub trait ObjectTexture: ReinterpretAsBytes {
+	const UVS_OFFSET: u32;
 	fn blend_mode(&self) -> u16;
 }
 
@@ -180,7 +181,7 @@ impl Room for tr1::Room {
 	fn geom(&self) -> impl IntoIterator<Item = RoomGeom<Self::RoomVertex, Self::RoomQuad, Self::RoomTri>> {
 		[RoomGeom { vertices: &self.vertices, quads: &self.quads, tris: &self.tris }]
 	}
-	fn sprites(&self) -> Option<&[tr1::Sprite]> { Some(&self.sprites) }
+	fn sprites(&self) -> &[tr1::Sprite] { &self.sprites }
 	fn room_static_meshes(&self) -> &[Self::RoomStaticMesh] { &self.room_static_meshes }
 	fn flip_room_index(&self) -> u16 { self.flip_room_index }
 	fn flip_group(&self) -> u8 { 0 }
@@ -194,6 +195,7 @@ impl Entity for tr1::Entity {
 }
 
 impl ObjectTexture for tr1::ObjectTexture {
+	const UVS_OFFSET: u32 = 2;
 	fn blend_mode(&self) -> u16 { self.blend_mode }
 }
 
@@ -285,7 +287,7 @@ impl Room for tr2::Room {
 	fn geom(&self) -> impl IntoIterator<Item = RoomGeom<Self::RoomVertex, Self::RoomQuad, Self::RoomTri>> {
 		[RoomGeom { vertices: &self.vertices, quads: &self.quads, tris: &self.tris }]
 	}
-	fn sprites(&self) -> Option<&[tr1::Sprite]> { Some(&self.sprites) }
+	fn sprites(&self) -> &[tr1::Sprite] { &self.sprites }
 	fn room_static_meshes(&self) -> &[Self::RoomStaticMesh] { &self.room_static_meshes }
 	fn flip_room_index(&self) -> u16 { self.flip_room_index }
 	fn flip_group(&self) -> u8 { 0 }
@@ -411,7 +413,7 @@ impl Room for tr3::Room {
 	fn geom(&self) -> impl IntoIterator<Item = RoomGeom<Self::RoomVertex, Self::RoomQuad, Self::RoomTri>> {
 		[RoomGeom { vertices: &self.vertices, quads: &self.quads, tris: &self.tris }]
 	}
-	fn sprites(&self) -> Option<&[tr1::Sprite]> { Some(&self.sprites) }
+	fn sprites(&self) -> &[tr1::Sprite] { &self.sprites }
 	fn room_static_meshes(&self) -> &[Self::RoomStaticMesh] { &self.room_static_meshes }
 	fn flip_room_index(&self) -> u16 { self.flip_room_index }
 	fn flip_group(&self) -> u8 { 0 }
@@ -457,7 +459,7 @@ impl Room for tr4::Room {
 	fn geom(&self) -> impl IntoIterator<Item = RoomGeom<Self::RoomVertex, Self::RoomQuad, Self::RoomTri>> {
 		[RoomGeom { vertices: &self.vertices, quads: &self.quads, tris: &self.tris }]
 	}
-	fn sprites(&self) -> Option<&[tr1::Sprite]> { Some(&self.sprites) }
+	fn sprites(&self) -> &[tr1::Sprite] { &self.sprites }
 	fn room_static_meshes(&self) -> &[Self::RoomStaticMesh] { &self.room_static_meshes }
 	fn flip_room_index(&self) -> u16 { self.flip_room_index }
 	fn flip_group(&self) -> u8 { self.flip_group }
@@ -471,6 +473,7 @@ impl Entity for tr4::Entity {
 }
 
 impl ObjectTexture for tr4::ObjectTexture {
+	const UVS_OFFSET: u32 = 3;
 	fn blend_mode(&self) -> u16 { self.blend_mode }
 }
 
@@ -608,13 +611,14 @@ impl Room for tr5::Room {
 			}
 		})
 	}
-	fn sprites(&self) -> Option<&[tr1::Sprite]> { None }
+	fn sprites(&self) -> &[tr1::Sprite] { &[] }
 	fn room_static_meshes(&self) -> &[Self::RoomStaticMesh] { &self.room_static_meshes }
 	fn flip_room_index(&self) -> u16 { self.flip_room_index }
 	fn flip_group(&self) -> u8 { self.flip_group }
 }
 
 impl ObjectTexture for tr5::ObjectTexture {
+	const UVS_OFFSET: u32 = 3;
 	fn blend_mode(&self) -> u16 { self.blend_mode }
 }
 

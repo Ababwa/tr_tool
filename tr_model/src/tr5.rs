@@ -1,7 +1,7 @@
 use std::io::{Error, Read, Result};
 use bitfield::bitfield;
 use glam::{IVec3, U16Vec2, UVec2, Vec3};
-use shared::{alloc, min_max::MinMax};
+use shared::min_max::MinMax;
 use tr_readable::{read_slice_get, Readable, ToLen};
 use crate::{
 	tr1::{
@@ -114,7 +114,7 @@ pub struct LayerFaces {
 unsafe fn read_faces<R: Read>(
 	reader: &mut R, layer_faces_ptr: *mut Box<[LayerFaces]>, layers: &[Layer],
 ) -> Result<()> {
-	let mut layer_faces = alloc::slice(layers.len());
+	let mut layer_faces = Box::new_uninit_slice(layers.len());
 	for (index, layer) in layers.iter().enumerate() {
 		let quads = read_slice_get(reader, layer.num_quads as usize)?;
 		let tris = read_slice_get(reader, layer.num_tris as usize)?;

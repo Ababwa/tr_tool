@@ -1,94 +1,139 @@
-use std::mem::size_of;
+use std::{iter, mem::size_of};
 use glam::Mat4;
 use tr_model::tr1;
-use crate::{as_bytes::{AsBytes, ReinterpretAsBytes}, multi_cursor::MultiCursorBuffer, tr_traits::Face, PolyType};
+use crate::{as_bytes::{AsBytes, ReinterpretAsBytes}, tr_traits::Face, PolyType};
 
 //2 MB
 pub const GEOM_BUFFER_SIZE: usize = 2097152;
 
-//0..1048576, len: 1048576 (1/2 buffer)
-const GEOM_CURSOR: usize = 0;
-const GEOM_OFFSET: usize = 0;
-
-//1048576..1572864, len: 524288 (1/4 buffer)
-const OBJECT_TEXTURES_CURSOR: usize = 1;
-const OBJECT_TEXTURES_OFFSET: usize = 1048576;
-
-//1572864..1835008, len: 262144 (1/8 buffer)
-const TRANSFORMS_CURSOR: usize = 2;
-const TRANSFORMS_OFFSET: usize = 1572864;
-
-//1835008..2097152, len: 262144 (1/8 buffer)
-const SPRITE_TEXTURES_CURSOR: usize = 3;
-const SPRITE_TEXTURES_OFFSET: usize = 1835008;
-
-pub struct GeomBuffer {
-	mc: MultiCursorBuffer,
-}
-
-fn texture_offset(poly_type: PolyType) -> u8 {
+fn texture_offset(poly_type: PolyType) -> u16 {
 	match poly_type {
 		PolyType::Quad => 4,
 		PolyType::Tri => 3,
 	}
 }
 
+pub struct Output {
+	pub buffer: Box<[u8; GEOM_BUFFER_SIZE]>,
+	/// Offset of transforms in 16-byte units.
+	pub transforms_offset: u32,
+	/// Offset of face array offsets in 4-byte units.
+	pub face_array_offsets_offset: u32,
+	/// Offset of object textures in 2-byte units.
+	pub object_textures_offset: u32,
+	/// Offset of sprite textures in 2-byte units.
+	pub sprite_textures_offset: u32,
+}
+
+pub struct GeomBuffer {
+	geom: Vec<u8>,
+	face_array_offsets: Vec<u32>,
+	transforms: Vec<Mat4>,
+}
+
 impl GeomBuffer {
 	pub fn new() -> Self {
 		Self {
-			mc: MultiCursorBuffer::new(
-				GEOM_BUFFER_SIZE,
-				&[
-					GEOM_OFFSET,
-					OBJECT_TEXTURES_OFFSET,
-					TRANSFORMS_OFFSET,
-					SPRITE_TEXTURES_OFFSET,
-				],
-			),
+			geom: vec![],
+			face_array_offsets: vec![],
+			transforms: vec![],
 		}
 	}
 	
-	pub fn write_object_textures<O: ReinterpretAsBytes>(&mut self, object_textures: &[O]) {
-		let mut object_textures_writer = self.mc.get_writer(OBJECT_TEXTURES_CURSOR);
-		object_textures_writer.write(&(size_of::<O>() as u16 / 2).to_le_bytes()).unwrap();
-		object_textures_writer.write(object_textures.as_bytes()).unwrap();
+	/**
+	Writes the following record to the geometry buffer 4-aligned:  
+	`SSSS[V..]`  
+	`S`: Vertex size in 2-byte units.  
+	`V`: Verices. Always a multiple of 2 bytes.  
+	Returns offset in 4-byte units.
+	*/
+	pub fn write_vertex_array<V: ReinterpretAsBytes>(&mut self, vertices: &[V]) -> u32 {
+		let offset = self.geom.len();//always multiple of 2
+		let padding = offset % 4;//pad to 4-align
+		self.geom.reserve(padding + 4 + size_of_val(vertices));
+		self.geom.extend(iter::repeat_n(0, padding));
+		self.geom.extend_from_slice((size_of::<V>() as u32 / 2).as_bytes());
+		self.geom.extend_from_slice(vertices.as_bytes());
+		(offset + padding) as u32 / 4
 	}
 	
-	pub fn write_sprite_textures(&mut self, sprite_textures: &[tr1::SpriteTexture]) {
-		self.mc.get_writer(SPRITE_TEXTURES_CURSOR).write(sprite_textures.as_bytes()).unwrap();
-	}
-	
-	pub fn write_vertex_array<V: ReinterpretAsBytes>(&mut self, vertices: &[V]) -> usize {
-		let mut geom_writer = self.mc.get_writer(GEOM_CURSOR);
-		geom_writer.align(16).unwrap();
-		let offset = geom_writer.pos() / 16;
-		geom_writer.write(&(size_of::<V>() as u32 / 2).to_le_bytes()).unwrap();
-		geom_writer.write(vertices.as_bytes()).unwrap();
-		offset
-	}
-	
-	pub fn write_face_array<F: Face>(&mut self, faces: &[F], vertex_array_offset: usize) -> usize {
-		let mut geom_writer = self.mc.get_writer(GEOM_CURSOR);
-		geom_writer.align(16).unwrap();
-		let offset = geom_writer.pos() / 16;
-		geom_writer.write(&u16::try_from(vertex_array_offset).unwrap().to_le_bytes()).unwrap();
-		geom_writer.write(&[size_of::<F>() as u8 / 2, texture_offset(F::POLY_TYPE)]).unwrap();
-		geom_writer.write(faces.as_bytes()).unwrap();
-		offset
-	}
-	
-	pub fn write_transform(&mut self, transform: &Mat4) -> usize {
-		let mut transforms_writer = self.mc.get_writer(TRANSFORMS_CURSOR);
-		let index = transforms_writer.size() / size_of::<Mat4>();
-		transforms_writer.write(transform.as_bytes()).unwrap();
+	/**
+	Writes the following record to the geometry buffer 4-aligned:  
+	`VVVVSSTT[F..]`  
+	`V`: Vertex array offset in 4-byte units.  
+	`S`: Face size in 2-byte units.  
+	`T`: Texture offset in 2-byte units.  
+	`F`: Faces. Always a multiple of 2 bytes.  
+	Returns index of face array.
+	*/
+	pub fn write_face_array<F: Face>(&mut self, faces: &[F], vertex_array_offset: u32) -> u16 {
+		let index = self.face_array_offsets.len().try_into().unwrap();
+		let offset = self.geom.len();//always multiple of 2
+		let padding = offset % 4;//pad to 4-align
+		self.geom.reserve(padding + 8 + size_of_val(faces));
+		self.geom.extend(iter::repeat_n(0, padding));
+		self.geom.extend_from_slice(vertex_array_offset.as_bytes());
+		self.geom.extend_from_slice((size_of::<F>() as u16 / 2).as_bytes());
+		self.geom.extend_from_slice(texture_offset(F::POLY_TYPE).as_bytes());
+		self.geom.extend_from_slice(faces.as_bytes());
+		self.face_array_offsets.push((offset + padding) as u32 / 4);
 		index
 	}
 	
-	pub fn into_buffer(self) -> Box<[u8]> {
-		println!("GEOM bytes: {}", self.mc.get_size(GEOM_CURSOR));
-		println!("OBJECT_TEXTURES bytes: {}", self.mc.get_size(OBJECT_TEXTURES_CURSOR));
-		println!("TRANSFORM bytes: {}", self.mc.get_size(TRANSFORMS_CURSOR));
-		println!("SPRITE_TEXTURES bytes: {}", self.mc.get_size(SPRITE_TEXTURES_CURSOR));
-		self.mc.into_buffer()
+	pub fn write_transform(&mut self, transform: &Mat4) -> u16 {
+		let index = self.transforms.len().try_into().unwrap();
+		self.transforms.push(*transform);
+		index
+	}
+	
+	/**
+	Creates the following record:  
+	`[G..][P..][T..][F..][O..][S..]`  
+	`G`: Geometry data. Always a multiple of 2 bytes.  
+	`P`: Padding to align-16.  
+	`T`: Transform matrices. Always a multiple of 64 bytes.  
+	`F`: Face array offsets. Always a multiple of 4 bytes.  
+	`O`: Object textures. Always a multiple of 2 bytes.  
+	`S`: Sprite textures. Always a multiple of 2 bytes.
+	*/
+	pub fn into_buffer<O: ReinterpretAsBytes>(
+		self, object_textures: &[O], sprite_textures: &[tr1::SpriteTexture],
+	) -> Output {
+		let geom_bytes = self.geom.len();
+		let transforms_bytes = size_of_val(&*self.transforms);
+		let face_array_offsets_bytes = size_of_val(&*self.face_array_offsets);
+		let object_textures_bytes = size_of_val(object_textures);
+		let sprite_textures_bytes = size_of_val(sprite_textures);
+		
+		println!("geom_bytes: {}", geom_bytes);
+		println!("transforms_bytes: {}", transforms_bytes);
+		println!("face_array_offsets_bytes: {}", face_array_offsets_bytes);
+		println!("object_textures_bytes: {}", object_textures_bytes);
+		println!("sprite_textures_bytes: {}", sprite_textures_bytes);
+		
+		let padding = (16 - (geom_bytes % 16)) % 16;
+		let transforms_offset = geom_bytes + padding;
+		let face_array_offsets_offset = transforms_offset + transforms_bytes;
+		let object_textures_offset = face_array_offsets_offset + face_array_offsets_bytes;
+		let sprite_textures_offset = object_textures_offset + object_textures_bytes;
+		let size = sprite_textures_offset + sprite_textures_bytes;
+		
+		println!("total: {}", size);
+		assert!(size < GEOM_BUFFER_SIZE);
+		
+		let mut buffer = unsafe { Box::<[u8; GEOM_BUFFER_SIZE]>::new_uninit().assume_init() };
+		buffer[..geom_bytes].copy_from_slice(&self.geom);
+		buffer[transforms_offset..][..transforms_bytes].copy_from_slice(self.transforms.as_bytes());
+		buffer[face_array_offsets_offset..][..face_array_offsets_bytes].copy_from_slice(self.face_array_offsets.as_bytes());
+		buffer[object_textures_offset..][..object_textures_bytes].copy_from_slice(object_textures.as_bytes());
+		buffer[sprite_textures_offset..][..sprite_textures_bytes].copy_from_slice(sprite_textures.as_bytes());
+		
+		Output {
+			buffer,
+			transforms_offset: transforms_offset as u32 / 16,
+			face_array_offsets_offset: face_array_offsets_offset as u32 / 4,
+			object_textures_offset: object_textures_offset as u32 / 2,
+			sprite_textures_offset: sprite_textures_offset as u32 / 2,
+		}
 	}
 }
