@@ -8,9 +8,7 @@ mod geom_buffer;
 mod data_writer;
 
 use std::{
-	collections::HashMap, f32::consts::{FRAC_PI_2, FRAC_PI_4, PI, TAU}, fs::{read_to_string, File},
-	io::{BufReader, Error, Read, Result, Seek}, mem::{size_of, take, MaybeUninit}, ops::Range,
-	path::PathBuf, sync::Arc, thread::{spawn, JoinHandle}, time::Duration,
+	collections::HashMap, env::args, f32::consts::{FRAC_PI_2, FRAC_PI_4, PI, TAU}, fs::{read_to_string, File}, io::{BufReader, Error, Read, Result, Seek}, mem::{size_of, take, MaybeUninit}, ops::Range, path::PathBuf, sync::Arc, thread::{spawn, JoinHandle}, time::Duration
 };
 use data_writer::{DataWriter, MeshFaceOffsets, Output, RoomFaceOffsets};
 use geom_buffer::{GeomBuffer, GEOM_BUFFER_SIZE};
@@ -235,7 +233,8 @@ struct ActionMap {
 	right: KeyGroup,
 	up: KeyGroup,
 	down: KeyGroup,
-	boost: KeyGroup,
+	fast: KeyGroup,
+	slow: KeyGroup,
 }
 
 enum TextureType {
@@ -467,7 +466,8 @@ impl LoadedLevel {
 			.reduce(|a, b| a + b);
 		if let Some(movement) = movement {
 			self.pos += 5000.0
-				* (self.key_states.any(self.action_map.boost) as u8 * 4 + 1) as f32
+				* if self.key_states.any(self.action_map.fast) { 5.0 } else { 1.0 }
+				* if self.key_states.any(self.action_map.slow) { 0.2 } else { 1.0 }
 				* delta_time.as_secs_f32()
 				* Mat4::from_rotation_y(self.yaw).transform_point3(movement);
 		}
@@ -830,7 +830,8 @@ fn parse_level<L: Level>(
 		right: KeyGroup::new(&[KeyCode::KeyD, KeyCode::ArrowRight]),
 		up: KeyGroup::new(&[KeyCode::KeyQ, KeyCode::PageUp]),
 		down: KeyGroup::new(&[KeyCode::KeyE, KeyCode::PageDown]),
-		boost: KeyGroup::new(&[KeyCode::ShiftLeft, KeyCode::ShiftRight]),
+		fast: KeyGroup::new(&[KeyCode::ShiftLeft, KeyCode::ShiftRight]),
+		slow: KeyGroup::new(&[KeyCode::ControlLeft, KeyCode::ControlRight]),
 	};
 	let interact_texture = make_interact_texture(device, window_size);
 	let interact_view = interact_texture.create_view(&TextureViewDescriptor::default());
@@ -873,7 +874,8 @@ fn parse_level<L: Level>(
 }
 
 fn load_level(
-	device: &Device, queue: &Queue, bgls: &BindGroupLayouts, window_size: PhysicalSize<u32>, path: &PathBuf,
+	window: &Window, device: &Device, queue: &Queue, window_size: PhysicalSize<u32>,
+	bgls: &BindGroupLayouts, path: &PathBuf,
 ) -> Result<LoadedLevel> {
 	let mut reader = BufReader::new(File::open(path)?);
 	let mut version = [0; 4];
@@ -884,14 +886,18 @@ fn load_level(
 		.extension()
 		.and_then(|e| e.to_str())
 		.ok_or(Error::other("Failed to get file extension"))?;
-	match (version, extension.to_ascii_lowercase().as_str()) {
+	let loaded_level = match (version, extension.to_ascii_lowercase().as_str()) {
 		(0x00000020, "phd") => parse_level::<tr1::Level>(device, queue, bgls, window_size, &mut reader),
 		(0x0000002D, "tr2") => parse_level::<tr2::Level>(device, queue, bgls, window_size, &mut reader),
 		(0xFF180038, "tr2") => parse_level::<tr3::Level>(device, queue, bgls, window_size, &mut reader),
 		(0x00345254, "tr4") => parse_level::<tr4::Level>(device, queue, bgls, window_size, &mut reader),
 		(0x00345254, "trc") => parse_level::<tr5::Level>(device, queue, bgls, window_size, &mut reader),
 		_ => return Err(Error::other(format!("Unknown file type\nVersion: 0x{:X}", version))),
+	}?;
+	if let Some(file_name) = path.file_name().map(|f| f.to_string_lossy()) {
+		window.set_title(&format!("{} - {}", WINDOW_TITLE, file_name));
 	}
+	Ok(loaded_level)
 }
 
 fn draw_window<R, F>(ctx: &egui::Context, title: &str, open: &mut bool, contents: F) -> Option<R>
@@ -1204,13 +1210,8 @@ impl Gui for TrTool {
 	fn gui(&mut self, window: &Window, device: &Device, queue: &Queue, ctx: &egui::Context) {
 		self.file_dialog.update(ctx);
 		if let Some(path) = self.file_dialog.take_selected() {
-			match load_level(device, queue, &self.bind_group_layouts, self.window_size, &path) {
-				Ok(loaded_level) => {
-					self.loaded_level = Some(loaded_level);
-					if let Some(file_name) = path.file_name().map(|f| f.to_string_lossy()) {
-						window.set_title(&format!("{} - {}", WINDOW_TITLE, file_name));
-					}
-				},
+			match load_level(window, device, queue, self.window_size, &self.bind_group_layouts, &path) {
+				Ok(loaded_level) => self.loaded_level = Some(loaded_level),
 				Err(e) => self.error = Some(e.to_string()),
 			}
 			if let Err(e) = std::fs::write("dir", path.as_os_str().as_encoded_bytes()) {
@@ -1323,7 +1324,7 @@ const ADDITIVE_BLEND: BlendState = BlendState {
 	},
 };
 
-fn make_gui(device: &Device, window_size: PhysicalSize<u32>) -> TrTool {
+fn make_gui(window: &Window, device: &Device, queue: &Queue, window_size: PhysicalSize<u32>) -> TrTool {
 	let shader = make::shader(device, include_str!("shader/mesh.wgsl"));
 	let data = (0, make::storage_layout_entry(GEOM_BUFFER_SIZE), ShaderStages::VERTEX);
 	let data_offsets = (1, make::uniform_layout_entry(size_of::<DataOffsets>()), ShaderStages::VERTEX);
@@ -1362,12 +1363,20 @@ fn make_gui(device: &Device, window_size: PhysicalSize<u32>) -> TrTool {
 			device, bgl, &shader, "sprite_vs_main", fs_entry, VertexFormat::Sint32x4, None,
 		),
 	});
+	let bind_group_layouts = BindGroupLayouts { solid, texture_palette, texture_direct };
 	let mut file_dialog = FileDialog::new();
 	if let Ok(dir) = read_to_string("dir") {
 		file_dialog.config_mut().initial_directory = PathBuf::from(dir);
 	}
+	let mut loaded_level = None;
+	if let Some(arg) = args().skip(1).next() {
+		match load_level(window, device, queue, window_size, &bind_group_layouts, &arg.into()) {
+			Ok(level) => loaded_level = Some(level),
+			Err(e) => eprintln!("{}", e),
+		}
+	}
 	TrTool {
-		bind_group_layouts: BindGroupLayouts { solid, texture_palette, texture_direct },
+		bind_group_layouts,
 		solid_24bit_pl,
 		solid_32bit_pl,
 		texture_palette_pls,
@@ -1378,7 +1387,7 @@ fn make_gui(device: &Device, window_size: PhysicalSize<u32>) -> TrTool {
 		file_dialog,
 		error: None,
 		print: false,
-		loaded_level: None,
+		loaded_level,
 	}
 }
 

@@ -62,7 +62,7 @@ pub trait Gui {
 	);
 }
 
-pub fn run<T: Into<String>, G: Gui, F: FnOnce(&Device, PhysicalSize<u32>) -> G>(
+pub fn run<T: Into<String>, G: Gui, F: FnOnce(&Window, &Device, &Queue, PhysicalSize<u32>) -> G>(
 	title: T, window_icon: Icon, taskbar_icon: Icon, make_gui: F,
 ) {
 	env_logger::init();
@@ -119,7 +119,7 @@ pub fn run<T: Into<String>, G: Gui, F: FnOnce(&Device, PhysicalSize<u32>) -> G>(
 		egui_ctx.clone(), egui_ctx.viewport_id(), &window, None, None,
 	);
 	let mut egui_renderer = egui_wgpu::Renderer::new(&device, TEXTURE_FORMAT, None, 1);
-	let mut gui = make_gui(&device, window_size);
+	let mut gui = make_gui(&window, &device, &queue, window_size);
 	tx.send(()).expect("signal painter");
 	painter.join().expect("join painter");
 	let mut last_frame = Instant::now();
