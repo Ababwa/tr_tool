@@ -2317,26 +2317,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "tool2"
-version = "0.1.0"
-dependencies = [
- "egui",
- "egui-file-dialog",
- "egui-wgpu",
- "egui-winit",
- "env_logger",
- "glam",
- "image",
- "pollster",
- "shared",
- "softbuffer",
- "tr_model",
- "wgpu",
- "winit",
- "winresource",
-]
-
-[[package]]
 name = "tr_derive"
 version = "0.1.0"
 dependencies = [
@@ -2362,6 +2342,26 @@ version = "0.1.0"
 dependencies = [
  "compress",
  "tr_derive",
+]
+
+[[package]]
+name = "tr_tool"
+version = "0.1.0"
+dependencies = [
+ "egui",
+ "egui-file-dialog",
+ "egui-wgpu",
+ "egui-winit",
+ "env_logger",
+ "glam",
+ "image",
+ "pollster",
+ "shared",
+ "softbuffer",
+ "tr_model",
+ "wgpu",
+ "winit",
+ "winresource",
 ]
 
 [[package]]

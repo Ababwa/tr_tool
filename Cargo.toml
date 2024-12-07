@@ -1,5 +1,5 @@
 [workspace]
-members = ["tr_model", "tr_derive", "shared", "tool2", "tr_readable"]
+members = ["shared", "tr_readable", "tr_derive", "tr_model", "tr_tool"]
 resolver = "2"
 
 [workspace.dependencies]
