@@ -1,6 +1,5 @@
 use std::{mem::{align_of, size_of}, ptr::read_unaligned, slice::from_raw_parts};
 
-#[derive(Clone, Copy)]
 pub struct U16Cursor<'a> {
 	buf: &'a [u16],
 }

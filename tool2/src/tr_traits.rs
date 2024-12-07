@@ -1,4 +1,4 @@
-use std::{f32::consts::TAU, fmt::Debug};
+use std::f32::consts::TAU;
 use glam::{I16Vec3, IVec3, Mat4, U16Vec3, Vec3};
 use tr_model::{tr1, tr2, tr3, tr4, tr5, Readable};
 use crate::{as_bytes::ReinterpretAsBytes, PolyType};
@@ -26,7 +26,7 @@ pub trait RoomVertex: ReinterpretAsBytes {
 	fn pos(&self) -> Vec3;
 }
 
-pub trait Face: ReinterpretAsBytes + Debug {
+pub trait Face: ReinterpretAsBytes {
 	const POLY_TYPE: PolyType;
 }
 
