@@ -100,12 +100,12 @@ parse_attrs_fn!(
 		zlib: bool,
 		list: Option<Ident>,
 		delegate: Option<Option<Vec<Path>>>,
-		seek_start: Option<Ident>,
+		save_pos: Option<Ident>,
 		seek: Option<Vec<Ident>>,
 	}
 );
 
-fn get_delegate_init(delegate_args: Option<Vec<Path>>, ptr: TokenStream, initialized_fields: &[Ident]) -> Result<TokenStream, String> {
+fn get_delegate_init(delegate_args: Option<Vec<Path>>, ptr: TokenStream, initialized_fields: &[Ident], saved_positions: &[Ident]) -> Result<TokenStream, String> {
 	let (func, args) = match delegate_args {
 		None => (quote! { tr_readable::Readable::read }, quote! {}),
 		Some(paths) => match &paths[..] {
@@ -113,10 +113,13 @@ fn get_delegate_init(delegate_args: Option<Vec<Path>>, ptr: TokenStream, initial
 			[func, ..] => {
 				let mut args = quote! {};
 				for arg in &paths[1..] {
-					if !initialized_fields.iter().any(|i| arg.is_ident(i)) {
-						return Err("arguments to `delegate` after the first must be preceding fields".to_string());
+					if initialized_fields.iter().any(|i| arg.is_ident(i)) {
+						args = quote! { #args, &(*this).#arg };
+					} else if saved_positions.iter().any(|i| arg.is_ident(i)) {
+						args = quote! { #args, #arg };
+					} else {
+						return Err("arguments to `delegate` after the first must be preceding fields or saved positions".to_string());
 					}
-					args = quote! { #args, &(*this).#arg };
 				}
 				(quote! { #func }, args)
 			},
@@ -125,8 +128,8 @@ fn get_delegate_init(delegate_args: Option<Vec<Path>>, ptr: TokenStream, initial
 	Ok(quote! { #func(reader, #ptr #args)?; })
 }
 
-fn get_field_init(field: Field, initialized_fields: &[Ident], seek_starts: &mut Vec<Ident>) -> Result<TokenStream, String> {
-	let FieldAttrs { boxed, zlib, delegate, list, seek_start, seek } = parse_field_attrs(field.attrs)?;
+fn get_field_init(field: Field, initialized_fields: &[Ident], saved_positions: &mut Vec<Ident>) -> Result<TokenStream, String> {
+	let FieldAttrs { boxed, zlib, delegate, list, save_pos, seek } = parse_field_attrs(field.attrs)?;
 	let field_ident = field.ident.unwrap();
 	let mut field_init = if let Some(len_arg) = list {
 		if boxed {
@@ -148,7 +151,7 @@ fn get_field_init(field: Field, initialized_fields: &[Ident], seek_starts: &mut 
 				tr_readable::read_into_slice(reader, slice.as_mut_ptr(), len)?;
 			},
 			Some(delegate_args) => {
-				let delegate_init = get_delegate_init(delegate_args, quote! { item.as_mut_ptr() }, initialized_fields)?;
+				let delegate_init = get_delegate_init(delegate_args, quote! { item.as_mut_ptr() }, initialized_fields, saved_positions)?;
 				quote! {
 					for item in &mut slice {
 						#delegate_init
@@ -165,7 +168,7 @@ fn get_field_init(field: Field, initialized_fields: &[Ident], seek_starts: &mut 
 			}
 		}
 	} else if let Some(delegate_args) = delegate {
-		get_delegate_init(delegate_args, quote! { &raw mut (*this).#field_ident }, initialized_fields)?
+		get_delegate_init(delegate_args, quote! { &raw mut (*this).#field_ident }, initialized_fields, saved_positions)?
 	} else if boxed {
 		quote! {
 			{
@@ -186,18 +189,18 @@ fn get_field_init(field: Field, initialized_fields: &[Ident], seek_starts: &mut 
 		};
 	}
 	let mut seek_tokens = quote! {};
-	if let Some(seek_start) = seek_start {
+	if let Some(pos_ident) = save_pos {
 		seek_tokens = quote! {
 			#seek_tokens
-			let #seek_start = reader.stream_position()?;
+			let #pos_ident = reader.stream_position()?;
 		};
-		seek_starts.push(seek_start);
+		saved_positions.push(pos_ident);
 	}
-	if let Some(seek) = seek {
-		let [seek_start, seek_arg] = &seek[..] else {
+	if let Some(seek_args) = seek {
+		let [seek_start, seek_arg] = &seek_args[..] else {
 			return Err("`seek` must be given two arguments".to_string());
 		};
-		if !seek_starts.contains(seek_start) {
+		if !saved_positions.contains(seek_start) {
 			return Err("the first argument to `seek` must be previously declared with `seek_start`".to_string());
 		}
 		if !initialized_fields.contains(seek_arg) {

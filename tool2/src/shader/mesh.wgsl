@@ -117,7 +117,7 @@ fn get_position_texture(face: vec3u, face_vertex_index: u32) -> PositionTexture 
 	let face_offset = (face_array_offset + 2) * 2 + (face_index * face_size);//2-byte units
 	let vertex_index = get_data_u16(face_offset + face_vertex_index);
 	var vertex_relative: vec3f;
-	if vertex_size == 140 {
+	if vertex_size == 14 {
 		//TR5
 		let vertex_offset = vertex_array_offset + 1 + (vertex_index * 7);//4-byte units
 		vertex_relative = vec3f(

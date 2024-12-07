@@ -1,4 +1,4 @@
-use std::io::{Error, Read, Result};
+use std::io::{Error, Read, Result, Seek, SeekFrom};
 use bitfield::bitfield;
 use glam::{IVec3, U16Vec2, UVec2, Vec3};
 use shared::min_max::MinMax;
@@ -111,8 +111,8 @@ pub struct LayerFaces {
 	pub tris: Box<[EffectsTri]>,
 }
 
-unsafe fn read_faces<R: Read>(
-	reader: &mut R, layer_faces_ptr: *mut Box<[LayerFaces]>, layers: &[Layer],
+unsafe fn read_faces<R: Read + Seek>(
+	reader: &mut R, layer_faces_ptr: *mut Box<[LayerFaces]>, layers: &[Layer], size: &u32, pos: u64,
 ) -> Result<()> {
 	let mut layer_faces = Box::new_uninit_slice(layers.len());
 	for (index, layer) in layers.iter().enumerate() {
@@ -121,6 +121,7 @@ unsafe fn read_faces<R: Read>(
 		layer_faces[index].write(LayerFaces { quads, tris });
 	}
 	layer_faces_ptr.write(layer_faces.assume_init());
+	reader.seek(SeekFrom::Start(pos + *size as u64))?;
 	Ok(())
 }
 
@@ -128,7 +129,7 @@ unsafe fn read_faces<R: Read>(
 pub struct Room {
 	pub xela: [u8; 4],
 	pub size: u32,
-	#[seek_start(a)] pub unused1: [u32; 2],
+	#[save_pos(data_start)] pub unused1: [u32; 2],
 	pub sectors_offset: u32,
 	pub unused2: u32,
 	pub room_static_meshes_offset: u32,
@@ -161,15 +162,14 @@ pub struct Room {
 	pub unused7: u32,
 	pub num_vertex_bytes: NumVertexBytes,
 	pub unused8: [u32; 4],
-	#[seek_start(b)] #[list(num_lights)] pub lights: Box<[Light]>,
+	#[save_pos(data_start2)] #[list(num_lights)] pub lights: Box<[Light]>,
 	#[list(num_fog_bulbs)] pub fog_bulbs: Box<[FogBulb]>,
-	#[seek(b, sectors_offset)] #[list(num_sectors)] pub sectors: Box<[Sector]>,
+	#[seek(data_start2, sectors_offset)] #[list(num_sectors)] pub sectors: Box<[Sector]>,
 	#[list(u16)] pub portals: Box<[Portal]>,
-	#[seek(b, room_static_meshes_offset)] #[list(num_room_static_meshes)] pub room_static_meshes: Box<[RoomStaticMesh]>,
-	#[seek(b, layers_offset)] #[list(num_layers)] pub layers: Box<[Layer]>,
-	#[seek(b, vertices_offset)] #[list(num_vertex_bytes)] pub vertices: Box<[RoomVertex]>,
-	#[seek(b, faces_offset)] #[delegate(read_faces, layers)] pub layer_faces: Box<[LayerFaces]>,
-	#[seek(a, size)] end: (),
+	#[seek(data_start2, room_static_meshes_offset)] #[list(num_room_static_meshes)] pub room_static_meshes: Box<[RoomStaticMesh]>,
+	#[seek(data_start2, layers_offset)] #[list(num_layers)] pub layers: Box<[Layer]>,
+	#[seek(data_start2, vertices_offset)] #[list(num_vertex_bytes)] pub vertices: Box<[RoomVertex]>,
+	#[seek(data_start2, faces_offset)] #[delegate(read_faces, layers, size, data_start)] pub layer_faces: Box<[LayerFaces]>,
 }
 
 #[repr(C)]
