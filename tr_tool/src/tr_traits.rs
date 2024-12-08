@@ -20,6 +20,7 @@ pub struct RoomGeom<'a, V, Q, T> {
 pub trait Model {
 	fn id(&self) -> u32;
 	fn mesh_offset_index(&self) -> u16;
+	fn num_meshes(&self) -> u16;
 }
 
 pub trait RoomVertex: ReinterpretAsBytes {
@@ -140,6 +141,7 @@ fn to_mat(angles: U16Vec3) -> Mat4 {
 impl Model for tr1::Model {
 	fn id(&self) -> u32 { self.id }
 	fn mesh_offset_index(&self) -> u16 { self.mesh_offset_index }
+	fn num_meshes(&self) -> u16 { self.num_meshes }
 }
 
 impl RoomVertex for tr1::RoomVertex {
@@ -562,6 +564,7 @@ impl Level for tr4::Level {
 impl Model for tr5::Model {
 	fn id(&self) -> u32 { self.id }
 	fn mesh_offset_index(&self) -> u16 { self.mesh_offset_index }
+	fn num_meshes(&self) -> u16 { self.num_meshes }
 }
 
 impl RoomVertex for tr5::RoomVertex {

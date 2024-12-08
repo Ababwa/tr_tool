@@ -8,7 +8,10 @@ mod geom_buffer;
 mod data_writer;
 
 use std::{
-	collections::HashMap, env::args, f32::consts::{FRAC_PI_2, FRAC_PI_4, PI, TAU}, fs::{read_to_string, File}, io::{BufReader, Error, Read, Result, Seek}, mem::{size_of, take, MaybeUninit}, ops::Range, path::PathBuf, sync::Arc, thread::{spawn, JoinHandle}, time::Duration
+	collections::HashMap, env::args, f32::consts::{FRAC_PI_2, FRAC_PI_4, PI, TAU},
+	fs::{read_to_string, File}, io::{BufReader, Error, Read, Result, Seek},
+	mem::{size_of, take, MaybeUninit}, ops::Range, path::PathBuf, sync::Arc, thread::{spawn, JoinHandle},
+	time::Duration,
 };
 use data_writer::{DataWriter, MeshFaceOffsets, Output, RoomFaceOffsets};
 use geom_buffer::{GeomBuffer, GEOM_BUFFER_SIZE};
@@ -284,8 +287,10 @@ struct RoomMesh {
 
 struct RenderRoom {
 	geom: Vec<RoomMesh>,
-	meshes: Vec<MeshFaceOffsets>,
-	sprites: Range<u32>,
+	static_meshes: Vec<MeshFaceOffsets>,
+	entity_meshes: Vec<Vec<MeshFaceOffsets>>,
+	room_sprites: Range<u32>,
+	entity_sprites: Range<u32>,
 	center: Vec3,
 	radius: f32,
 }
@@ -349,6 +354,11 @@ struct LoadedLevel {
 	frame_update_queue: Vec<Box<dyn FnOnce(&mut Self)>>,
 	//ui
 	show_render_options: bool,
+	show_room_mesh: bool,
+	show_static_meshes: bool,
+	show_entity_meshes: bool,
+	show_room_sprites: bool,
+	show_entity_sprites: bool,
 }
 
 struct BindGroupLayouts {
@@ -569,99 +579,109 @@ fn parse_level<L: Level>(
 			index
 		});
 	}
-	//sprites (first to ensure sprite obj ids fit in u16)
+	//write sprites (do first to ensure obj ids fit in u16)
 	let mut data_writer = DataWriter::new(geom_buffer);
 	let room_sprite_ranges = level.rooms().iter().enumerate().map(|(room_index, room)| {
 		let room_index = room_index as u16;
-		let sprites_start = data_writer.sprite_offset();
-		data_writer.write_room_sprites(
+		let room_sprites = data_writer.write_room_sprites(
 			room.pos(), room.vertices(), room.sprites(),
 			|sprite_index| ObjectData::RoomSprite { room_index, sprite_index },
 		);
+		let entity_sprites_start = data_writer.sprite_offset();
 		for &entity_index in &room_entity_indices[room_index as usize] {
 			let entity = &level.entities()[entity_index];
 			if let ModelRef::SpriteSequence(ss) = model_id_map[&entity.model_id()] {
 				data_writer.write_entity_sprite(entity_index as u16, entity.pos(), ss.sprite_texture_index);
 			}
 		}
-		let sprites_end = data_writer.sprite_offset();
-		sprites_start..sprites_end
+		let entity_sprites_end = data_writer.sprite_offset();
+		(room_sprites, entity_sprites_start..entity_sprites_end)
 	}).collect::<Vec<_>>();
 	//geom
 	let mut static_room_indices = (0..level.rooms().len()).collect::<Vec<_>>();//flip rooms will be removed
 	let mut flip_groups = HashMap::<u8, Vec<FlipRoomIndices>>::new();
-	let render_rooms = level.rooms().iter().enumerate().zip(room_sprite_ranges).map(|((room_index, room), sprites)| {
-		let room_index = room_index as u16;
-		let room_pos = room.pos();
-		let mut meshes = vec![];
-		//room geom
-		let geom = room
-			.geom()
-			.into_iter()
-			.enumerate()
-			.map(|(geom_index, RoomGeom { vertices, quads, tris })| {
-				let geom_index = geom_index as u16;
-				let vertex_array_offset = data_writer.geom_buffer.write_vertex_array(vertices);
-				let transform = Mat4::from_translation(room_pos.as_vec3());
-				let transform_index = data_writer.geom_buffer.write_transform(&transform);
-				let quads = data_writer.write_room_face_array(
-					level.as_ref(), vertex_array_offset, quads, transform_index,
-					|face_index| ObjectData::RoomFace {
-						room_index,
-						geom_index,
-						face_type: PolyType::Quad,
-						face_index,
-					},
-				);
-				let tris = data_writer.write_room_face_array(
-					level.as_ref(), vertex_array_offset, tris, transform_index,
-					|face_index| ObjectData::RoomFace {
-						room_index,
-						geom_index,
-						face_type: PolyType::Tri,
-						face_index,
-					},
-				);
-				RoomMesh { quads, tris }
-			})
-			.collect::<Vec<_>>();
-		//static meshes
-		for (room_static_mesh_index, room_static_mesh) in room.room_static_meshes().iter().enumerate() {
-			let room_static_mesh_index = room_static_mesh_index as u16;
-			let static_mesh_id = room_static_mesh.static_mesh_id();
-			let maybe_static_mesh = level
-				.static_meshes()
+	let render_rooms = level
+		.rooms()
+		.iter()
+		.enumerate()
+		.zip(room_entity_indices)
+		.zip(room_sprite_ranges)
+		.map(|(((room_index, room), entity_indices), (room_sprites, entity_sprites))| {
+			let room_index = room_index as u16;
+			let room_pos = room.pos();
+			//room geom
+			let geom = room
+				.geom()
+				.into_iter()
+				.enumerate()
+				.map(|(geom_index, RoomGeom { vertices, quads, tris })| {
+					let geom_index = geom_index as u16;
+					let vertex_array_offset = data_writer.geom_buffer.write_vertex_array(vertices);
+					let transform = Mat4::from_translation(room_pos.as_vec3());
+					let transform_index = data_writer.geom_buffer.write_transform(&transform);
+					let quads = data_writer.write_room_face_array(
+						level.as_ref(), vertex_array_offset, quads, transform_index,
+						|face_index| ObjectData::RoomFace {
+							room_index,
+							geom_index,
+							face_type: PolyType::Quad,
+							face_index,
+						},
+					);
+					let tris = data_writer.write_room_face_array(
+						level.as_ref(), vertex_array_offset, tris, transform_index,
+						|face_index| ObjectData::RoomFace {
+							room_index,
+							geom_index,
+							face_type: PolyType::Tri,
+							face_index,
+						},
+					);
+					RoomMesh { quads, tris }
+				})
+				.collect::<Vec<_>>();
+			//static meshes
+			let room_static_meshes = room
+				.room_static_meshes()
 				.iter()
-				.find(|static_mesh| static_mesh.id as u16 == static_mesh_id);
-			let static_mesh = match maybe_static_mesh {
-				Some(static_mesh) => static_mesh,
-				None => {
-					println!("static mesh id missing: {}", static_mesh_id);
-					continue;
-				}
-			};
-			let mesh_offset = level.mesh_offsets()[static_mesh.mesh_offset_index as usize];
-			let written_mesh = &written_meshes[mesh_offset_map[&mesh_offset]];
-			let translation = Mat4::from_translation(room_static_mesh.pos().as_vec3());
-			let rotation = Mat4::from_rotation_y(room_static_mesh.angle() as f32 / 65536.0 * TAU);
-			let transform = translation * rotation;
-			let transform_index = data_writer.geom_buffer.write_transform(&transform);
-			meshes.push(
-				data_writer.place_mesh(
-					level.as_ref(), written_mesh, transform_index,
-					|face_type, face_index| ObjectData::RoomStaticMeshFace {
-						room_index,
-						room_static_mesh_index,
-						face_type,
-						face_index,
-					},
-				),
-			);
-		}
-		//entities
-		for &entity_index in &room_entity_indices[room_index as usize] {
-			let entity = &level.entities()[entity_index];
-			if let ModelRef::Model(model) = model_id_map[&entity.model_id()] {
+				.enumerate()
+				.filter_map(|(room_static_mesh_index, room_static_mesh)| {
+					let room_static_mesh_index = room_static_mesh_index as u16;
+					let static_mesh_id = room_static_mesh.static_mesh_id();
+					let maybe_static_mesh = level
+						.static_meshes()
+						.iter()
+						.find(|static_mesh| static_mesh.id as u16 == static_mesh_id);
+					let static_mesh = match maybe_static_mesh {
+						Some(static_mesh) => static_mesh,
+						None => {
+							println!("static mesh id missing: {}", static_mesh_id);
+							return None;
+						}
+					};
+					let mesh_offset = level.mesh_offsets()[static_mesh.mesh_offset_index as usize];
+					let written_mesh = &written_meshes[mesh_offset_map[&mesh_offset]];
+					let translation = Mat4::from_translation(room_static_mesh.pos().as_vec3());
+					let rotation = Mat4::from_rotation_y(room_static_mesh.angle() as f32 / 65536.0 * TAU);
+					let transform = translation * rotation;
+					let transform_index = data_writer.geom_buffer.write_transform(&transform);
+					Some(data_writer.place_mesh(
+						level.as_ref(), written_mesh, transform_index,
+						|face_type, face_index| ObjectData::RoomStaticMeshFace {
+							room_index,
+							room_static_mesh_index,
+							face_type,
+							face_index,
+						},
+					))
+				})
+				.collect::<Vec<_>>();
+			//entities
+			let entity_meshes = entity_indices.into_iter().filter_map(|entity_index| {
+				let entity = &level.entities()[entity_index];
+				let ModelRef::Model(model) = model_id_map[&entity.model_id()] else {
+					return None;
+				};
 				let entity_index = entity_index as u16;
 				let entity_translation = Mat4::from_translation(entity.pos().as_vec3());
 				let entity_rotation = Mat4::from_rotation_y(entity.angle() as f32 / 65536.0 * TAU);
@@ -675,6 +695,7 @@ fn parse_level<L: Level>(
 				let transform_index = data_writer.geom_buffer.write_transform(&transform);
 				let mesh_offset = level.mesh_offsets()[model.mesh_offset_index() as usize];
 				let mesh = &written_meshes[mesh_offset_map[&mesh_offset]];
+				let mut meshes = Vec::with_capacity(model.num_meshes() as usize);
 				meshes.push(
 					data_writer.place_mesh(
 						level.as_ref(), mesh, transform_index,
@@ -718,28 +739,37 @@ fn parse_level<L: Level>(
 						),
 					);
 				}
+				Some(meshes)
+			}).collect::<Vec<_>>();
+			let room_index = room_index as usize;
+			if room.flip_room_index() != u16::MAX {
+				let flip_room_index = room.flip_room_index() as usize;
+				//unwrap: static_room_indices contains room_index until removed
+				static_room_indices.remove(static_room_indices.binary_search(&room_index).unwrap());
+				static_room_indices.remove(
+					static_room_indices.binary_search(&flip_room_index).expect("flip room index missing"),
+				);
+				flip_groups.entry(room.flip_group()).or_default().push(
+					FlipRoomIndices { original: room_index, flipped: flip_room_index },
+				);
 			}
-		}
-		let room_index = room_index as usize;
-		if room.flip_room_index() != u16::MAX {
-			let flip_room_index = room.flip_room_index() as usize;
-			//unwrap: static_room_indices contains room_index until removed
-			static_room_indices.remove(static_room_indices.binary_search(&room_index).unwrap());
-			static_room_indices.remove(
-				static_room_indices.binary_search(&flip_room_index).expect("flip room index missing"),
-			);
-			flip_groups.entry(room.flip_group()).or_default().push(
-				FlipRoomIndices { original: room_index, flipped: flip_room_index },
-			);
-		}
-		let (center, radius) = room.vertices().iter().map(|v| v.pos()).min_max().map(|MinMax { min, max }| {
-			let center = (max + min) / 2.0;
-			let radius = (max - min).max_element();
-			(center, radius)
-		}).unwrap_or_default();
-		let center = center + room_pos.as_vec3();
-		RenderRoom { geom, meshes, sprites, center, radius }
-	}).collect::<Vec<_>>();
+			let (center, radius) = room.vertices().iter().map(|v| v.pos()).min_max().map(|MinMax { min, max }| {
+				let center = (max + min) / 2.0;
+				let radius = (max - min).max_element();
+				(center, radius)
+			}).unwrap_or_default();
+			let center = center + room_pos.as_vec3();
+			RenderRoom {
+				geom,
+				static_meshes: room_static_meshes,
+				entity_meshes,
+				room_sprites,
+				entity_sprites,
+				center,
+				radius,
+			}
+		})
+		.collect::<Vec<_>>();
 	//data prep
 	let mut flip_groups = flip_groups
 		.into_iter()
@@ -870,6 +900,11 @@ fn parse_level<L: Level>(
 		action_map,
 		frame_update_queue: vec![],
 		show_render_options: true,
+		show_room_mesh: true,
+		show_static_meshes: true,
+		show_entity_meshes: true,
+		show_room_sprites: true,
+		show_entity_sprites: true,
 	})
 }
 
@@ -969,6 +1004,15 @@ fn render_options(loaded_level: &mut LoadedLevel, ui: &mut egui::Ui) {
 			},
 		);
 	}
+	ui.collapsing("Object type toggles", |ui| for (val, label) in [
+		(&mut loaded_level.show_room_mesh, "Room mesh"),
+		(&mut loaded_level.show_static_meshes, "Static meshes"),
+		(&mut loaded_level.show_entity_meshes, "Entity meshes"),
+		(&mut loaded_level.show_room_sprites, "Room sprites"),
+		(&mut loaded_level.show_entity_sprites, "Entity sprites"),
+	] {
+		ui.checkbox(val, label);
+	});
 }
 
 impl Gui for TrTool {
@@ -1162,44 +1206,81 @@ impl Gui for TrTool {
 				};
 				rpass.set_bind_group(0, &solid_bind_group.bind_group, &[]);
 				rpass.set_pipeline(solid_pl);
-				for &room in &rooms {
-					for mesh in &room.meshes {
-						rpass.draw(0..NUM_QUAD_VERTICES, mesh.solid_quads.clone());
-						rpass.draw(0..NUM_TRI_VERTICES, mesh.solid_tris.clone());
+				if loaded_level.show_static_meshes {
+					for &room in &rooms {
+						for mesh in &room.static_meshes {
+							rpass.draw(0..NUM_QUAD_VERTICES, mesh.solid_quads.clone());
+							rpass.draw(0..NUM_TRI_VERTICES, mesh.solid_tris.clone());
+						}
+					}
+				}
+				if loaded_level.show_entity_meshes {
+					for &room in &rooms {
+						for mesh in room.entity_meshes.iter().flatten() {
+							rpass.draw(0..NUM_QUAD_VERTICES, mesh.solid_quads.clone());
+							rpass.draw(0..NUM_TRI_VERTICES, mesh.solid_tris.clone());
+						}
 					}
 				}
 			}
 			rpass.set_bind_group(0, &texture_bind_group.bind_group, &[]);
 			rpass.set_pipeline(&texture_pls.opaque);
 			for &room in &rooms {
-				for RoomMesh { quads, tris } in &room.geom {
-					rpass.draw(0..NUM_QUAD_VERTICES, quads.opaque_obverse());
-					rpass.draw(0..NUM_TRI_VERTICES, tris.opaque_obverse());
-					rpass.draw_indexed(0..NUM_QUAD_VERTICES, 0, quads.opaque_reverse());
-					rpass.draw_indexed(0..NUM_TRI_VERTICES, 0, tris.opaque_reverse());
+				if loaded_level.show_room_mesh {
+					for RoomMesh { quads, tris } in &room.geom {
+						rpass.draw(0..NUM_QUAD_VERTICES, quads.opaque_obverse());
+						rpass.draw(0..NUM_TRI_VERTICES, tris.opaque_obverse());
+						rpass.draw_indexed(0..NUM_QUAD_VERTICES, 0, quads.opaque_reverse());
+						rpass.draw_indexed(0..NUM_TRI_VERTICES, 0, tris.opaque_reverse());
+					}
 				}
-				for mesh in &room.meshes {
-					rpass.draw(0..NUM_QUAD_VERTICES, mesh.textured_quads.opaque());
-					rpass.draw(0..NUM_TRI_VERTICES, mesh.textured_tris.opaque());
+				if loaded_level.show_static_meshes {
+					for mesh in &room.static_meshes {
+						rpass.draw(0..NUM_QUAD_VERTICES, mesh.textured_quads.opaque());
+						rpass.draw(0..NUM_TRI_VERTICES, mesh.textured_tris.opaque());
+					}
+				}
+				if loaded_level.show_entity_meshes {
+					for mesh in room.entity_meshes.iter().flatten() {
+						rpass.draw(0..NUM_QUAD_VERTICES, mesh.textured_quads.opaque());
+						rpass.draw(0..NUM_TRI_VERTICES, mesh.textured_tris.opaque());
+					}
 				}
 			}
 			rpass.set_pipeline(&texture_pls.additive);
 			for &room in &rooms {
-				for RoomMesh { quads, tris } in &room.geom {
-					rpass.draw(0..NUM_QUAD_VERTICES, quads.additive_obverse());
-					rpass.draw(0..NUM_TRI_VERTICES, tris.additive_obverse());
-					rpass.draw_indexed(0..NUM_QUAD_VERTICES, 0, quads.additive_reverse());
-					rpass.draw_indexed(0..NUM_TRI_VERTICES, 0, tris.additive_reverse());
+				if loaded_level.show_room_mesh {
+					for RoomMesh { quads, tris } in &room.geom {
+						rpass.draw(0..NUM_QUAD_VERTICES, quads.additive_obverse());
+						rpass.draw(0..NUM_TRI_VERTICES, tris.additive_obverse());
+						rpass.draw_indexed(0..NUM_QUAD_VERTICES, 0, quads.additive_reverse());
+						rpass.draw_indexed(0..NUM_TRI_VERTICES, 0, tris.additive_reverse());
+					}
 				}
-				for mesh in &room.meshes {
-					rpass.draw(0..NUM_QUAD_VERTICES, mesh.textured_quads.additive());
-					rpass.draw(0..NUM_TRI_VERTICES, mesh.textured_tris.additive());
+				if loaded_level.show_static_meshes {
+					for mesh in &room.static_meshes {
+						rpass.draw(0..NUM_QUAD_VERTICES, mesh.textured_quads.additive());
+						rpass.draw(0..NUM_TRI_VERTICES, mesh.textured_tris.additive());
+					}
+				}
+				if loaded_level.show_entity_meshes {
+					for mesh in room.entity_meshes.iter().flatten() {
+						rpass.draw(0..NUM_QUAD_VERTICES, mesh.textured_quads.additive());
+						rpass.draw(0..NUM_TRI_VERTICES, mesh.textured_tris.additive());
+					}
 				}
 			}
 			rpass.set_vertex_buffer(1, loaded_level.sprite_instance_buffer.slice(..));
 			rpass.set_pipeline(&texture_pls.sprite);
-			for &room in &rooms {
-				rpass.draw(0..NUM_QUAD_VERTICES, room.sprites.clone());
+			if loaded_level.show_room_sprites {
+				for &room in &rooms {
+					rpass.draw(0..NUM_QUAD_VERTICES, room.room_sprites.clone());
+				}
+			}
+			if loaded_level.show_entity_sprites {
+				for &room in &rooms {
+					rpass.draw(0..NUM_QUAD_VERTICES, room.entity_sprites.clone());
+				}
 			}
 		}
 		if self.print {

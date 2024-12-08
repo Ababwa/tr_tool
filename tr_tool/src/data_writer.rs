@@ -237,7 +237,8 @@ impl DataWriter {
 	
 	pub fn write_room_sprites<V: RoomVertex, O: Fn(u16) -> ObjectData>(
 		&mut self, room_pos: IVec3, vertices: &[V], sprites: &[tr1::Sprite], object_data_maker: O,
-	) {
+	) -> Range<u32> {
+		let start = self.sprite_buffer.len() as u32;
 		for &tr1::Sprite { vertex_index, sprite_texture_index } in sprites {
 			let object_data_index = self.add_object_data(object_data_maker(sprite_texture_index)) as u16;
 			self.sprite_buffer.push(SpriteInstance {
@@ -246,6 +247,8 @@ impl DataWriter {
 				object_data_index,
 			});
 		}
+		let end = self.sprite_buffer.len() as u32;
+		start..end
 	}
 	
 	pub fn write_entity_sprite(&mut self, entity_index: u16, pos: IVec3, sprite_texture_index: u16) {
