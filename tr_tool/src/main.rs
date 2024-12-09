@@ -6,17 +6,17 @@ mod tr_traits;
 mod vec_tail;
 mod geom_buffer;
 mod data_writer;
+mod file_dialog;
 
 use std::{
-	collections::HashMap, env::args, f32::consts::{FRAC_PI_2, FRAC_PI_4, PI, TAU},
-	fs::{read_to_string, File}, io::{BufReader, Error, Read, Result, Seek},
-	mem::{size_of, take, MaybeUninit}, ops::Range, path::PathBuf, sync::Arc, thread::{spawn, JoinHandle},
-	time::Duration,
+	collections::HashMap, env::args, f32::consts::{FRAC_PI_2, FRAC_PI_4, PI, TAU}, fs::File,
+	io::{BufReader, Error, Read, Result, Seek}, mem::{size_of, take, MaybeUninit}, ops::Range,
+	path::PathBuf, sync::Arc, thread::{spawn, JoinHandle}, time::Duration,
 };
 use data_writer::{DataWriter, MeshFaceOffsets, Output, RoomFaceOffsets};
+use file_dialog::FileDialogWrapper;
 use geom_buffer::{GeomBuffer, GEOM_BUFFER_SIZE};
 use keys::{KeyGroup, KeyStates};
-use egui_file_dialog::{DialogState, FileDialog};
 use as_bytes::{AsBytes, ReinterpretAsBytes};
 use glam::{DVec2, EulerRot, Mat4, Vec3, Vec3Swizzles};
 use gui::Gui;
@@ -271,13 +271,17 @@ impl SolidType {
 }
 
 struct TextureBindGroup {
-	bind_group: BindGroup,
 	texture_type: TextureType,
+	bind_group: BindGroup,
+	#[allow(dead_code)]//not used, but must be kept around as dropping released the image
+	texture_handle: egui::TextureHandle,
+	sized_texture: egui::load::SizedTexture,
+	rgba: Vec<u8>,
 }
 
 struct SolidBindGroup {
-	bind_group: BindGroup,
 	solid_type: SolidType,
+	bind_group: BindGroup,
 }
 
 struct RoomMesh {
@@ -352,13 +356,16 @@ struct LoadedLevel {
 	key_states: KeyStates,
 	action_map: ActionMap,
 	frame_update_queue: Vec<Box<dyn FnOnce(&mut Self)>>,
-	//ui
+	//render options
 	show_render_options: bool,
 	show_room_mesh: bool,
 	show_static_meshes: bool,
 	show_entity_meshes: bool,
 	show_room_sprites: bool,
 	show_entity_sprites: bool,
+	//textures
+	show_textures: bool,
+	textures_tab_index: usize//index into texture_bind_groups
 }
 
 struct BindGroupLayouts {
@@ -384,7 +391,7 @@ struct TrTool {
 	//state
 	window_size: PhysicalSize<u32>,
 	modifiers: ModifiersState,
-	file_dialog: FileDialog,
+	file_dialog: FileDialogWrapper,
 	error: Option<String>,
 	print: bool,
 	loaded_level: Option<LoadedLevel>,
@@ -538,9 +545,18 @@ fn make_palette_view<T: ReinterpretAsBytes>(
 	)
 }
 
+fn make_egui_texture(
+	ctx: &egui::Context, rgba: &[u8], num_atlases: usize, name: &str,
+) -> (egui::TextureHandle, egui::load::SizedTexture) {
+	let image = egui::ColorImage::from_rgba_unmultiplied([256, 256 * num_atlases], rgba);
+	let texture_handle = ctx.load_texture(name, image, egui::TextureOptions::NEAREST);
+	let sized_texture = egui::load::SizedTexture::from_handle(&texture_handle);
+	(texture_handle, sized_texture)
+}
+
 fn parse_level<L: Level>(
-	device: &Device, queue: &Queue, bind_group_layouts: &BindGroupLayouts, window_size: PhysicalSize<u32>,
-	reader: &mut BufReader<File>,
+	device: &Device, queue: &Queue, ctx: &egui::Context, bind_group_layouts: &BindGroupLayouts,
+	window_size: PhysicalSize<u32>, reader: &mut BufReader<File>,
 ) -> Result<LoadedLevel> {
 	let level = unsafe {
 		let mut level = Box::new(MaybeUninit::uninit());
@@ -827,31 +843,62 @@ fn parse_level<L: Level>(
 		let palette_entry = make::entry(5, BindingResource::TextureView(&palette_view));
 		let entries = [&common_entries[..], &[atlases_entry, palette_entry.clone()]].concat();
 		let bind_group = make::bind_group(device, &bind_group_layouts.texture_palette, &entries);
-		texture_bind_groups.push(TextureBindGroup { bind_group, texture_type: TextureType::Palette });
+		let rgba = atlases.iter().flatten().map(|&color_index| {
+			let tr1::Color24Bit { r, g, b } = palette[color_index as usize];
+			let [r, g, b] = [r, g, b].map(|c| c << 2);
+			[r, g, b, (color_index != 0) as u8 * 255]
+		}).flatten().collect::<Vec<_>>();
+		let (texture_handle, sized_texture) = make_egui_texture(ctx, &rgba, atlases.len(), "palette texture");
+		texture_bind_groups.push(TextureBindGroup {
+			texture_type: TextureType::Palette,
+			bind_group,
+			texture_handle,
+			sized_texture,
+			rgba,
+		});
 		let entries = [&common_entries[..], &[palette_entry]].concat();
 		let bind_group = make::bind_group(device, &bind_group_layouts.solid, &entries);
-		solid_bind_groups.push(SolidBindGroup { bind_group, solid_type: SolidType::Color24Bit });
+		solid_bind_groups.push(SolidBindGroup { solid_type: SolidType::Color24Bit, bind_group });
 	}
 	if let Some(palette) = level.palette_32bit() {
 		let palette_view = make_palette_view(device, queue, palette);
 		let palette_entry = make::entry(5, BindingResource::TextureView(&palette_view));
 		let entries = [&common_entries[..], &[palette_entry]].concat();
 		let bind_group = make::bind_group(device, &bind_group_layouts.solid, &entries);
-		solid_bind_groups.push(SolidBindGroup { bind_group, solid_type: SolidType::Color32Bit });
+		solid_bind_groups.push(SolidBindGroup { solid_type: SolidType::Color32Bit, bind_group });
 	}
 	if let Some(atlases) = level.atlases_16bit() {
 		let atlases_view = make_atlases_view(device, queue, atlases, TextureFormat::R16Uint);
 		let atlases_entry = make::entry(4, BindingResource::TextureView(&atlases_view));
 		let entries = [&common_entries[..], &[atlases_entry]].concat();
 		let bind_group = make::bind_group(device, &bind_group_layouts.texture_direct, &entries);
-		texture_bind_groups.push(TextureBindGroup { bind_group, texture_type: TextureType::Direct16Bit });
+		let rgba = atlases.iter().flatten().map(|color| {
+			let [r, g, b] = [color.r(), color.g(), color.b()].map(|c| c << 3);
+			[r, g, b, color.a() as u8 * 255]
+		}).flatten().collect::<Vec<_>>();
+		let (texture_handle, sized_texture) = make_egui_texture(ctx, &rgba, atlases.len(), "16-bit texture");
+		texture_bind_groups.push(TextureBindGroup {
+			texture_type: TextureType::Direct16Bit,
+			bind_group,
+			texture_handle,
+			sized_texture,
+			rgba,
+		});
 	}
 	if let Some(atlases) = level.atlases_32bit() {
 		let atlases_view = make_atlases_view(device, queue, atlases, TextureFormat::R32Uint);
 		let atlases_entry = make::entry(4, BindingResource::TextureView(&atlases_view));
 		let entries = [&common_entries[..], &[atlases_entry]].concat();
 		let bind_group = make::bind_group(device, &bind_group_layouts.texture_direct, &entries);
-		texture_bind_groups.push(TextureBindGroup { bind_group, texture_type: TextureType::Direct32Bit });
+		let rgba = atlases.as_bytes().to_owned();
+		let (texture_handle, sized_texture) = make_egui_texture(ctx, atlases.as_bytes(), atlases.len(), "32-bit texture");
+		texture_bind_groups.push(TextureBindGroup {
+			texture_type: TextureType::Direct32Bit,
+			bind_group,
+			texture_handle,
+			sized_texture,
+			rgba,
+		});
 	}
 	let action_map = ActionMap {
 		forward: KeyGroup::new(&[KeyCode::KeyW, KeyCode::ArrowUp]),
@@ -905,11 +952,13 @@ fn parse_level<L: Level>(
 		show_entity_meshes: true,
 		show_room_sprites: true,
 		show_entity_sprites: true,
+		show_textures: false,
+		textures_tab_index: 0,
 	})
 }
 
 fn load_level(
-	window: &Window, device: &Device, queue: &Queue, window_size: PhysicalSize<u32>,
+	window: &Window, device: &Device, queue: &Queue, ctx: &egui::Context, win_size: PhysicalSize<u32>,
 	bgls: &BindGroupLayouts, path: &PathBuf,
 ) -> Result<LoadedLevel> {
 	let mut reader = BufReader::new(File::open(path)?);
@@ -922,11 +971,11 @@ fn load_level(
 		.and_then(|e| e.to_str())
 		.ok_or(Error::other("Failed to get file extension"))?;
 	let loaded_level = match (version, extension.to_ascii_lowercase().as_str()) {
-		(0x00000020, "phd") => parse_level::<tr1::Level>(device, queue, bgls, window_size, &mut reader),
-		(0x0000002D, "tr2") => parse_level::<tr2::Level>(device, queue, bgls, window_size, &mut reader),
-		(0xFF180038, "tr2") => parse_level::<tr3::Level>(device, queue, bgls, window_size, &mut reader),
-		(0x00345254, "tr4") => parse_level::<tr4::Level>(device, queue, bgls, window_size, &mut reader),
-		(0x00345254, "trc") => parse_level::<tr5::Level>(device, queue, bgls, window_size, &mut reader),
+		(0x00000020, "phd") => parse_level::<tr1::Level>(device, queue, ctx, bgls, win_size, &mut reader),
+		(0x0000002D, "tr2") => parse_level::<tr2::Level>(device, queue, ctx, bgls, win_size, &mut reader),
+		(0xFF180038, "tr2") => parse_level::<tr3::Level>(device, queue, ctx, bgls, win_size, &mut reader),
+		(0x00345254, "tr4") => parse_level::<tr4::Level>(device, queue, ctx, bgls, win_size, &mut reader),
+		(0x00345254, "trc") => parse_level::<tr5::Level>(device, queue, ctx, bgls, win_size, &mut reader),
 		_ => return Err(Error::other(format!("Unknown file type\nVersion: 0x{:X}", version))),
 	}?;
 	if let Some(file_name) = path.file_name().map(|f| f.to_string_lossy()) {
@@ -935,9 +984,11 @@ fn load_level(
 	Ok(loaded_level)
 }
 
-fn draw_window<R, F>(ctx: &egui::Context, title: &str, open: &mut bool, contents: F) -> Option<R>
-where F: FnOnce(&mut egui::Ui) -> R {
-	egui::Window::new(title).resizable(false).open(open).show(ctx, contents)?.inner
+fn draw_window<R, F>(
+	ctx: &egui::Context, title: &str, resizable: bool, open: &mut bool, contents: F,
+) -> Option<R> where F: FnOnce(&mut egui::Ui) -> R {
+	let response = egui::Window::new(title).resizable(resizable).open(open).show(ctx, contents)?;
+	response.inner
 }
 
 fn selected_room_text(render_room_index: Option<usize>) -> String {
@@ -984,9 +1035,7 @@ fn render_options(loaded_level: &mut LoadedLevel, ui: &mut egui::Ui) {
 		);
 		texture_combo.show_index(
 			ui, &mut loaded_level.texture_bind_group_index, loaded_level.texture_bind_groups.len(),
-			|index| {
-				loaded_level.texture_bind_groups[index].texture_type.label()
-			},
+			|index| loaded_level.texture_bind_groups[index].texture_type.label(),
 		);
 	}
 	if let (true, Some(solid_bind_group_index)) = (
@@ -999,9 +1048,8 @@ fn render_options(loaded_level: &mut LoadedLevel, ui: &mut egui::Ui) {
 				.label(),
 		);
 		solid_combo.show_index(
-			ui, solid_bind_group_index, loaded_level.solid_bind_groups.len(), |index| {
-				loaded_level.solid_bind_groups[index].solid_type.label()
-			},
+			ui, solid_bind_group_index, loaded_level.solid_bind_groups.len(),
+			|index| loaded_level.solid_bind_groups[index].solid_type.label(),
 		);
 	}
 	ui.collapsing("Object type toggles", |ui| for (val, label) in [
@@ -1046,10 +1094,13 @@ impl Gui for TrTool {
 				if let Some(loaded_level) = &mut self.loaded_level {
 					loaded_level.set_mouse_control(window, false);
 				}
-				self.file_dialog.select_file();
+				self.file_dialog.select_level();
 			},
 			(_, ElementState::Pressed, KeyCode::KeyR, false, Some(loaded_level)) => {
 				loaded_level.show_render_options ^= true;
+			},
+			(_, ElementState::Pressed, KeyCode::KeyT, false, Some(loaded_level)) => {
+				loaded_level.show_textures ^= true;
 			},
 			_ => {},
 		}
@@ -1062,7 +1113,7 @@ impl Gui for TrTool {
 		if let Some(loaded_level) = &mut self.loaded_level {
 			match (state, button) {
 				(ElementState::Pressed, MouseButton::Right) => {
-					if !matches!(self.file_dialog.state(), DialogState::Open) {
+					if self.file_dialog.is_closed() {
 						loaded_level.locked_mouse_pos = loaded_level.mouse_pos;
 						loaded_level.set_mouse_control(window, !loaded_level.mouse_control);
 					}
@@ -1290,37 +1341,58 @@ impl Gui for TrTool {
 	
 	fn gui(&mut self, window: &Window, device: &Device, queue: &Queue, ctx: &egui::Context) {
 		self.file_dialog.update(ctx);
-		if let Some(path) = self.file_dialog.take_selected() {
-			match load_level(window, device, queue, self.window_size, &self.bind_group_layouts, &path) {
+		if let Some(path) = self.file_dialog.get_level_path() {
+			match load_level(window, device, queue, ctx, self.window_size, &self.bind_group_layouts, &path) {
 				Ok(loaded_level) => self.loaded_level = Some(loaded_level),
 				Err(e) => self.error = Some(e.to_string()),
 			}
-			if let Err(e) = std::fs::write("dir", path.as_os_str().as_encoded_bytes()) {
-				eprintln!("failed to write dir: {}", e);
-			}
-			self.file_dialog.config_mut().initial_directory = path;
 		}
 		match &mut self.loaded_level {
 			None => {
 				egui::panel::CentralPanel::default().show(ctx, |ui| {
 					ui.centered_and_justified(|ui| {
 						if ui.label("Ctrl+O or click to open file").clicked() {
-							self.file_dialog.select_file();
+							self.file_dialog.select_level();
 						}
 					});
 				});
 			},
 			Some(loaded_level) => {
 				if loaded_level.show_render_options {
-					let mut show = true;
-					draw_window(ctx, "Render Options", &mut show, |ui| render_options(loaded_level, ui));
+					let mut show = true;//avoids borrow issue with loaded_level
+					draw_window(ctx, "Render Options", false, &mut show, |ui| render_options(loaded_level, ui));
 					loaded_level.show_render_options = show;
+				}
+				draw_window(ctx, "Textures", true, &mut loaded_level.show_textures, |ui| {
+					if loaded_level.texture_bind_groups.len() > 1 {
+						ui.horizontal(|ui| {
+							for (index, tbg) in loaded_level.texture_bind_groups.iter().enumerate() {
+								ui.selectable_value(
+									&mut loaded_level.textures_tab_index, index, tbg.texture_type.label(),
+								);
+							}
+						});
+						if ui.button("Save").clicked() {
+							self.file_dialog.save_texture();
+						}
+					}
+					egui::ScrollArea::vertical().show(ui, |ui| ui.image(
+						loaded_level.texture_bind_groups[loaded_level.textures_tab_index].sized_texture,
+					));
+				});
+				if let Some(path) = self.file_dialog.get_texture_path() {
+					let tbg = &loaded_level.texture_bind_groups[loaded_level.textures_tab_index];
+					let rgba = &tbg.rgba;
+					let height = tbg.texture_handle.size()[1] as u32;
+					if let Err(e) = image::save_buffer(path, rgba, 256, height, image::ColorType::Rgba8) {
+						self.error = Some(e.to_string());
+					}
 				}
 			}
 		}
 		if let Some(error) = &self.error {
 			let mut show = true;
-			draw_window(ctx, "Error", &mut show, |ui| _ = ui.label(error));
+			draw_window(ctx, "Error", false, &mut show, |ui| _ = ui.label(error));
 			if !show {
 				self.error = None;
 			}
@@ -1405,7 +1477,9 @@ const ADDITIVE_BLEND: BlendState = BlendState {
 	},
 };
 
-fn make_gui(window: &Window, device: &Device, queue: &Queue, window_size: PhysicalSize<u32>) -> TrTool {
+fn make_gui(
+	window: &Window, device: &Device, queue: &Queue, ctx: &egui::Context, window_size: PhysicalSize<u32>,
+) -> TrTool {
 	let shader = make::shader(device, include_str!("shader/mesh.wgsl"));
 	let data = (0, make::storage_layout_entry(GEOM_BUFFER_SIZE), ShaderStages::VERTEX);
 	let data_offsets = (1, make::uniform_layout_entry(size_of::<DataOffsets>()), ShaderStages::VERTEX);
@@ -1445,13 +1519,9 @@ fn make_gui(window: &Window, device: &Device, queue: &Queue, window_size: Physic
 		),
 	});
 	let bind_group_layouts = BindGroupLayouts { solid, texture_palette, texture_direct };
-	let mut file_dialog = FileDialog::new();
-	if let Ok(dir) = read_to_string("dir") {
-		file_dialog.config_mut().initial_directory = PathBuf::from(dir);
-	}
 	let mut loaded_level = None;
 	if let Some(arg) = args().skip(1).next() {
-		match load_level(window, device, queue, window_size, &bind_group_layouts, &arg.into()) {
+		match load_level(window, device, queue, ctx, window_size, &bind_group_layouts, &arg.into()) {
 			Ok(level) => loaded_level = Some(level),
 			Err(e) => eprintln!("{}", e),
 		}
@@ -1465,7 +1535,7 @@ fn make_gui(window: &Window, device: &Device, queue: &Queue, window_size: Physic
 		texture_32bit_pls,
 		window_size,
 		modifiers: ModifiersState::empty(),
-		file_dialog,
+		file_dialog: FileDialogWrapper::new(),
 		error: None,
 		print: false,
 		loaded_level,
