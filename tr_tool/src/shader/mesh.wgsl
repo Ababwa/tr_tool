@@ -1,88 +1,22 @@
-/*
-mapping:
-struct ObjectTexture {
-	blend_mode: u16,
-	atlas_index: u16,
-	uvs: [U16Vec2; 4],
-}
-struct SpriteTexture {
-	atlas_index: u16,
-	pos: U8Vec2,
-	size: U16Vec2,
-	world_bounds: [I16Vec2; 2],
-}
-struct RoomVertex {
-	x: i16,
-	y: i16,
-	z: i16,
-	light: u16,
-}
-struct MeshVertex {
-	x: i16,
-	y: i16,
-	z: i16,
-}
-struct VertexArray<Vertex>
-where Vertex: RoomVertex | MeshVertex {
-	vertex_size: u16,
-	vertices: [Vertex],
-}
-struct Quad {
-	vertex_indices: [u16; 4],
-	texture_index: u16,
-}
-struct Tri {
-	vert_indices: [u16; 3],
-	texture_index: u16,
-}
-struct FaceArray<Face>
-where Face: Quad | Tri {
-	vertex_array_offset: [u16; 2],//unaligned u32
-	face_size: u16,
-	faces: [Face],
-}
-struct {
-	geometry: [VertexArray | FaceArray],
-	object_textures: [ObjectTexture],
-	transforms: [Mat4],
-	sprite_textures: [SpriteTexture],
-	face_array_offsets: [u32],
-}
-notes:
-if textured, texture_index is an index into the ObjectTexture array
-if solid, texture_index is an index into palette
-*/
-
 struct DataOffsets {
-	transforms_offset: u32,
-	face_array_offsets_offset: u32,
-	object_textures_offset: u32,
-	object_texture_size: u32,
-	sprite_textures_offset: u32,
+	transforms_offset: u32,//16-byte units
+	face_array_offsets_offset: u32,//4-byte units
+	object_textures_offset: u32,//2-byte units
+	object_texture_size: u32,//2-byte units
+	sprite_textures_offset: u32,//2-byte units
+	num_atlases: u32,
 }
 
+//2MB
 @group(0) @binding(0) var<storage> data: array<vec4u, 131072>;
 @group(0) @binding(1) var<uniform> data_offsets: DataOffsets;
 @group(0) @binding(2) var<uniform> camera_transform: mat4x4f;
 @group(0) @binding(3) var<uniform> perspective_transform: mat4x4f;
 
-/*
-offset:
-VVVVVVVVVVVVVVVVVVVVVVVVVVVVVVEE
-V: vec4u in data
-E: u32 in vec4u
-*/
 fn get_data_u32(offset: u32) -> u32 {
 	return data[offset / 4][offset % 4];
 }
 
-/*
-offset:
-VVVVVVVVVVVVVVVVVVVVVVVVVVVVVEES
-V: vec4u in data
-E: u32 in vec4u
-S: u16 in u32
-*/
 fn get_data_u16(offset: u32) -> u32 {
 	return (get_data_u32(offset / 2) >> ((offset % 2) * 16)) & 0xFFFF;
 }
@@ -248,13 +182,12 @@ fn sprite_vs_main(
 
 struct Out {
 	@location(0) color: vec4f,
-	@location(1) interact: u32,
+	@location(1) object_id: u32,
 }
 
-@group(0) @binding(4) var atlases: texture_2d_array<u32>;
-
 //each texel is a color channel
-@group(0) @binding(5) var palette: texture_1d<u32>;
+@group(0) @binding(4) var palette: texture_1d<u32>;
+@group(0) @binding(5) var atlases: texture_2d_array<u32>;
 
 fn to_f32_color(r: u32, g: u32, b: u32, divisor: f32) -> vec4f {
 	let color_int = vec3u(r, g, b);
@@ -286,44 +219,113 @@ fn solid_32bit_fs_main(vtf: SolidVTF) -> Out {
 	return Out(color, vtf.object_id);
 }
 
-@fragment
-fn texture_palette_fs_main(vtf: TextureVTF) -> Out {
-	let color_index = textureLoad(atlases, vec2i(vtf.uv), vtf.atlas_index, 0).x;
+fn get_pixel(atlas_index: u32, uv: vec2f) -> u32 {
+	return textureLoad(atlases, vec2i(uv), atlas_index, 0).x;
+}
+
+fn get_palette_color_24bit(color_index: u32) -> vec4f {
 	if color_index == 0 {
 		discard;
 	} else {
-		return Out(get_palette_color(color_index, 3u, 63.0), vtf.object_id);
+		return get_palette_color(color_index, 3u, 63.0);
 	}
 }
 
-@fragment
-fn texture_16bit_fs_main(vtf: TextureVTF) -> Out {
-	let color = textureLoad(atlases, vec2i(vtf.uv), vtf.atlas_index, 0).x;
+fn get_color_16bit(color: u32) -> vec4f {
 	if (color & 0x8000) == 0 {
 		discard;
 	} else {
-		let color = to_f32_color(
+		return to_f32_color(
 			(color >> 10) & 0x1F,
 			(color >> 5) & 0x1F,
 			color & 0x1F,
 			31.0,
 		);
-		return Out(color, vtf.object_id);
 	}
 }
 
-@fragment
-fn texture_32bit_fs_main(vtf: TextureVTF) -> Out {
-	let color = textureLoad(atlases, vec2i(vtf.uv), vtf.atlas_index, 0).x;
+fn get_color_32bit(color: u32) -> vec4f {
 	if (color & 0xFF000000) == 0 {
 		discard;
 	} else {
-		let color = to_f32_color(
+		return to_f32_color(
 			(color >> 16) & 0xFF,
 			(color >> 8) & 0xFF,
 			color & 0xFF,
 			255.0,
 		);
-		return Out(color, vtf.object_id);
 	}
+}
+
+@fragment
+fn texture_palette_fs_main(vtf: TextureVTF) -> Out {
+	let color_index = get_pixel(vtf.atlas_index, vtf.uv);
+	let color = get_palette_color_24bit(color_index);
+	return Out(color, vtf.object_id);
+}
+
+@fragment
+fn texture_16bit_fs_main(vtf: TextureVTF) -> Out {
+	let color_16bit = get_pixel(vtf.atlas_index, vtf.uv);
+	let color = get_color_16bit(color_16bit);
+	return Out(color, vtf.object_id);
+}
+
+@fragment
+fn texture_32bit_fs_main(vtf: TextureVTF) -> Out {
+	let color_32bit = get_pixel(vtf.atlas_index, vtf.uv);
+	let color = get_color_32bit(color_32bit);
+	return Out(color, vtf.object_id);
+}
+
+//==== flat texture ====
+
+struct Viewport {
+	width: u32,
+	height: u32,
+}
+
+@group(0) @binding(6) var<uniform> viewport: Viewport;
+
+struct FlatVTF {
+	@builtin(position) position: vec4f,
+	@location(0) pixel: vec2f,
+}
+
+@vertex
+fn flat_vs_main(@location(0) vertex: u32) -> FlatVTF {
+	let uv = vec2u(((vertex + 1) / 2) % 2, vertex / 2);
+	let height = data_offsets.num_atlases * 256;
+	let pixel = uv * vec2u(256, height);
+	let uv_i = vec2i(uv);
+	let pos = vec2i(2 * uv_i.x - 1, 1 - 2 * uv_i.y);
+	return FlatVTF(vec4f(vec2f(pos), 0, 1), vec2f(pixel));
+}
+
+fn get_pixel2(pixel: vec2f) -> u32 {
+	let pixel_int = vec2i(pixel);
+	let atlas_pixel = vec2i(pixel_int.x, pixel_int.y % 256);
+	let atlas_index = pixel_int.y / 256;
+	return textureLoad(atlases, atlas_pixel, atlas_index, 0).x;
+}
+
+@fragment
+fn flat_palette_fs_main(vtf: FlatVTF) -> @location(0) vec4f {
+	let color_index = get_pixel2(vtf.pixel);
+	let color = get_palette_color_24bit(color_index);
+	return color;
+}
+
+@fragment
+fn flat_16bit_fs_main(vtf: FlatVTF) -> @location(0) vec4f {
+	let color_16bit = get_pixel2(vtf.pixel);
+	let color = get_color_16bit(color_16bit);
+	return color;
+}
+
+@fragment
+fn flat_32bit_fs_main(vtf: FlatVTF) -> @location(0) vec4f {
+	let color_32bit = get_pixel2(vtf.pixel);
+	let color = get_color_32bit(color_32bit);
+	return color;
 }

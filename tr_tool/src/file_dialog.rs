@@ -2,14 +2,14 @@ use std::{fs, path::PathBuf};
 use egui_file_dialog::{DialogState, FileDialog};
 
 #[derive(Clone, Copy, PartialEq, Eq)]
-enum State {
+enum State<T> {
 	SelectingLevel,
-	SavingTexture,
+	SavingTexture(T),//index into texture_bind_group
 }
 
-pub struct FileDialogWrapper {
+pub struct FileDialogWrapper<T> {
 	file_dialog: FileDialog,
-	state: Option<State>,
+	state: Option<State<T>>,
 	level_dir: Option<PathBuf>,
 	texture_dir: Option<PathBuf>,
 }
@@ -22,7 +22,7 @@ fn read_dirs(level_dir: &mut Option<PathBuf>, texture_dir: &mut Option<PathBuf>)
 	Some(())
 }
 
-impl FileDialogWrapper {
+impl<T> FileDialogWrapper<T> {
 	pub fn new() -> Self {
 		let mut level_dir = None;
 		let mut texture_dir = None;
@@ -51,34 +51,17 @@ impl FileDialogWrapper {
 		}
 	}
 	
-	fn try_initiate(&mut self, state: State) {
+	fn try_initiate(&mut self, state: State<T>) {
 		if self.state.is_none() {
 			let (dir, fd_fn): (_, fn(&mut FileDialog)) = match state {
 				State::SelectingLevel => (&self.level_dir, FileDialog::select_file),
-				State::SavingTexture => (&self.texture_dir, FileDialog::save_file),
+				State::SavingTexture(_) => (&self.texture_dir, FileDialog::save_file),
 			};
 			if let Some(dir) = dir {
 				self.file_dialog.config_mut().initial_directory = dir.clone();
 			}
 			self.state = Some(state);
 			fd_fn(&mut self.file_dialog);
-		}
-	}
-	
-	fn try_finish(&mut self, state: State) -> Option<PathBuf> {
-		if Some(state) == self.state {
-			let path = self.file_dialog.take_selected()?;
-			let save_path = path.parent().unwrap_or(&path);
-			let dir = match state {
-				State::SelectingLevel => &mut self.level_dir,
-				State::SavingTexture => &mut self.texture_dir,
-			};
-			*dir = Some(save_path.to_owned());
-			self.save_dirs();
-			self.state = None;
-			Some(path)
-		} else {
-			None
 		}
 	}
 	
@@ -90,15 +73,40 @@ impl FileDialogWrapper {
 		self.try_initiate(State::SelectingLevel);
 	}
 	
-	pub fn save_texture(&mut self) {
-		self.try_initiate(State::SavingTexture);
+	pub fn save_texture(&mut self, arg: T) {
+		self.try_initiate(State::SavingTexture(arg));
 	}
 	
 	pub fn get_level_path(&mut self) -> Option<PathBuf> {
-		self.try_finish(State::SelectingLevel)
+		if let Some(State::SelectingLevel) = self.state {
+			let path = self.file_dialog.take_selected()?;
+			let save_path = path.parent().unwrap_or(&path);
+			self.level_dir = Some(save_path.to_owned());
+			self.save_dirs();
+			self.state = None;
+			Some(path)
+		} else {
+			None
+		}
 	}
 	
-	pub fn get_texture_path(&mut self) -> Option<PathBuf> {
-		self.try_finish(State::SavingTexture)
+	pub fn get_texture_path(&mut self) -> Option<(PathBuf, T)> {
+		match self.state.take() {
+			Some(State::SavingTexture(arg)) => {
+				let Some(path) = self.file_dialog.take_selected() else {
+					self.state = Some(State::SavingTexture(arg));
+					return None;
+				};
+				let save_path = path.parent().unwrap_or(&path);
+				self.texture_dir = Some(save_path.to_owned());
+				self.save_dirs();
+				self.state = None;
+				Some((path, arg))
+			},
+			other => {
+				self.state = other;
+				None
+			},
+		}
 	}
 }

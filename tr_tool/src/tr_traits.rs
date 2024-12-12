@@ -1,7 +1,7 @@
 use std::f32::consts::TAU;
-use glam::{I16Vec3, IVec3, Mat4, U16Vec3, Vec3};
+use glam::{I16Vec3, IVec3, Mat4, U16Vec2, U16Vec3, Vec3};
 use tr_model::{tr1, tr2, tr3, tr4, tr5, Readable};
-use crate::{as_bytes::ReinterpretAsBytes, PolyType};
+use crate::{as_bytes::ReinterpretAsBytes, object_data::PolyType};
 
 pub enum LevelStore {
 	Tr1(Box<tr1::Level>),
@@ -75,9 +75,12 @@ pub trait Entity {
 	fn angle(&self) -> u16;
 }
 
+#[allow(dead_code)]//todo: remove
 pub trait ObjectTexture: ReinterpretAsBytes {
 	const UVS_OFFSET: u32;
 	fn blend_mode(&self) -> u16;
+	fn atlas_index(&self) -> u16;
+	fn uvs(&self) -> [U16Vec2; 4];
 }
 
 pub trait Mesh<'a> {
@@ -114,9 +117,11 @@ pub trait Level: Readable {
 	fn mesh_offsets(&self) -> &[u32];
 	fn palette_24bit(&self) -> Option<&[tr1::Color24Bit; tr1::PALETTE_LEN]>;
 	fn palette_32bit(&self) -> Option<&[tr2::Color32BitRgb; tr1::PALETTE_LEN]>;
+	fn num_atlases(&self) -> usize;
 	fn atlases_palette(&self) -> Option<&[[u8; tr1::ATLAS_PIXELS]]>;
 	fn atlases_16bit(&self) -> Option<&[[tr2::Color16BitArgb; tr1::ATLAS_PIXELS]]>;
 	fn atlases_32bit(&self) -> Option<&[[tr4::Color32BitBgra; tr1::ATLAS_PIXELS]]>;
+	fn misc_images(&self) -> Option<&[[tr4::Color32BitBgra; tr1::ATLAS_PIXELS]]>;
 	fn get_mesh_nodes(&self, model: &Self::Model) -> &[tr1::MeshNode];
 	fn get_mesh(&self, mesh_offset: u32) -> Self::Mesh<'_>;
 	fn get_frame(&self, model: &Self::Model) -> Self::Frame<'_>;
@@ -199,6 +204,8 @@ impl Entity for tr1::Entity {
 impl ObjectTexture for tr1::ObjectTexture {
 	const UVS_OFFSET: u32 = 2;
 	fn blend_mode(&self) -> u16 { self.blend_mode }
+	fn atlas_index(&self) -> u16 { self.atlas_index }
+	fn uvs(&self) -> [U16Vec2; 4] { self.uvs }
 }
 
 impl Face for tr1::SolidQuad { const POLY_TYPE: PolyType = PolyType::Quad; }
@@ -258,9 +265,11 @@ impl Level for tr1::Level {
 	fn mesh_offsets(&self) -> &[u32] { &self.mesh_offsets }
 	fn palette_24bit(&self) -> Option<&[tr1::Color24Bit; tr1::PALETTE_LEN]> { Some(&self.palette) }
 	fn palette_32bit(&self) -> Option<&[tr2::Color32BitRgb; tr1::PALETTE_LEN]> { None }
+	fn num_atlases(&self) -> usize { self.atlases.len() }
 	fn atlases_palette(&self) -> Option<&[[u8; tr1::ATLAS_PIXELS]]> { Some(&self.atlases) }
 	fn atlases_16bit(&self) -> Option<&[[tr2::Color16BitArgb; tr1::ATLAS_PIXELS]]> { None }
 	fn atlases_32bit(&self) -> Option<&[[tr4::Color32BitBgra; tr1::ATLAS_PIXELS]]> { None }
+	fn misc_images(&self) -> Option<&[[tr4::Color32BitBgra; tr1::ATLAS_PIXELS]]> { None }
 	fn get_mesh_nodes(&self, model: &Self::Model) -> &[tr1::MeshNode] { self.get_mesh_nodes(model) }
 	fn get_mesh(&self, mesh_offset: u32) -> Self::Mesh<'_> { self.get_mesh(mesh_offset) }
 	fn get_frame(&self, model: &Self::Model) -> Self::Frame<'_> { self.get_frame(model) }
@@ -363,11 +372,13 @@ impl Level for tr2::Level {
 	fn mesh_offsets(&self) -> &[u32] { &self.mesh_offsets }
 	fn palette_24bit(&self) -> Option<&[tr1::Color24Bit; tr1::PALETTE_LEN]> { Some(&self.palette_24bit) }
 	fn palette_32bit(&self) -> Option<&[tr2::Color32BitRgb; tr1::PALETTE_LEN]> { Some(&self.palette_32bit) }
+	fn num_atlases(&self) -> usize { self.atlases_palette.len() }
 	fn atlases_palette(&self) -> Option<&[[u8; tr1::ATLAS_PIXELS]]> { Some(&self.atlases_palette) }
 	fn atlases_16bit(&self) -> Option<&[[tr2::Color16BitArgb; tr1::ATLAS_PIXELS]]> {
 		Some(&self.atlases_16bit)
 	}
 	fn atlases_32bit(&self) -> Option<&[[tr4::Color32BitBgra; tr1::ATLAS_PIXELS]]> { None }
+	fn misc_images(&self) -> Option<&[[tr4::Color32BitBgra; tr1::ATLAS_PIXELS]]> { None }
 	fn get_mesh_nodes(&self, model: &Self::Model) -> &[tr1::MeshNode] { self.get_mesh_nodes(model) }
 	fn get_mesh(&self, mesh_offset: u32) -> Self::Mesh<'_> { self.get_mesh(mesh_offset) }
 	fn get_frame(&self, model: &Self::Model) -> Self::Frame<'_> { self.get_frame(model) }
@@ -438,11 +449,13 @@ impl Level for tr3::Level {
 	fn mesh_offsets(&self) -> &[u32] { &self.mesh_offsets }
 	fn palette_24bit(&self) -> Option<&[tr1::Color24Bit; tr1::PALETTE_LEN]> { Some(&self.palette_24bit) }
 	fn palette_32bit(&self) -> Option<&[tr2::Color32BitRgb; tr1::PALETTE_LEN]> { Some(&self.palette_32bit) }
+	fn num_atlases(&self) -> usize { self.atlases_palette.len() }
 	fn atlases_palette(&self) -> Option<&[[u8; tr1::ATLAS_PIXELS]]> { Some(&self.atlases_palette) }
 	fn atlases_16bit(&self) -> Option<&[[tr2::Color16BitArgb; tr1::ATLAS_PIXELS]]> {
 		Some(&self.atlases_16bit)
 	}
 	fn atlases_32bit(&self) -> Option<&[[tr4::Color32BitBgra; tr1::ATLAS_PIXELS]]> { None }
+	fn misc_images(&self) -> Option<&[[tr4::Color32BitBgra; tr1::ATLAS_PIXELS]]> { None }
 	fn get_mesh_nodes(&self, model: &Self::Model) -> &[tr1::MeshNode] { self.get_mesh_nodes(model) }
 	fn get_mesh(&self, mesh_offset: u32) -> Self::Mesh<'_> { self.get_mesh(mesh_offset) }
 	fn get_frame(&self, model: &Self::Model) -> Self::Frame<'_> { self.get_frame(model) }
@@ -477,6 +490,8 @@ impl Entity for tr4::Entity {
 impl ObjectTexture for tr4::ObjectTexture {
 	const UVS_OFFSET: u32 = 3;
 	fn blend_mode(&self) -> u16 { self.blend_mode }
+	fn atlas_index(&self) -> u16 { self.atlas_index_face_type.atlas_index() }
+	fn uvs(&self) -> [U16Vec2; 4] { self.uvs }
 }
 
 impl Face for tr4::EffectsQuad { const POLY_TYPE: PolyType = PolyType::Quad; }
@@ -546,12 +561,16 @@ impl Level for tr4::Level {
 	fn mesh_offsets(&self) -> &[u32] { &self.level_data.mesh_offsets }
 	fn palette_24bit(&self) -> Option<&[tr1::Color24Bit; tr1::PALETTE_LEN]> { None }
 	fn palette_32bit(&self) -> Option<&[tr2::Color32BitRgb; tr1::PALETTE_LEN]> { None }
+	fn num_atlases(&self) -> usize { self.atlases_32bit.len() }
 	fn atlases_palette(&self) -> Option<&[[u8; tr1::ATLAS_PIXELS]]> { None }
 	fn atlases_16bit(&self) -> Option<&[[tr2::Color16BitArgb; tr1::ATLAS_PIXELS]]> {
 		Some(&self.atlases_16bit)
 	}
 	fn atlases_32bit(&self) -> Option<&[[tr4::Color32BitBgra; tr1::ATLAS_PIXELS]]> {
 		Some(&self.atlases_32bit)
+	}
+	fn misc_images(&self) -> Option<&[[tr4::Color32BitBgra; tr1::ATLAS_PIXELS]]> {
+		Some(&self.misc_images[..])
 	}
 	fn get_mesh_nodes(&self, model: &Self::Model) -> &[tr1::MeshNode] { self.get_mesh_nodes(model) }
 	fn get_mesh(&self, mesh_offset: u32) -> Self::Mesh<'_> { self.get_mesh(mesh_offset) }
@@ -623,6 +642,8 @@ impl Room for tr5::Room {
 impl ObjectTexture for tr5::ObjectTexture {
 	const UVS_OFFSET: u32 = 3;
 	fn blend_mode(&self) -> u16 { self.blend_mode }
+	fn atlas_index(&self) -> u16 { self.atlas_index_face_type.atlas_index() }
+	fn uvs(&self) -> [U16Vec2; 4] { self.uvs }
 }
 
 impl Level for tr5::Level {
@@ -642,12 +663,16 @@ impl Level for tr5::Level {
 	fn mesh_offsets(&self) -> &[u32] { &self.mesh_offsets }
 	fn palette_24bit(&self) -> Option<&[tr1::Color24Bit; tr1::PALETTE_LEN]> { None }
 	fn palette_32bit(&self) -> Option<&[tr2::Color32BitRgb; tr1::PALETTE_LEN]> { None }
+	fn num_atlases(&self) -> usize { self.atlases_32bit.len() }
 	fn atlases_palette(&self) -> Option<&[[u8; tr1::ATLAS_PIXELS]]> { None }
 	fn atlases_16bit(&self) -> Option<&[[tr2::Color16BitArgb; tr1::ATLAS_PIXELS]]> {
 		Some(&self.atlases_16bit)
 	}
 	fn atlases_32bit(&self) -> Option<&[[tr4::Color32BitBgra; tr1::ATLAS_PIXELS]]> {
 		Some(&self.atlases_32bit)
+	}
+	fn misc_images(&self) -> Option<&[[tr4::Color32BitBgra; tr1::ATLAS_PIXELS]]> {
+		Some(&self.misc_images[..])
 	}
 	fn get_mesh_nodes(&self, model: &Self::Model) -> &[tr1::MeshNode] { self.get_mesh_nodes(model) }
 	fn get_mesh(&self, mesh_offset: u32) -> Self::Mesh<'_> { self.get_mesh(mesh_offset) }

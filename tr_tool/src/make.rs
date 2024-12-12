@@ -2,22 +2,21 @@ use crate::vec_tail::VecTail;
 use winit::dpi::PhysicalSize;
 use std::num::NonZeroU64;
 use wgpu::{
-	util::{BufferInitDescriptor, DeviceExt, TextureDataOrder}, BindGroup, BindGroupDescriptor,
-	BindGroupEntry, BindGroupLayout, BindGroupLayoutDescriptor, BindGroupLayoutEntry, BindingResource,
-	BindingType, Buffer, BufferBindingType, BufferUsages, Device, Extent3d, Queue, ShaderModule,
-	ShaderModuleDescriptor, ShaderSource, ShaderStages, Texture, TextureDescriptor, TextureDimension,
-	TextureFormat, TextureSampleType, TextureUsages, TextureView, TextureViewDescriptor,
-	TextureViewDimension, VertexAttribute, VertexBufferLayout, VertexFormat, VertexStepMode,
+	util::{BufferInitDescriptor, DeviceExt, TextureDataOrder}, BindGroup, BindGroupDescriptor, BindGroupEntry, BindGroupLayout, BindGroupLayoutDescriptor, BindGroupLayoutEntry, BindingResource, BindingType, Buffer, BufferBindingType, BufferUsages, CompareFunction, DepthBiasState, DepthStencilState, Device, Extent3d, Queue, ShaderModule, ShaderModuleDescriptor, ShaderSource, ShaderStages, StencilState, Texture, TextureDescriptor, TextureDimension, TextureFormat, TextureSampleType, TextureUsages, TextureView, TextureViewDescriptor, TextureViewDimension, VertexAttribute, VertexBufferLayout, VertexFormat, VertexStepMode
 };
 
 pub fn buffer(device: &Device, contents: &[u8], usage: BufferUsages) -> Buffer {
 	device.create_buffer_init(&BufferInitDescriptor { label: None, contents, usage })
 }
 
+pub fn writable_uniform(device: &Device, contents: &[u8]) -> Buffer {
+	buffer(device, contents, BufferUsages::UNIFORM | BufferUsages::COPY_DST)
+}
+
 pub fn shader(device: &Device, source: &str) -> ShaderModule {
-	device.create_shader_module(ShaderModuleDescriptor {
-		label: None, source: ShaderSource::Wgsl(source.into()),
-	})
+	device.create_shader_module(
+		ShaderModuleDescriptor { label: None, source: ShaderSource::Wgsl(source.into()) },
+	)
 }
 
 pub fn buffer_layout_entry(ty: BufferBindingType, size: usize) -> BindingType {
@@ -82,9 +81,11 @@ pub fn texture_view_with_data(
 	device: &Device, queue: &Queue, size: Extent3d, dimension: TextureDimension, format: TextureFormat,
 	usage: TextureUsages, data: &[u8],
 ) -> TextureView {
-	device.create_texture_with_data(
-		queue, &texture_desc(size, dimension, format, usage), TextureDataOrder::default(), data,
-	).create_view(&TextureViewDescriptor::default())
+	device
+		.create_texture_with_data(
+			queue, &texture_desc(size, dimension, format, usage), TextureDataOrder::default(), data,
+		)
+		.create_view(&TextureViewDescriptor::default())
 }
 
 pub fn depth_view(device: &Device, PhysicalSize { width, height }: PhysicalSize<u32>) -> TextureView {
@@ -119,4 +120,14 @@ pub fn vertex_buffer_layouts<'a>(
 		});
 	}
 	buffers
+}
+
+pub fn depth_stencil_state(depth_write_enabled: bool) -> DepthStencilState {
+	DepthStencilState {
+		bias: DepthBiasState::default(),
+		depth_compare: CompareFunction::Less,
+		depth_write_enabled,
+		format: TextureFormat::Depth32Float,
+		stencil: StencilState::default(),
+	}
 }

@@ -2,9 +2,7 @@ use std::ops::Range;
 use glam::IVec3;
 use tr_model::{tr1, tr3};
 use crate::{
-	as_bytes::ReinterpretAsBytes, geom_buffer::{self, GeomBuffer},
-	tr_traits::{Level, MeshTexturedFace, ObjectTexture, RoomFace, RoomVertex}, MeshFaceType, ObjectData,
-	WrittenFaceArray, WrittenMesh,
+	as_bytes::ReinterpretAsBytes, geom_buffer::{self, GeomBuffer}, object_data::{MeshFaceType, ObjectData}, tr_traits::{Level, MeshTexturedFace, ObjectTexture, RoomFace, RoomVertex}, WrittenFaceArray, WrittenMesh
 };
 
 #[repr(C)]

@@ -1,9 +1,9 @@
 use std::{iter, mem::size_of};
 use glam::Mat4;
 use tr_model::tr1;
-use crate::{as_bytes::{AsBytes, ReinterpretAsBytes}, tr_traits::Face, PolyType};
+use crate::{as_bytes::{AsBytes, ReinterpretAsBytes}, object_data::PolyType, tr_traits::Face};
 
-//2 MB
+/// 2 MB
 pub const GEOM_BUFFER_SIZE: usize = 2097152;
 
 fn texture_offset(poly_type: PolyType) -> u16 {

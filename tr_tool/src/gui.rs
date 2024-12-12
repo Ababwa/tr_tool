@@ -18,6 +18,8 @@ use winit::{
 	window::{Icon, Window, WindowBuilder},
 };
 
+use crate::geom_buffer::GEOM_BUFFER_SIZE;
+
 const TEXTURE_FORMAT: TextureFormat = TextureFormat::Bgra8Unorm;
 
 trait Wait: Future {
@@ -62,12 +64,8 @@ pub trait Gui {
 	);
 }
 
-pub fn run<T, G, F>(
-	title: T, window_icon: Icon, taskbar_icon: Icon, make_gui: F,
-) where
-	T: Into<String>,
-	G: Gui,
-	F: FnOnce(&Window, &Device, &Queue, &egui::Context, PhysicalSize<u32>) -> G,
+pub fn run<G, F>(title: &str, window_icon: Icon, taskbar_icon: Icon, make_gui: F)
+where G: Gui, F: FnOnce(&Window, &Device, &Queue, PhysicalSize<u32>) -> G,
 {
 	env_logger::init();
 	let event_loop = EventLoop::new().expect("new event loop");
@@ -99,19 +97,27 @@ pub fn run<T, G, F>(
 	});//something to look at during setup
 	let instance = Instance::default();
 	let surface = instance.create_surface(&window).expect("create surface");//2000ms
-	let adapter = instance.request_adapter(&RequestAdapterOptions {
-		power_preference: PowerPreference::HighPerformance,
-		force_fallback_adapter: false,
-		compatible_surface: Some(&surface),
-	}).wait().expect("request adapter");//430ms
-	let (device, queue) = adapter.request_device(
-		&DeviceDescriptor {
-			label: None,
-			required_features: Features::empty(),
-			required_limits: Limits::downlevel_defaults().using_resolution(adapter.limits()),
-		},
-		None,
-	).wait().expect("request device");//250ms
+	let adapter = instance
+		.request_adapter(
+			&RequestAdapterOptions {
+				power_preference: PowerPreference::HighPerformance,
+				force_fallback_adapter: false,
+				compatible_surface: Some(&surface),
+			},
+		)
+		.wait()
+		.expect("request adapter");//430ms
+	let mut required_limits = Limits::downlevel_webgl2_defaults().using_resolution(adapter.limits());
+	required_limits.max_storage_buffers_per_shader_stage = 1;
+	required_limits.max_storage_buffer_binding_size = GEOM_BUFFER_SIZE as u32;
+	required_limits.max_texture_array_layers = 512;
+	let (device, queue) = adapter
+		.request_device(
+			&DeviceDescriptor { label: None, required_features: Features::empty(), required_limits },
+			None,
+		)
+		.wait()
+		.expect("request device");//250ms
 	let device = Arc::new(device);
 	let mut config = surface
 		.get_default_config(&adapter, window_size.width, window_size.height)
@@ -123,7 +129,7 @@ pub fn run<T, G, F>(
 		egui_ctx.clone(), egui_ctx.viewport_id(), &window, None, None,
 	);
 	let mut egui_renderer = egui_wgpu::Renderer::new(&device, TEXTURE_FORMAT, None, 1);
-	let mut gui = make_gui(&window, &device, &queue, &egui_ctx, window_size);
+	let mut gui = make_gui(&window, &device, &queue, window_size);
 	tx.send(()).expect("signal painter");
 	painter.join().expect("join painter");
 	let mut last_frame = Instant::now();

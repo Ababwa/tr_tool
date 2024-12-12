@@ -1,7 +1,7 @@
-use std::{io::Result, mem::transmute, slice::Iter};
+use std::{io::{Read, Result}, mem::transmute, slice::Iter};
 use bitfield::bitfield;
 use glam::{I16Vec3, IVec3, U16Vec2, U16Vec3, UVec2, Vec3};
-use tr_readable::{Readable, ToLen};
+use tr_readable::{read_into, Readable, ToLen};
 use crate::{
 	tr1::{
 		get_packed_angles, AnimDispatch, Camera, Color24Bit, MeshLighting, MeshNode, Model, NumSectors,
@@ -12,6 +12,8 @@ use crate::{
 	tr3::{DsQuad, RoomStaticMesh, DsTri, RoomVertex, SoundDetails},
 	u16_cursor::U16Cursor,
 };
+
+pub const EXTENDED_SOUND_MAP_LEN: usize = 1024;
 
 //model
 
@@ -172,6 +174,25 @@ pub struct Ai {
 	pub angle: u32,
 }
 
+#[derive(Clone, Debug)]
+pub enum SoundMap {
+	Original(Box<[u16; SOUND_MAP_LEN]>),
+	Extended(Box<[u16; EXTENDED_SOUND_MAP_LEN]>),
+}
+
+unsafe fn read_sound_map<R: Read>(reader: &mut R, this: *mut SoundMap, demo_data: &Box<[u8]>) -> Result<()> {
+	if demo_data.len() == 2048 {
+		let mut sound_map = Box::new_uninit();
+		read_into(reader, sound_map.as_mut_ptr())?;
+		this.write(SoundMap::Extended(sound_map.assume_init()));
+	} else {
+		let mut sound_map = Box::new_uninit();
+		read_into(reader, sound_map.as_mut_ptr())?;
+		this.write(SoundMap::Original(sound_map.assume_init()));
+	}
+	Ok(())
+}
+
 #[derive(Readable, Clone, Debug)]
 pub struct LevelData {
 	pub unused: u32,
@@ -204,7 +225,7 @@ pub struct LevelData {
 	#[list(u32)] pub entities: Box<[Entity]>,
 	#[list(u32)] pub ais: Box<[Ai]>,
 	#[list(u16)] pub demo_data: Box<[u8]>,
-	#[boxed] pub sound_map: Box<[u16; SOUND_MAP_LEN]>,
+	#[delegate(read_sound_map, demo_data)] pub sound_map: SoundMap,
 	#[list(u32)] pub sound_details: Box<[SoundDetails]>,
 	#[list(u32)] pub sample_indices: Box<[u32]>,
 	pub padding: [u8; 6],
