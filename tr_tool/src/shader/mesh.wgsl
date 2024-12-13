@@ -185,7 +185,7 @@ struct Out {
 	@location(1) object_id: u32,
 }
 
-//each texel is a color channel
+//each texel (1 byte) is a color channel
 @group(0) @binding(4) var palette: texture_1d<u32>;
 @group(0) @binding(5) var atlases: texture_2d_array<u32>;
 
@@ -280,12 +280,18 @@ fn texture_32bit_fs_main(vtf: TextureVTF) -> Out {
 
 //==== flat texture ====
 
+struct Rect {
+	pos: vec2i,
+	size: vec2i,
+}
+
 struct Viewport {
-	width: u32,
-	height: u32,
+	clip: Rect,
+	view: Rect,
 }
 
 @group(0) @binding(6) var<uniform> viewport: Viewport;
+@group(0) @binding(7) var<uniform> scroll_offset: vec2f;
 
 struct FlatVTF {
 	@builtin(position) position: vec4f,
@@ -295,11 +301,17 @@ struct FlatVTF {
 @vertex
 fn flat_vs_main(@location(0) vertex: u32) -> FlatVTF {
 	let uv = vec2u(((vertex + 1) / 2) % 2, vertex / 2);
-	let height = data_offsets.num_atlases * 256;
-	let pixel = uv * vec2u(256, height);
-	let uv_i = vec2i(uv);
-	let pos = vec2i(2 * uv_i.x - 1, 1 - 2 * uv_i.y);
-	return FlatVTF(vec4f(vec2f(pos), 0, 1), vec2f(pixel));
+	let pixel_uv = uv * 256 * vec2u(1, data_offsets.num_atlases);
+	/*
+	manual offsetting due to scrolling is necessary once the top of the viewport hits the top of the window
+	since egui/wgpu clamps the top of the viewport to the top of the window
+	*/
+	var offset = vec2i(0);
+	if viewport.view.pos.y == 0 {
+		offset.y = (viewport.clip.pos.y + 3) - i32(round(scroll_offset.y));
+	}
+	let ss = vec2f((vec2i(pixel_uv) + offset) * 2) / vec2f(viewport.view.size);
+	return FlatVTF(vec4f(ss.x - 1, 1 - ss.y, 0, 1), vec2f(pixel_uv));
 }
 
 fn get_pixel2(pixel: vec2f) -> u32 {

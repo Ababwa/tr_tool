@@ -11,6 +11,18 @@ pub enum LevelStore {
 	Tr5(Box<tr5::Level>),
 }
 
+impl LevelStore {
+	pub fn as_dyn(&self) -> &dyn LevelDyn {
+		match self {
+			LevelStore::Tr1(level) => level.as_ref(),
+			LevelStore::Tr2(level) => level.as_ref(),
+			LevelStore::Tr3(level) => level.as_ref(),
+			LevelStore::Tr4(level) => level.as_ref(),
+			LevelStore::Tr5(level) => level.as_ref(),
+		}
+	}
+}
+
 pub struct RoomGeom<'a, V, Q, T> {
 	pub vertices: &'a [V],
 	pub quads: &'a [Q],
@@ -100,19 +112,9 @@ pub trait Frame {
 	fn iter_rotations(&self) -> impl Iterator<Item = Mat4>;
 }
 
-pub trait Level: Readable {
-	type Model: Model;
-	type Room: Room;
-	type Entity: Entity;
-	type ObjectTexture: ObjectTexture;
-	type Mesh<'a>: Mesh<'a> where Self: 'a;
-	type Frame<'a>: Frame where Self: 'a;
+pub trait LevelDyn {
 	fn static_meshes(&self) -> &[tr1::StaticMesh];
-	fn models(&self) -> &[Self::Model];
 	fn sprite_sequences(&self) -> &[tr1::SpriteSequence];
-	fn rooms(&self) -> &[Self::Room];
-	fn entities(&self) -> &[Self::Entity];
-	fn object_textures(&self) -> &[Self::ObjectTexture];
 	fn sprite_textures(&self) -> &[tr1::SpriteTexture];
 	fn mesh_offsets(&self) -> &[u32];
 	fn palette_24bit(&self) -> Option<&[tr1::Color24Bit; tr1::PALETTE_LEN]>;
@@ -122,10 +124,23 @@ pub trait Level: Readable {
 	fn atlases_16bit(&self) -> Option<&[[tr2::Color16BitArgb; tr1::ATLAS_PIXELS]]>;
 	fn atlases_32bit(&self) -> Option<&[[tr4::Color32BitBgra; tr1::ATLAS_PIXELS]]>;
 	fn misc_images(&self) -> Option<&[[tr4::Color32BitBgra; tr1::ATLAS_PIXELS]]>;
+	fn store(self: Box<Self>) -> LevelStore;
+}
+
+pub trait Level: LevelDyn + Readable {
+	type Model: Model;
+	type Room: Room;
+	type Entity: Entity;
+	type ObjectTexture: ObjectTexture;
+	type Mesh<'a>: Mesh<'a> where Self: 'a;
+	type Frame<'a>: Frame where Self: 'a;
+	fn models(&self) -> &[Self::Model];
+	fn rooms(&self) -> &[Self::Room];
+	fn entities(&self) -> &[Self::Entity];
+	fn object_textures(&self) -> &[Self::ObjectTexture];
 	fn get_mesh_nodes(&self, model: &Self::Model) -> &[tr1::MeshNode];
 	fn get_mesh(&self, mesh_offset: u32) -> Self::Mesh<'_>;
 	fn get_frame(&self, model: &Self::Model) -> Self::Frame<'_>;
-	fn store(self: Box<Self>) -> LevelStore;
 }
 
 //impl helpers
@@ -248,19 +263,9 @@ impl Frame for &tr1::Frame {
 	}
 }
 
-impl Level for tr1::Level {
-	type Model = tr1::Model;
-	type Room = tr1::Room;
-	type Entity = tr1::Entity;
-	type ObjectTexture = tr1::ObjectTexture;
-	type Mesh<'a> = tr1::Mesh<'a>;
-	type Frame<'a> = &'a tr1::Frame;
+impl LevelDyn for tr1::Level {
 	fn static_meshes(&self) -> &[tr1::StaticMesh] { &self.static_meshes }
-	fn models(&self) -> &[Self::Model] { &self.models }
 	fn sprite_sequences(&self) -> &[tr1::SpriteSequence] { &self.sprite_sequences }
-	fn rooms(&self) -> &[Self::Room] { &self.rooms }
-	fn entities(&self) -> &[Self::Entity] { &self.entities }
-	fn object_textures(&self) -> &[Self::ObjectTexture] { &self.object_textures }
 	fn sprite_textures(&self) -> &[tr1::SpriteTexture] { &self.sprite_textures }
 	fn mesh_offsets(&self) -> &[u32] { &self.mesh_offsets }
 	fn palette_24bit(&self) -> Option<&[tr1::Color24Bit; tr1::PALETTE_LEN]> { Some(&self.palette) }
@@ -270,10 +275,23 @@ impl Level for tr1::Level {
 	fn atlases_16bit(&self) -> Option<&[[tr2::Color16BitArgb; tr1::ATLAS_PIXELS]]> { None }
 	fn atlases_32bit(&self) -> Option<&[[tr4::Color32BitBgra; tr1::ATLAS_PIXELS]]> { None }
 	fn misc_images(&self) -> Option<&[[tr4::Color32BitBgra; tr1::ATLAS_PIXELS]]> { None }
+	fn store(self: Box<Self>) -> LevelStore { LevelStore::Tr1(self) }
+}
+
+impl Level for tr1::Level {
+	type Model = tr1::Model;
+	type Room = tr1::Room;
+	type Entity = tr1::Entity;
+	type ObjectTexture = tr1::ObjectTexture;
+	type Mesh<'a> = tr1::Mesh<'a>;
+	type Frame<'a> = &'a tr1::Frame;
+	fn models(&self) -> &[Self::Model] { &self.models }
+	fn rooms(&self) -> &[Self::Room] { &self.rooms }
+	fn entities(&self) -> &[Self::Entity] { &self.entities }
+	fn object_textures(&self) -> &[Self::ObjectTexture] { &self.object_textures }
 	fn get_mesh_nodes(&self, model: &Self::Model) -> &[tr1::MeshNode] { self.get_mesh_nodes(model) }
 	fn get_mesh(&self, mesh_offset: u32) -> Self::Mesh<'_> { self.get_mesh(mesh_offset) }
 	fn get_frame(&self, model: &Self::Model) -> Self::Frame<'_> { self.get_frame(model) }
-	fn store(self: Box<Self>) -> LevelStore { LevelStore::Tr1(self) }
 }
 
 //tr2
@@ -355,19 +373,9 @@ impl<'a> Frame for tr2::Frame<'a> {
 	}
 }
 
-impl Level for tr2::Level {
-	type Model = tr1::Model;
-	type Room = tr2::Room;
-	type Entity = tr2::Entity;
-	type ObjectTexture = tr1::ObjectTexture;
-	type Mesh<'a> = tr2::Mesh<'a>;
-	type Frame<'a> = tr2::Frame<'a>;
+impl LevelDyn for tr2::Level {
 	fn static_meshes(&self) -> &[tr1::StaticMesh] { &self.static_meshes }
-	fn models(&self) -> &[Self::Model] { &self.models }
 	fn sprite_sequences(&self) -> &[tr1::SpriteSequence] { &self.sprite_sequences }
-	fn rooms(&self) -> &[Self::Room] { &self.rooms }
-	fn entities(&self) -> &[Self::Entity] { &self.entities }
-	fn object_textures(&self) -> &[Self::ObjectTexture] { &self.object_textures }
 	fn sprite_textures(&self) -> &[tr1::SpriteTexture] { &self.sprite_textures }
 	fn mesh_offsets(&self) -> &[u32] { &self.mesh_offsets }
 	fn palette_24bit(&self) -> Option<&[tr1::Color24Bit; tr1::PALETTE_LEN]> { Some(&self.palette_24bit) }
@@ -379,10 +387,23 @@ impl Level for tr2::Level {
 	}
 	fn atlases_32bit(&self) -> Option<&[[tr4::Color32BitBgra; tr1::ATLAS_PIXELS]]> { None }
 	fn misc_images(&self) -> Option<&[[tr4::Color32BitBgra; tr1::ATLAS_PIXELS]]> { None }
+	fn store(self: Box<Self>) -> LevelStore { LevelStore::Tr2(self) }
+}
+
+impl Level for tr2::Level {
+	type Model = tr1::Model;
+	type Room = tr2::Room;
+	type Entity = tr2::Entity;
+	type ObjectTexture = tr1::ObjectTexture;
+	type Mesh<'a> = tr2::Mesh<'a>;
+	type Frame<'a> = tr2::Frame<'a>;
+	fn models(&self) -> &[Self::Model] { &self.models }
+	fn rooms(&self) -> &[Self::Room] { &self.rooms }
+	fn entities(&self) -> &[Self::Entity] { &self.entities }
+	fn object_textures(&self) -> &[Self::ObjectTexture] { &self.object_textures }
 	fn get_mesh_nodes(&self, model: &Self::Model) -> &[tr1::MeshNode] { self.get_mesh_nodes(model) }
 	fn get_mesh(&self, mesh_offset: u32) -> Self::Mesh<'_> { self.get_mesh(mesh_offset) }
 	fn get_frame(&self, model: &Self::Model) -> Self::Frame<'_> { self.get_frame(model) }
-	fn store(self: Box<Self>) -> LevelStore { LevelStore::Tr2(self) }
 }
 
 //tr3
@@ -432,19 +453,9 @@ impl Room for tr3::Room {
 	fn flip_group(&self) -> u8 { 0 }
 }
 
-impl Level for tr3::Level {
-	type Model = tr1::Model;
-	type Room = tr3::Room;
-	type Entity = tr2::Entity;
-	type ObjectTexture = tr1::ObjectTexture;
-	type Mesh<'a> = tr2::Mesh<'a>;
-	type Frame<'a> = tr2::Frame<'a>;
+impl LevelDyn for tr3::Level {
 	fn static_meshes(&self) -> &[tr1::StaticMesh] { &self.static_meshes }
-	fn models(&self) -> &[Self::Model] { &self.models }
 	fn sprite_sequences(&self) -> &[tr1::SpriteSequence] { &self.sprite_sequences }
-	fn rooms(&self) -> &[Self::Room] { &self.rooms }
-	fn entities(&self) -> &[Self::Entity] { &self.entities }
-	fn object_textures(&self) -> &[Self::ObjectTexture] { &self.object_textures }
 	fn sprite_textures(&self) -> &[tr1::SpriteTexture] { &self.sprite_textures }
 	fn mesh_offsets(&self) -> &[u32] { &self.mesh_offsets }
 	fn palette_24bit(&self) -> Option<&[tr1::Color24Bit; tr1::PALETTE_LEN]> { Some(&self.palette_24bit) }
@@ -456,10 +467,23 @@ impl Level for tr3::Level {
 	}
 	fn atlases_32bit(&self) -> Option<&[[tr4::Color32BitBgra; tr1::ATLAS_PIXELS]]> { None }
 	fn misc_images(&self) -> Option<&[[tr4::Color32BitBgra; tr1::ATLAS_PIXELS]]> { None }
+	fn store(self: Box<Self>) -> LevelStore { LevelStore::Tr3(self) }
+}
+
+impl Level for tr3::Level {
+	type Model = tr1::Model;
+	type Room = tr3::Room;
+	type Entity = tr2::Entity;
+	type ObjectTexture = tr1::ObjectTexture;
+	type Mesh<'a> = tr2::Mesh<'a>;
+	type Frame<'a> = tr2::Frame<'a>;
+	fn models(&self) -> &[Self::Model] { &self.models }
+	fn rooms(&self) -> &[Self::Room] { &self.rooms }
+	fn entities(&self) -> &[Self::Entity] { &self.entities }
+	fn object_textures(&self) -> &[Self::ObjectTexture] { &self.object_textures }
 	fn get_mesh_nodes(&self, model: &Self::Model) -> &[tr1::MeshNode] { self.get_mesh_nodes(model) }
 	fn get_mesh(&self, mesh_offset: u32) -> Self::Mesh<'_> { self.get_mesh(mesh_offset) }
 	fn get_frame(&self, model: &Self::Model) -> Self::Frame<'_> { self.get_frame(model) }
-	fn store(self: Box<Self>) -> LevelStore { LevelStore::Tr3(self) }
 }
 
 //tr4
@@ -544,19 +568,9 @@ impl<'a> Frame for tr4::Frame<'a> {
 	}
 }
 
-impl Level for tr4::Level {
-	type Model = tr1::Model;
-	type Room = tr4::Room;
-	type Entity = tr4::Entity;
-	type ObjectTexture = tr4::ObjectTexture;
-	type Mesh<'a> = tr4::Mesh<'a>;
-	type Frame<'a> = tr4::Frame<'a>;
+impl LevelDyn for tr4::Level {
 	fn static_meshes(&self) -> &[tr1::StaticMesh] { &self.level_data.static_meshes }
-	fn models(&self) -> &[Self::Model] { &self.level_data.models }
 	fn sprite_sequences(&self) -> &[tr1::SpriteSequence] { &self.level_data.sprite_sequences }
-	fn rooms(&self) -> &[Self::Room] { &self.level_data.rooms }
-	fn entities(&self) -> &[Self::Entity] { &self.level_data.entities }
-	fn object_textures(&self) -> &[Self::ObjectTexture] { &self.level_data.object_textures }
 	fn sprite_textures(&self) -> &[tr1::SpriteTexture] { &self.level_data.sprite_textures }
 	fn mesh_offsets(&self) -> &[u32] { &self.level_data.mesh_offsets }
 	fn palette_24bit(&self) -> Option<&[tr1::Color24Bit; tr1::PALETTE_LEN]> { None }
@@ -572,10 +586,23 @@ impl Level for tr4::Level {
 	fn misc_images(&self) -> Option<&[[tr4::Color32BitBgra; tr1::ATLAS_PIXELS]]> {
 		Some(&self.misc_images[..])
 	}
+	fn store(self: Box<Self>) -> LevelStore { LevelStore::Tr4(self) }
+}
+
+impl Level for tr4::Level {
+	type Model = tr1::Model;
+	type Room = tr4::Room;
+	type Entity = tr4::Entity;
+	type ObjectTexture = tr4::ObjectTexture;
+	type Mesh<'a> = tr4::Mesh<'a>;
+	type Frame<'a> = tr4::Frame<'a>;
+	fn models(&self) -> &[Self::Model] { &self.level_data.models }
+	fn rooms(&self) -> &[Self::Room] { &self.level_data.rooms }
+	fn entities(&self) -> &[Self::Entity] { &self.level_data.entities }
+	fn object_textures(&self) -> &[Self::ObjectTexture] { &self.level_data.object_textures }
 	fn get_mesh_nodes(&self, model: &Self::Model) -> &[tr1::MeshNode] { self.get_mesh_nodes(model) }
 	fn get_mesh(&self, mesh_offset: u32) -> Self::Mesh<'_> { self.get_mesh(mesh_offset) }
 	fn get_frame(&self, model: &Self::Model) -> Self::Frame<'_> { self.get_frame(model) }
-	fn store(self: Box<Self>) -> LevelStore { LevelStore::Tr4(self) }
 }
 
 //tr5
@@ -646,19 +673,9 @@ impl ObjectTexture for tr5::ObjectTexture {
 	fn uvs(&self) -> [U16Vec2; 4] { self.uvs }
 }
 
-impl Level for tr5::Level {
-	type Model = tr5::Model;
-	type Room = tr5::Room;
-	type Entity = tr4::Entity;
-	type ObjectTexture = tr5::ObjectTexture;
-	type Mesh<'a> = tr4::Mesh<'a>;
-	type Frame<'a> = tr4::Frame<'a>;
+impl LevelDyn for tr5::Level {
 	fn static_meshes(&self) -> &[tr1::StaticMesh] { &self.static_meshes }
-	fn models(&self) -> &[Self::Model] { &self.models }
 	fn sprite_sequences(&self) -> &[tr1::SpriteSequence] { &self.sprite_sequences }
-	fn rooms(&self) -> &[Self::Room] { &self.rooms }
-	fn entities(&self) -> &[Self::Entity] { &self.entities }
-	fn object_textures(&self) -> &[Self::ObjectTexture] { &self.object_textures }
 	fn sprite_textures(&self) -> &[tr1::SpriteTexture] { &self.sprite_textures }
 	fn mesh_offsets(&self) -> &[u32] { &self.mesh_offsets }
 	fn palette_24bit(&self) -> Option<&[tr1::Color24Bit; tr1::PALETTE_LEN]> { None }
@@ -674,8 +691,21 @@ impl Level for tr5::Level {
 	fn misc_images(&self) -> Option<&[[tr4::Color32BitBgra; tr1::ATLAS_PIXELS]]> {
 		Some(&self.misc_images[..])
 	}
+	fn store(self: Box<Self>) -> LevelStore { LevelStore::Tr5(self) }
+}
+
+impl Level for tr5::Level {
+	type Model = tr5::Model;
+	type Room = tr5::Room;
+	type Entity = tr4::Entity;
+	type ObjectTexture = tr5::ObjectTexture;
+	type Mesh<'a> = tr4::Mesh<'a>;
+	type Frame<'a> = tr4::Frame<'a>;
+	fn models(&self) -> &[Self::Model] { &self.models }
+	fn rooms(&self) -> &[Self::Room] { &self.rooms }
+	fn entities(&self) -> &[Self::Entity] { &self.entities }
+	fn object_textures(&self) -> &[Self::ObjectTexture] { &self.object_textures }
 	fn get_mesh_nodes(&self, model: &Self::Model) -> &[tr1::MeshNode] { self.get_mesh_nodes(model) }
 	fn get_mesh(&self, mesh_offset: u32) -> Self::Mesh<'_> { self.get_mesh(mesh_offset) }
 	fn get_frame(&self, model: &Self::Model) -> Self::Frame<'_> { self.get_frame(model) }
-	fn store(self: Box<Self>) -> LevelStore { LevelStore::Tr5(self) }
 }

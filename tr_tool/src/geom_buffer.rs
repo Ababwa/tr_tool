@@ -3,8 +3,8 @@ use glam::Mat4;
 use tr_model::tr1;
 use crate::{as_bytes::{AsBytes, ReinterpretAsBytes}, object_data::PolyType, tr_traits::Face};
 
-/// 2 MB
-pub const GEOM_BUFFER_SIZE: usize = 2097152;
+/// 4 MB
+pub const GEOM_BUFFER_SIZE: usize = 4194304;
 
 fn texture_offset(poly_type: PolyType) -> u16 {
 	match poly_type {
@@ -14,7 +14,7 @@ fn texture_offset(poly_type: PolyType) -> u16 {
 }
 
 pub struct Output {
-	pub buffer: Box<[u8; GEOM_BUFFER_SIZE]>,
+	pub data_buffer: Box<[u8; GEOM_BUFFER_SIZE]>,
 	/// Offset of transforms in 16-byte units.
 	pub transforms_offset: u32,
 	/// Offset of face array offsets in 4-byte units.
@@ -121,15 +121,15 @@ impl GeomBuffer {
 		println!("total: {}", size);
 		assert!(size < GEOM_BUFFER_SIZE);
 		
-		let mut buffer = unsafe { Box::<[u8; GEOM_BUFFER_SIZE]>::new_uninit().assume_init() };
-		buffer[..geom_bytes].copy_from_slice(&self.geom);
-		buffer[transforms_offset..][..transforms_bytes].copy_from_slice(self.transforms.as_bytes());
-		buffer[face_array_offsets_offset..][..face_array_offsets_bytes].copy_from_slice(self.face_array_offsets.as_bytes());
-		buffer[object_textures_offset..][..object_textures_bytes].copy_from_slice(object_textures.as_bytes());
-		buffer[sprite_textures_offset..][..sprite_textures_bytes].copy_from_slice(sprite_textures.as_bytes());
+		let mut data_buffer = unsafe { Box::<[u8; GEOM_BUFFER_SIZE]>::new_uninit().assume_init() };
+		data_buffer[..geom_bytes].copy_from_slice(&self.geom);
+		data_buffer[transforms_offset..][..transforms_bytes].copy_from_slice(self.transforms.as_bytes());
+		data_buffer[face_array_offsets_offset..][..face_array_offsets_bytes].copy_from_slice(self.face_array_offsets.as_bytes());
+		data_buffer[object_textures_offset..][..object_textures_bytes].copy_from_slice(object_textures.as_bytes());
+		data_buffer[sprite_textures_offset..][..sprite_textures_bytes].copy_from_slice(sprite_textures.as_bytes());
 		
 		Output {
-			buffer,
+			data_buffer,
 			transforms_offset: transforms_offset as u32 / 16,
 			face_array_offsets_offset: face_array_offsets_offset as u32 / 4,
 			object_textures_offset: object_textures_offset as u32 / 2,

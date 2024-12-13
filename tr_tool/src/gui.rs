@@ -17,7 +17,6 @@ use winit::{
 	platform::windows::WindowBuilderExtWindows,
 	window::{Icon, Window, WindowBuilder},
 };
-
 use crate::geom_buffer::GEOM_BUFFER_SIZE;
 
 const TEXTURE_FORMAT: TextureFormat = TextureFormat::Bgra8Unorm;
@@ -44,28 +43,24 @@ fn sb_surface(window: &Window, size: PhysicalSize<u32>) -> softbuffer::Surface<&
 }
 
 pub trait Gui {
-	fn resize(&mut self, window_size: PhysicalSize<u32>, device: &Device, queue: &Queue);
+	fn resize(&mut self, window_size: PhysicalSize<u32>);
 	fn modifiers(&mut self, modifers: ModifiersState);
-	fn mouse_button(
-		&mut self, window: &Window, device: Arc<Device>, queue: &Queue, button: MouseButton,
-		state: ElementState,
-	);
+	fn mouse_button(&mut self, button: MouseButton, state: ElementState);
 	fn mouse_motion(&mut self, delta: DVec2);
 	fn mouse_wheel(&mut self, delta: MouseScrollDelta);
-	fn cursor_moved(&mut self, window: &Window, pos: PhysicalPosition<f64>);
-	fn gui(&mut self, window: &Window, device: &Device, queue: &Queue, ctx: &egui::Context);
+	fn cursor_moved(&mut self, pos: PhysicalPosition<f64>);
+	fn gui(&mut self, ctx: &egui::Context);
 	fn key(
-		&mut self, window: &Window, target: &EventLoopWindowTarget<()>, key_code: KeyCode,
-		state: ElementState, repeat: bool,
+		&mut self, target: &EventLoopWindowTarget<()>, key_code: KeyCode, state: ElementState, repeat: bool,
 	);
 	fn render(
-		&mut self, queue: &Queue, encoder: &mut CommandEncoder, view: &TextureView, delta_time: Duration,
+		&mut self, encoder: &mut CommandEncoder, view: &TextureView, delta_time: Duration,
 		last_render_time: Duration,
 	);
 }
 
 pub fn run<G, F>(title: &str, window_icon: Icon, taskbar_icon: Icon, make_gui: F)
-where G: Gui, F: FnOnce(&Window, &Device, &Queue, PhysicalSize<u32>) -> G,
+where G: Gui, F: FnOnce(Arc<Window>, Arc<Device>, Arc<Queue>, PhysicalSize<u32>) -> G,
 {
 	env_logger::init();
 	let event_loop = EventLoop::new().expect("new event loop");
@@ -76,8 +71,8 @@ where G: Gui, F: FnOnce(&Window, &Device, &Queue, PhysicalSize<u32>) -> G,
 		.with_taskbar_icon(Some(taskbar_icon))
 		.build(&event_loop)
 		.expect("build window");
-	let mut window_size = window.inner_size();
 	let window = Arc::new(window);
+	let mut window_size = window.inner_size();
 	let painter_window = window.clone();
 	let (tx, rx) = channel();
 	let painter = spawn(move || {
@@ -119,6 +114,7 @@ where G: Gui, F: FnOnce(&Window, &Device, &Queue, PhysicalSize<u32>) -> G,
 		.wait()
 		.expect("request device");//250ms
 	let device = Arc::new(device);
+	let queue = Arc::new(queue);
 	let mut config = surface
 		.get_default_config(&adapter, window_size.width, window_size.height)
 		.expect("get default config");
@@ -129,11 +125,12 @@ where G: Gui, F: FnOnce(&Window, &Device, &Queue, PhysicalSize<u32>) -> G,
 		egui_ctx.clone(), egui_ctx.viewport_id(), &window, None, None,
 	);
 	let mut egui_renderer = egui_wgpu::Renderer::new(&device, TEXTURE_FORMAT, None, 1);
-	let mut gui = make_gui(&window, &device, &queue, window_size);
+	let mut gui = make_gui(window.clone(), device.clone(), queue.clone(), window_size);
 	tx.send(()).expect("signal painter");
 	painter.join().expect("join painter");
 	let mut last_frame = Instant::now();
 	let mut last_render_time = Duration::ZERO;
+	let mut draw = true;
 	event_loop.run(|event, target| match event {
 		Event::DeviceEvent { event: DeviceEvent::MouseMotion { delta: (x, y) }, .. } => {
 			gui.mouse_motion(DVec2 { x, y });
@@ -143,23 +140,26 @@ where G: Gui, F: FnOnce(&Window, &Device, &Queue, PhysicalSize<u32>) -> G,
 				match event {
 					WindowEvent::CloseRequested => target.exit(),
 					WindowEvent::ModifiersChanged(modifiers) => gui.modifiers(modifiers.state()),
-					WindowEvent::MouseInput { button, state, .. } => {
-						gui.mouse_button(&window, device.clone(), &queue, button, state);
-					},
+					WindowEvent::MouseInput { button, state, .. } => gui.mouse_button(button, state),
 					WindowEvent::MouseWheel { delta, .. } => gui.mouse_wheel(delta),
-					WindowEvent::CursorMoved { position, .. } => gui.cursor_moved(&window, position),
+					WindowEvent::CursorMoved { position, .. } => gui.cursor_moved(position),
 					WindowEvent::KeyboardInput {
 						event: KeyEvent { repeat, physical_key: PhysicalKey::Code(key_code), state, .. },
 						..
-					} => gui.key(&window, target, key_code, state, repeat),
+					} => gui.key(target, key_code, state, repeat),
 					WindowEvent::Resized(new_size) => {
-						window_size = new_size;
-						config.width = window_size.width;
-						config.height = window_size.height;
-						surface.configure(&device, &config);
-						gui.resize(window_size, &device, &queue);
+						if new_size.width * new_size.height != 0 {
+							window_size = new_size;
+							config.width = window_size.width;
+							config.height = window_size.height;
+							surface.configure(&device, &config);
+							gui.resize(window_size);
+							draw = true;
+						} else {
+							draw = false
+						}
 					},
-					WindowEvent::RedrawRequested => {
+					WindowEvent::RedrawRequested => if draw {
 						let start = Instant::now();
 						let delta_time = start - last_frame;
 						let mut encoder = device
@@ -167,7 +167,7 @@ where G: Gui, F: FnOnce(&Window, &Device, &Queue, PhysicalSize<u32>) -> G,
 						let frame = surface.get_current_texture().expect("get current texture");
 						let view = &frame.texture.create_view(&TextureViewDescriptor::default());
 						
-						gui.render(&queue, &mut encoder, view, delta_time, last_render_time);
+						gui.render(&mut encoder, view, delta_time, last_render_time);
 						
 						let egui_input = egui_input_state.take_egui_input(&window);
 						let egui::FullOutput {
@@ -176,7 +176,7 @@ where G: Gui, F: FnOnce(&Window, &Device, &Queue, PhysicalSize<u32>) -> G,
 							shapes,
 							pixels_per_point,
 							..
-						} = egui_ctx.run(egui_input, |ctx| gui.gui(&window, &device, &queue, ctx));
+						} = egui_ctx.run(egui_input, |ctx| gui.gui(ctx));
 						let screen_desc = egui_wgpu::ScreenDescriptor {
 							size_in_pixels: window_size.into(),
 							pixels_per_point,

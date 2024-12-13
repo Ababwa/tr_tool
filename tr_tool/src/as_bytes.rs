@@ -30,11 +30,13 @@ impl<T: ReinterpretAsBytes> ReinterpretAsBytes for MaybeUninit<T> {}
 impl ReinterpretAsBytes for u8 {}
 impl ReinterpretAsBytes for u16 {}
 impl ReinterpretAsBytes for u32 {}
+impl ReinterpretAsBytes for i32 {}
 impl ReinterpretAsBytes for U16Vec2 {}
 impl ReinterpretAsBytes for I16Vec3 {}
 impl ReinterpretAsBytes for IVec3 {}
 impl ReinterpretAsBytes for IVec4 {}
 impl ReinterpretAsBytes for Mat4 {}
+impl ReinterpretAsBytes for egui::Vec2 {}
 impl ReinterpretAsBytes for tr1::Color24Bit {}
 impl ReinterpretAsBytes for tr1::ObjectTexture {}
 impl ReinterpretAsBytes for tr1::SpriteTexture {}

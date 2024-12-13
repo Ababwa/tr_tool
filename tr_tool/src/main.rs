@@ -7,18 +7,19 @@ mod vec_tail;
 mod geom_buffer;
 mod data_writer;
 mod file_dialog;
-mod vec_convert;
 mod object_data;
 
 use std::{
-	collections::HashMap, env::args, f32::consts::{FRAC_PI_2, FRAC_PI_4, PI, TAU}, fs::File, io::{BufReader, Error, Read, Result, Seek}, mem::{discriminant, size_of, take, MaybeUninit}, ops::{Range, RangeInclusive}, path::PathBuf, rc::Rc, slice, sync::Arc, thread::{spawn, JoinHandle}, time::Duration
+	collections::HashMap, env, f32::consts::{FRAC_PI_2, FRAC_PI_4, PI, TAU}, fs::File,
+	io::{BufReader, Error, Read, Result, Seek}, mem::{self, size_of, MaybeUninit}, ops::Range,
+	path::PathBuf, slice, sync::Arc, thread::{self, JoinHandle}, time::Duration,
 };
 use data_writer::{DataWriter, MeshFaceOffsets, Output, RoomFaceOffsets};
 use file_dialog::FileDialogWrapper;
 use geom_buffer::{GeomBuffer, GEOM_BUFFER_SIZE};
 use keys::{KeyGroup, KeyStates};
 use as_bytes::{AsBytes, ReinterpretAsBytes};
-use glam::{DVec2, EulerRot, Mat4, UVec2, Vec2, Vec3, Vec3Swizzles};
+use glam::{DVec2, EulerRot, Mat4, Vec3, Vec3Swizzles};
 use gui::Gui;
 use object_data::{print_object_data, ObjectData, PolyType};
 use shared::min_max::{MinMax, VecMinMaxFromIterator};
@@ -26,17 +27,15 @@ use tr_model::{tr1, tr2, tr3, tr4, tr5};
 use tr_traits::{
 	Entity, Face, Frame, Level, LevelStore, Mesh, Model, Room, RoomGeom, RoomStaticMesh, RoomVertex,
 };
-use vec_convert::VecConvert;
 use wgpu::{
 	BindGroup, BindGroupLayout, BindingResource, BlendComponent, BlendFactor, BlendOperation, BlendState,
 	Buffer, BufferDescriptor, BufferUsages, Color, ColorTargetState, ColorWrites, CommandEncoder,
-	CommandEncoderDescriptor, CompareFunction, DepthBiasState, DepthStencilState, Device, Extent3d,
-	FragmentState, FrontFace, ImageCopyBuffer, ImageDataLayout, IndexFormat, LoadOp, Maintain, MapMode,
-	MultisampleState, Operations, PipelineLayoutDescriptor, PrimitiveState, PrimitiveTopology, Queue,
-	RenderPassColorAttachment, RenderPassDepthStencilAttachment, RenderPassDescriptor, RenderPipeline,
-	RenderPipelineDescriptor, ShaderModule, ShaderStages, StencilState, StoreOp, Texture, TextureDimension,
-	TextureFormat, TextureUsages, TextureView, TextureViewDescriptor, TextureViewDimension, VertexFormat,
-	VertexState, VertexStepMode,
+	CommandEncoderDescriptor, Device, Extent3d, FragmentState, FrontFace, ImageCopyBuffer, ImageDataLayout,
+	IndexFormat, LoadOp, Maintain, MapMode, MultisampleState, Operations, PipelineLayoutDescriptor,
+	PrimitiveState, PrimitiveTopology, Queue, RenderPassColorAttachment, RenderPassDepthStencilAttachment,
+	RenderPassDescriptor, RenderPipeline, RenderPipelineDescriptor, ShaderModule, ShaderStages, StoreOp,
+	Texture, TextureDimension, TextureFormat, TextureUsages, TextureView, TextureViewDescriptor,
+	TextureViewDimension, VertexFormat, VertexState, VertexStepMode,
 };
 use winit::{
 	dpi::{PhysicalPosition, PhysicalSize}, event::{ElementState, MouseButton, MouseScrollDelta},
@@ -55,6 +54,14 @@ const REVERSE_INDICES: [u16; 4] = [0, 2, 1, 3];//yields face vertex indices [1, 
 const NUM_QUAD_VERTICES: u32 = 4;
 const NUM_TRI_VERTICES: u32 = 3;
 
+#[repr(C)]
+struct Viewport {
+	clip: [i32; 4],
+	view: [i32; 4],
+}
+
+impl ReinterpretAsBytes for Viewport {}
+
 const DATA_ENTRY: u32 = 0;
 const STATICS_ENTRY: u32 = 1;
 const CAMERA_ENTRY: u32 = 2;
@@ -62,6 +69,7 @@ const PERSPECTIVE_ENTRY: u32 = 3;
 const PALETTE_ENTRY: u32 = 4;
 const ATLASES_ENTRY: u32 = 5;
 const VIEWPORT_ENTRY: u32 = 6;
+const SCROLL_OFFSET_ENTRY: u32 = 7;
 
 type InteractPixel = u32;
 const INTERACT_TEXTURE_FORMAT: TextureFormat = TextureFormat::R32Uint;
@@ -73,10 +81,6 @@ const LEFT: Vec3 = Vec3::X;
 const RIGHT: Vec3 = Vec3::NEG_X;
 const DOWN: Vec3 = Vec3::Y;
 const UP: Vec3 = Vec3::NEG_Y;
-
-const MIN_SPRITE_SCALE: u8 = 1;
-const MAX_SPRITE_SCALE: u8 = 4;
-const SPRITE_SCALE_RANGE: RangeInclusive<u8> = MIN_SPRITE_SCALE..=MAX_SPRITE_SCALE;
 
 struct ActionMap {
 	forward: KeyGroup,
@@ -172,14 +176,9 @@ impl TexturesTab {
 	}
 }
 
-#[derive(PartialEq, Eq)]
-enum TexturesDisplay {
-	Atlases,
-	Sprites,
-}
-
 struct LoadedLevelShared {
-	texture_palette_bg: Option<BindGroup>,
+	viewport_buffer: Buffer,
+	palette_24bit_bg: Option<BindGroup>,
 	texture_16bit_bg: Option<BindGroup>,
 	texture_32bit_bg: Option<BindGroup>,
 	misc_images_bg: Option<BindGroup>,
@@ -190,11 +189,11 @@ struct LoadedLevel {
 	depth_view: TextureView,
 	interact_texture: Texture,
 	interact_view: TextureView,
-	camera_transform_buffer: Buffer,
-	perspective_transform_buffer: Buffer,
 	face_instance_buffer: Buffer,
 	sprite_instance_buffer: Buffer,
-	solid_24bit_bg: Option<BindGroup>,
+	camera_transform_buffer: Buffer,
+	perspective_transform_buffer: Buffer,
+	scroll_offset_buffer: Buffer,
 	solid_32bit_bg: Option<BindGroup>,
 	shared: Arc<LoadedLevelShared>,
 	solid_mode: Option<SolidMode>,
@@ -227,16 +226,8 @@ struct LoadedLevel {
 	show_entity_sprites: bool,
 	//textures
 	textures_tab: TexturesTab,
-	textures_display: TexturesDisplay,
-	sprite_scale: u8,
 	num_atlases: u32,
 	num_misc_images: Option<u32>,
-}
-
-struct BindGroupLayouts {
-	solid: BindGroupLayout,
-	texture_palette: BindGroupLayout,
-	texture_direct: BindGroupLayout,
 }
 
 struct TexturePipelines {
@@ -256,8 +247,12 @@ struct TrToolShared {
 }
 
 struct TrTool {
+	//gui resources
+	window: Arc<Window>,
+	device: Arc<Device>,
+	queue: Arc<Queue>,
 	//static
-	bind_group_layouts: BindGroupLayouts,
+	bind_group_layout: BindGroupLayout,
 	solid_24bit_pl: RenderPipeline,
 	solid_32bit_pl: RenderPipeline,
 	shared: Arc<TrToolShared>,
@@ -344,7 +339,7 @@ impl LoadedLevel {
 				self.click_handle = Some(click_handle);
 			}
 		}
-		for update_fn in take(&mut self.frame_update_queue) {
+		for update_fn in mem::take(&mut self.frame_update_queue) {
 			update_fn(self);
 		}
 		let movement = [
@@ -401,7 +396,7 @@ impl LoadedLevel {
 			self.frame_update_queue.push(Box::new(move_camera));
 		}
 		if [
-			&self.shared.texture_palette_bg,
+			&self.shared.palette_24bit_bg,
 			&self.shared.texture_16bit_bg,
 			&self.shared.texture_32bit_bg,
 		].into_iter().filter(|bg| bg.is_some()).count() > 1 {
@@ -409,7 +404,7 @@ impl LoadedLevel {
 				.selected_text(self.texture_mode.label())
 				.show_ui(ui, |ui| {
 					for (bg, mode) in [
-						(&self.shared.texture_palette_bg, TextureMode::Palette),
+						(&self.shared.palette_24bit_bg, TextureMode::Palette),
 						(&self.shared.texture_16bit_bg, TextureMode::Bit16),
 						(&self.shared.texture_32bit_bg, TextureMode::Bit32),
 					] {
@@ -420,7 +415,7 @@ impl LoadedLevel {
 				});
 		}
 		if let (Some(solid_mode), Some(_), Some(_)) = {
-			(&mut self.solid_mode, &self.solid_24bit_bg, &self.solid_32bit_bg)
+			(&mut self.solid_mode, &self.shared.palette_24bit_bg, &self.solid_32bit_bg)
 		} {
 			egui::ComboBox::from_label("Solid color mode")
 				.selected_text(solid_mode.label())
@@ -488,14 +483,15 @@ fn write_face_array<'a, F: Face>(
 	WrittenFaceArray { index: geom_buffer.write_face_array(faces, vertex_array_offset), faces }
 }
 
-fn make_atlases_view<T>(device: &Device, queue: &Queue, atlases: &[T], format: TextureFormat) -> TextureView
-where T: ReinterpretAsBytes {
+fn make_atlases_view_gen<T: ReinterpretAsBytes>(
+	device: &Device, queue: &Queue, atlases: &[T], format: TextureFormat, size: u32,
+) -> TextureView {
 	make::texture_view_with_data(
 		device,
 		queue,
 		Extent3d {
-			width: tr1::ATLAS_SIDE_LEN as u32,
-			height: tr1::ATLAS_SIDE_LEN as u32,
+			width: size,
+			height: size,
 			depth_or_array_layers: atlases.len() as u32,
 		},
 		TextureDimension::D2,
@@ -505,13 +501,18 @@ where T: ReinterpretAsBytes {
 	)
 }
 
-fn make_palette_view<T>(device: &Device, queue: &Queue, palette: &[T; tr1::PALETTE_LEN]) -> TextureView
+fn make_atlases_view<T>(device: &Device, queue: &Queue, atlases: &[T], format: TextureFormat) -> TextureView
+where T: ReinterpretAsBytes {
+	make_atlases_view_gen(device, queue, atlases, format, tr1::ATLAS_SIDE_LEN as u32)
+}
+
+fn make_palette_view<T>(device: &Device, queue: &Queue, palette: &T) -> TextureView
 where T: ReinterpretAsBytes {
 	make::texture_view_with_data(
 		device,
 		queue,
 		Extent3d {
-			width: size_of::<[T; tr1::PALETTE_LEN]>() as u32,
+			width: size_of::<T>() as u32,
 			height: 1,
 			depth_or_array_layers: 1,
 		},
@@ -525,7 +526,7 @@ where T: ReinterpretAsBytes {
 fn parse_level<L: Level>(
 	device: &Device,
 	queue: &Queue,
-	bind_group_layouts: &BindGroupLayouts,
+	bind_group_layout: &BindGroupLayout,
 	window_size: PhysicalSize<u32>,
 	reader: &mut BufReader<File>,
 ) -> Result<LoadedLevel> {
@@ -787,7 +788,7 @@ fn parse_level<L: Level>(
 	flip_groups.sort_by_key(|f| f.number);
 	let Output {
 		geom_output: geom_buffer::Output {
-			buffer,
+			data_buffer,
 			transforms_offset,
 			face_array_offsets_offset,
 			object_textures_offset,
@@ -814,72 +815,78 @@ fn parse_level<L: Level>(
 	let camera_transform = make_camera_transform(pos, yaw, pitch);
 	let perspective_transform = make_perspective_transform(window_size);
 	//buffers
-	let data_buffer = make::buffer(device, &*buffer, BufferUsages::STORAGE);
+	let data_buffer = make::buffer(device, &*data_buffer, BufferUsages::STORAGE);
 	let statics_buffer = make::buffer(device, statics.as_bytes(), BufferUsages::UNIFORM);
 	let camera_transform_buffer = make::writable_uniform(device, camera_transform.as_bytes());
 	let perspective_transform_buffer = make::writable_uniform(device, perspective_transform.as_bytes());
+	let viewport_buffer = make::writable_uniform(device, &[0; size_of::<Viewport>()]);
+	let scroll_offset_buffer = make::writable_uniform(device, &[0; size_of::<egui::Vec2>()]);
 	//entries
-	let data_entry = make::entry(DATA_ENTRY, data_buffer.as_entire_binding());
-	let statics_entry = make::entry(STATICS_ENTRY, statics_buffer.as_entire_binding());
-	let camera_entry = make::entry(CAMERA_ENTRY, camera_transform_buffer.as_entire_binding());
-	let perspective_entry = make::entry(PERSPECTIVE_ENTRY, perspective_transform_buffer.as_entire_binding());
-	let common_entries = &[data_entry, statics_entry, camera_entry, perspective_entry][..];
+	let common_entries = &[
+		make::entry(DATA_ENTRY, data_buffer.as_entire_binding()),
+		make::entry(STATICS_ENTRY, statics_buffer.as_entire_binding()),
+		make::entry(CAMERA_ENTRY, camera_transform_buffer.as_entire_binding()),
+		make::entry(PERSPECTIVE_ENTRY, perspective_transform_buffer.as_entire_binding()),
+		make::entry(VIEWPORT_ENTRY, viewport_buffer.as_entire_binding()),
+		make::entry(SCROLL_OFFSET_ENTRY, scroll_offset_buffer.as_entire_binding()),
+	][..];
 	//bind groups
-	let mut solid_24bit_bg = None;
 	let mut solid_32bit_bg = None;
-	let mut texture_palette_bg = None;
+	let mut palette_24bit_bg = None;
 	let mut texture_16bit_bg = None;
 	let mut texture_32bit_bg = None;
 	let mut solid_mode = None;
 	let mut texture_mode = None;
+	let dummy_palette_view = make_palette_view(device, queue, &0u8);
+	let dummy_palette_entry = make::entry(PALETTE_ENTRY, BindingResource::TextureView(&dummy_palette_view));
+	let dummy_atlases_view = make_atlases_view_gen(device, queue, &[0u8; 2], TextureFormat::R8Uint, 1);
+	let dummy_atlases_entry = make::entry(ATLASES_ENTRY, BindingResource::TextureView(&dummy_atlases_view));
 	if let (Some(atlases), Some(palette)) = (level.atlases_palette(), level.palette_24bit()) {
 		let palette_view = make_palette_view(device, queue, palette);
 		let palette_entry = make::entry(PALETTE_ENTRY, BindingResource::TextureView(&palette_view));
-		let solid_entries = [common_entries, &[palette_entry.clone()]].concat();
-		let solid_bind_group = make::bind_group(device, &bind_group_layouts.solid, &solid_entries);
-		solid_24bit_bg = Some(solid_bind_group);
-		solid_mode = Some(SolidMode::Bit24);
 		let atlases_view = make_atlases_view(device, queue, atlases, TextureFormat::R8Uint);
 		let atlases_entry = make::entry(ATLASES_ENTRY, BindingResource::TextureView(&atlases_view));
-		let texture_entries = [common_entries, &[atlases_entry, palette_entry.clone()]].concat();
-		let texture_bind_group = make::bind_group(device, &bind_group_layouts.texture_palette, &texture_entries);
-		texture_palette_bg = Some(texture_bind_group);
+		let entries = [common_entries, &[palette_entry, atlases_entry]].concat();
+		let bind_group = make::bind_group(device, bind_group_layout, &entries);
+		palette_24bit_bg = Some(bind_group);
+		solid_mode = Some(SolidMode::Bit24);
 		texture_mode = Some(TextureMode::Palette);
 	}
 	if let Some(palette) = level.palette_32bit() {
 		let palette_view = make_palette_view(device, queue, palette);
 		let palette_entry = make::entry(PALETTE_ENTRY, BindingResource::TextureView(&palette_view));
-		let entries = [common_entries, &[palette_entry]].concat();
-		let bind_group = make::bind_group(device, &bind_group_layouts.solid, &entries);
+		let entries = [common_entries, &[palette_entry, dummy_atlases_entry]].concat();
+		let bind_group = make::bind_group(device, bind_group_layout, &entries);
 		solid_32bit_bg = Some(bind_group);
 		solid_mode = Some(SolidMode::Bit32);
 	}
 	if let Some(atlases) = level.atlases_16bit() {
 		let atlases_view = make_atlases_view(device, queue, atlases, TextureFormat::R16Uint);
 		let atlases_entry = make::entry(ATLASES_ENTRY, BindingResource::TextureView(&atlases_view));
-		let entries = [common_entries, &[atlases_entry]].concat();
-		let bind_group = make::bind_group(device, &bind_group_layouts.texture_direct, &entries);
+		let entries = [common_entries, &[dummy_palette_entry.clone(), atlases_entry]].concat();
+		let bind_group = make::bind_group(device, bind_group_layout, &entries);
 		texture_16bit_bg = Some(bind_group);
 		texture_mode = Some(TextureMode::Bit16);
 	}
 	if let Some(atlases) = level.atlases_32bit() {
 		let atlases_view = make_atlases_view(device, queue, atlases, TextureFormat::R32Uint);
 		let atlases_entry = make::entry(ATLASES_ENTRY, BindingResource::TextureView(&atlases_view));
-		let entries = [common_entries, &[atlases_entry]].concat();
-		let bind_group = make::bind_group(device, &bind_group_layouts.texture_direct, &entries);
+		let entries = [common_entries, &[dummy_palette_entry.clone(), atlases_entry]].concat();
+		let bind_group = make::bind_group(device, bind_group_layout, &entries);
 		texture_32bit_bg = Some(bind_group);
 		texture_mode = Some(TextureMode::Bit32);
 	}
 	let texture_mode = texture_mode.unwrap();//all formats have at least one texture
 	let (misc_images_bg, num_misc_images) = level.misc_images().map(|misc_images| {
-		let view = make_atlases_view(device, queue, misc_images, TextureFormat::R32Uint);
-		let entry = make::entry(ATLASES_ENTRY, BindingResource::TextureView(&view));
-		let entries = [common_entries, &[entry]].concat();
-		let bind_group = make::bind_group(device, &bind_group_layouts.texture_direct, &entries);
+		let atlases_view = make_atlases_view(device, queue, misc_images, TextureFormat::R32Uint);
+		let atlases_entry = make::entry(ATLASES_ENTRY, BindingResource::TextureView(&atlases_view));
+		let entries = [common_entries, &[dummy_palette_entry.clone(), atlases_entry]].concat();
+		let bind_group = make::bind_group(device, bind_group_layout, &entries);
 		(Some(bind_group), Some(misc_images.len() as u32))
 	}).unwrap_or_default();
 	let shared = Arc::new(LoadedLevelShared {
-		texture_palette_bg,
+		viewport_buffer,
+		palette_24bit_bg,
 		texture_16bit_bg,
 		texture_32bit_bg,
 		misc_images_bg,
@@ -900,11 +907,11 @@ fn parse_level<L: Level>(
 		depth_view: make::depth_view(device, window_size),
 		interact_texture,
 		interact_view,
-		camera_transform_buffer,
-		perspective_transform_buffer,
 		face_instance_buffer: make::buffer(device, face_buffer.as_bytes(), BufferUsages::VERTEX),
 		sprite_instance_buffer: make::buffer(device, sprite_buffer.as_bytes(), BufferUsages::VERTEX),
-		solid_24bit_bg,
+		camera_transform_buffer,
+		perspective_transform_buffer,
+		scroll_offset_buffer,
 		solid_32bit_bg,
 		shared,
 		solid_mode,
@@ -931,8 +938,6 @@ fn parse_level<L: Level>(
 		show_room_sprites: true,
 		show_entity_sprites: true,
 		textures_tab: TexturesTab::Textures(texture_mode),
-		textures_display: TexturesDisplay::Atlases,
-		sprite_scale: MIN_SPRITE_SCALE,
 		num_atlases,
 		num_misc_images,
 	})
@@ -943,7 +948,7 @@ fn load_level(
 	device: &Device,
 	queue: &Queue,
 	win_size: PhysicalSize<u32>,
-	bgls: &BindGroupLayouts,
+	bind_group_layout: &BindGroupLayout,
 	path: &PathBuf,
 ) -> Result<LoadedLevel> {
 	let mut reader = BufReader::new(File::open(path)?);
@@ -956,11 +961,11 @@ fn load_level(
 		.and_then(|e| e.to_str())
 		.ok_or(Error::other("Failed to get file extension"))?;
 	let loaded_level = match (version, extension.to_ascii_lowercase().as_str()) {
-		(0x00000020, "phd") => parse_level::<tr1::Level>(device, queue, bgls, win_size, &mut reader),
-		(0x0000002D, "tr2") => parse_level::<tr2::Level>(device, queue, bgls, win_size, &mut reader),
-		(0xFF180038, "tr2") => parse_level::<tr3::Level>(device, queue, bgls, win_size, &mut reader),
-		(0x00345254, "tr4") => parse_level::<tr4::Level>(device, queue, bgls, win_size, &mut reader),
-		(0x00345254, "trc") => parse_level::<tr5::Level>(device, queue, bgls, win_size, &mut reader),
+		(0x00000020, "phd") => parse_level::<tr1::Level>(device, queue, bind_group_layout, win_size, &mut reader),
+		(0x0000002D, "tr2") => parse_level::<tr2::Level>(device, queue, bind_group_layout, win_size, &mut reader),
+		(0xFF180038, "tr2") => parse_level::<tr3::Level>(device, queue, bind_group_layout, win_size, &mut reader),
+		(0x00345254, "tr4") => parse_level::<tr4::Level>(device, queue, bind_group_layout, win_size, &mut reader),
+		(0x00345254, "trc") => parse_level::<tr5::Level>(device, queue, bind_group_layout, win_size, &mut reader),
 		_ => return Err(Error::other(format!("Unknown file type\nVersion: 0x{:X}", version))),
 	}?;
 	if let Some(file_name) = path.file_name().map(|f| f.to_string_lossy()) {
@@ -983,6 +988,7 @@ fn selected_room_text(render_room_index: Option<usize>) -> String {
 }
 
 struct TexturesCallback {
+	queue: Arc<Queue>,
 	tr_tool_shared: Arc<TrToolShared>,
 	loaded_level_shared: Arc<LoadedLevelShared>,
 	textures_tab: TexturesTab,
@@ -990,114 +996,76 @@ struct TexturesCallback {
 
 impl egui_wgpu::CallbackTrait for TexturesCallback {
 	fn paint<'a>(
-		&'a self,
-		info: egui::PaintCallbackInfo,
-		rpass: &mut wgpu::RenderPass<'a>,
-		callback_resources: &'a egui_wgpu::CallbackResources,
+		&'a self, info: egui::PaintCallbackInfo, rpass: &mut wgpu::RenderPass<'a>,
+		_: &'a egui_wgpu::CallbackResources,
 	) {
-		println!("{:?}", {let a=info.viewport_in_pixels(); (a.width_px, a.height_px)});
-		rpass.set_vertex_buffer(0, self.tr_tool_shared.face_vertex_index_buffer.slice(..));
-		let (tpls, bg) = match self.textures_tab {
-			TexturesTab::Textures(TextureMode::Palette) => {
-				(&self.tr_tool_shared.palette_pls, &self.loaded_level_shared.texture_palette_bg)
-			},
-			TexturesTab::Textures(TextureMode::Bit16) => {
-				(&self.tr_tool_shared.bit16_pls, &self.loaded_level_shared.texture_16bit_bg)
-			},
-			TexturesTab::Textures(TextureMode::Bit32) => {
-				(&self.tr_tool_shared.bit32_pls, &self.loaded_level_shared.texture_32bit_bg)
-			},
-			TexturesTab::Misc => {
-				(&self.tr_tool_shared.bit32_pls, &self.loaded_level_shared.misc_images_bg)
-			},
+		let cp = info.clip_rect_in_pixels();
+		let vp = info.viewport_in_pixels();
+		let viewport = Viewport {
+			clip: [cp.left_px, cp.top_px, cp.width_px, cp.height_px],
+			view: [vp.left_px, vp.top_px, vp.width_px, vp.height_px],
 		};
-		let bg = bg.as_ref().unwrap();//texture can't be selected unless it exists
-		rpass.set_pipeline(&tpls.flat);
-		rpass.set_bind_group(0, bg, &[]);
+		self.queue.write_buffer(&self.loaded_level_shared.viewport_buffer, 0, viewport.as_bytes());
+		rpass.set_vertex_buffer(0, self.tr_tool_shared.face_vertex_index_buffer.slice(..));
+		let tt = &self.tr_tool_shared;
+		let ll = &self.loaded_level_shared;
+		let (texture_pls, bind_group) = match self.textures_tab {
+			TexturesTab::Textures(TextureMode::Palette) => (&tt.palette_pls, &ll.palette_24bit_bg),
+			TexturesTab::Textures(TextureMode::Bit16) => (&tt.bit16_pls, &ll.texture_16bit_bg),
+			TexturesTab::Textures(TextureMode::Bit32) => (&tt.bit32_pls, &ll.texture_32bit_bg),
+			TexturesTab::Misc => (&tt.bit32_pls, &ll.misc_images_bg),
+		};
+		let bind_group = bind_group.as_ref().unwrap();//texture can't be selected unless it exists
+		rpass.set_pipeline(&texture_pls.flat);
+		rpass.set_bind_group(0, bind_group, &[]);
 		rpass.draw(0..NUM_QUAD_VERTICES, 0..1);
 	}
 }
 
-fn textures_window(loaded_level: &mut LoadedLevel, ui: &mut egui::Ui) {
-	
-	// if loaded_level.color_mode_bind_groups.len() > 1 || loaded_level.misc_texture.is_some() {
-	// 	ui.horizontal(|ui| {
-	// 		for (index, tbg) in loaded_level.color_mode_bind_groups.iter().enumerate() {
-	// 			ui.selectable_value(
-	// 				&mut loaded_level.textures_tab, TexturesTab::Textures(index), tbg.color_mode.label(),
-	// 			);
-	// 		}
-	// 		if loaded_level.misc_texture.is_some() {
-	// 			ui.selectable_value(&mut loaded_level.textures_tab, TexturesTab::Misc, "Misc");
-	// 		}
-	// 	});
-	// }
-	// match loaded_level.textures_tab {
-	// 	TexturesTab::Textures(texture_index) => {
-	// 		ui.horizontal(|ui| {
-	// 			for (td, label) in [
-	// 				(TexturesDisplay::Atlases, "Atlases"),
-	// 				(TexturesDisplay::Sprites, "Sprites"),
-	// 			] {
-	// 				ui.selectable_value(&mut loaded_level.textures_display, td, label);
-	// 			}
-	// 		});
-	// 		let sized_texture = loaded_level.color_mode_bind_groups[texture_index].egui_texture.sized_texture;
-	// 		let image = egui::Image::new(sized_texture);
-	// 		match loaded_level.textures_display {
-	// 			TexturesDisplay::Atlases => {
-	// 				if ui.button("Save").clicked() {
-	// 					file_dialog.save_texture(loaded_level.textures_tab.clone());
-	// 				}
-	// 				ui.add_space(2.0);
-	// 				egui::ScrollArea::vertical().id_source("atlases").show(ui, |ui| ui.add(image));
-	// 			},
-	// 			TexturesDisplay::Sprites => {
-	// 				ui.add(
-	// 					egui::Slider::new(&mut loaded_level.sprite_scale, SPRITE_SCALE_RANGE).text("Scale"),
-	// 				);
-	// 				ui.add_space(2.0);
-	// 				egui::ScrollArea::vertical().id_source("sprites").show(ui, |ui| {
-	// 					ui.allocate_space(egui::vec2(256.0, 0.0));
-	// 					for (index, &SpriteDisplay { uv, size }) in {
-	// 						loaded_level.sprite_displays.iter().enumerate()
-	// 					} {
-	// 						ui.label(index.to_string());
-	// 						ui.add(
-	// 							image
-	// 								.clone()
-	// 								.uv(uv)
-	// 								.fit_to_exact_size(size * loaded_level.sprite_scale as f32)
-	// 								.maintain_aspect_ratio(false),
-	// 						);
-	// 					}
-	// 				});
-	// 			},
-	// 		}
-	// 	},
-	// 	TexturesTab::Misc => {
-	// 		let misc_texture = loaded_level.misc_texture.as_ref().expect("misc texture");
-	// 		if ui.button("Save").clicked() {
-	// 			file_dialog.save_texture(loaded_level.textures_tab.clone());
-	// 		}
-	// 		ui.add_space(2.0);
-	// 		egui::ScrollArea::vertical()
-	// 			.id_source("misc")
-	// 			.show(ui, |ui| ui.image(misc_texture.sized_texture));
-	// 	},
-	// }
+fn palette_images_to_rgba(palette: &[tr1::Color24Bit; tr1::PALETTE_LEN], atlases: &[[u8; tr1::ATLAS_PIXELS]]) -> Vec<u8> {
+	atlases
+		.iter()
+		.flatten()
+		.map(|&color_index| {
+			let tr1::Color24Bit { r, g, b } = palette[color_index as usize];
+			let [r, g, b] = [r, g, b].map(|c| c << 2);
+			[r, g, b, (color_index != 0) as u8 * 255]
+		})
+		.flatten()
+		.collect::<Vec<_>>()
+}
+
+fn bit16_images_to_rgba(atlases: &[[tr2::Color16BitArgb; tr1::ATLAS_PIXELS]]) -> Vec<u8> {
+	atlases
+		.iter()
+		.flatten()
+		.map(|color| {
+			let [r, g, b] = [color.r(), color.g(), color.b()].map(|c| c << 3);
+			[r, g, b, color.a() as u8 * 255]
+		})
+		.flatten()
+		.collect::<Vec<_>>()
+}
+
+fn bit32_images_to_rgba(atlases: &[[tr4::Color32BitBgra; tr1::ATLAS_PIXELS]]) -> Vec<u8> {
+	atlases
+		.iter()
+		.flatten()
+		.map(|&tr4::Color32BitBgra { b, g, r, a }| [r, g, b, a])
+		.flatten()
+		.collect::<Vec<_>>()
 }
 
 impl Gui for TrTool {
-	fn resize(&mut self, window_size: PhysicalSize<u32>, device: &Device, queue: &Queue) {
+	fn resize(&mut self, window_size: PhysicalSize<u32>) {
 		self.window_size = window_size;
 		if let Some(loaded_level) = &mut self.loaded_level {
-			loaded_level.depth_view = make::depth_view(device, window_size);
-			loaded_level.interact_texture = make_interact_texture(device, window_size);
+			loaded_level.depth_view = make::depth_view(&self.device, window_size);
+			loaded_level.interact_texture = make_interact_texture(&self.device, window_size);
 			loaded_level.interact_view = loaded_level
 				.interact_texture
 				.create_view(&TextureViewDescriptor::default());
-			loaded_level.update_perspective_transform(queue, window_size);
+			loaded_level.update_perspective_transform(&self.queue, window_size);
 		}
 	}
 	
@@ -1106,12 +1074,7 @@ impl Gui for TrTool {
 	}
 	
 	fn key(
-		&mut self,
-		window: &Window,
-		target: &EventLoopWindowTarget<()>,
-		key_code: KeyCode,
-		state: ElementState,
-		repeat: bool,
+		&mut self, target: &EventLoopWindowTarget<()>, key_code: KeyCode, state: ElementState, repeat: bool,
 	) {
 		if let Some(loaded_level) = &mut self.loaded_level {
 			loaded_level.key_states.set(key_code, state.is_pressed());
@@ -1121,7 +1084,7 @@ impl Gui for TrTool {
 			(_, ElementState::Pressed, KeyCode::KeyP, _, _) => self.print = true,
 			(ModifiersState::CONTROL, ElementState::Pressed, KeyCode::KeyO, false, _) => {
 				if let Some(loaded_level) = &mut self.loaded_level {
-					loaded_level.set_mouse_control(window, false);
+					loaded_level.set_mouse_control(&self.window, false);
 				}
 				self.file_dialog.select_level();
 			},
@@ -1133,20 +1096,13 @@ impl Gui for TrTool {
 		}
 	}
 	
-	fn mouse_button(
-		&mut self,
-		window: &Window,
-		device: Arc<Device>,
-		queue: &Queue,
-		button: MouseButton,
-		state: ElementState,
-	) {
+	fn mouse_button(&mut self, button: MouseButton, state: ElementState) {
 		if let Some(loaded_level) = &mut self.loaded_level {
 			match (state, button) {
 				(ElementState::Pressed, MouseButton::Right) => {
 					if self.file_dialog.is_closed() {
 						loaded_level.locked_mouse_pos = loaded_level.mouse_pos;
-						loaded_level.set_mouse_control(window, !loaded_level.mouse_control);
+						loaded_level.set_mouse_control(&self.window, !loaded_level.mouse_control);
 					}
 				},
 				(ElementState::Pressed, MouseButton::Left) => {
@@ -1154,13 +1110,13 @@ impl Gui for TrTool {
 					let chunks = (loaded_level.interact_texture.width() + WIDTH_ALIGN - 1) / WIDTH_ALIGN;
 					let width = chunks * WIDTH_ALIGN;
 					let height = loaded_level.interact_texture.height();
-					let buffer = device.create_buffer(&BufferDescriptor {
+					let buffer = self.device.create_buffer(&BufferDescriptor {
 						label: None,
 						size: (width * height * INTERACT_PIXEL_SIZE) as u64,
 						usage: BufferUsages::COPY_DST | BufferUsages::MAP_READ,
 						mapped_at_creation: false,
 					});
-					let mut encoder = device.create_command_encoder(&CommandEncoderDescriptor::default());
+					let mut encoder = self.device.create_command_encoder(&CommandEncoderDescriptor::default());
 					encoder.copy_texture_to_buffer(
 						loaded_level.interact_texture.as_image_copy(),
 						ImageCopyBuffer {
@@ -1173,10 +1129,11 @@ impl Gui for TrTool {
 						},
 						loaded_level.interact_texture.size(),
 					);
-					let submission_index = queue.submit([encoder.finish()]);
+					let submission_index = self.queue.submit([encoder.finish()]);
 					buffer.slice(..).map_async(MapMode::Read, |r| r.expect("map interact texture"));
 					let pos = loaded_level.mouse_pos.cast::<u32>();
-					let click_handle = spawn(move || {
+					let device = self.device.clone();
+					let click_handle = thread::spawn(move || {
 						device.poll(Maintain::WaitForSubmissionIndex(submission_index));
 						let bytes = &*buffer.slice(..).get_mapped_range();
 						let pixel_offset = pos.y * width + pos.x;
@@ -1205,11 +1162,11 @@ impl Gui for TrTool {
 		}
 	}
 	
-	fn cursor_moved(&mut self, window: &Window, pos: PhysicalPosition<f64>) {
+	fn cursor_moved(&mut self, pos: PhysicalPosition<f64>) {
 		if let Some(loaded_level) = &mut self.loaded_level {
 			loaded_level.mouse_pos = pos;
 			if loaded_level.mouse_control {
-				window.set_cursor_position(loaded_level.locked_mouse_pos).expect("set cursor pos");
+				self.window.set_cursor_position(loaded_level.locked_mouse_pos).expect("set cursor pos");
 			}
 		}
 	}
@@ -1217,15 +1174,11 @@ impl Gui for TrTool {
 	fn mouse_wheel(&mut self, _: MouseScrollDelta) {}
 	
 	fn render(
-		&mut self,
-		queue: &Queue,
-		encoder: &mut CommandEncoder,
-		color_view: &TextureView,
-		delta_time: Duration,
+		&mut self, encoder: &mut CommandEncoder, color_view: &TextureView, delta_time: Duration,
 		last_render_time: Duration,
 	) {
 		if let Some(loaded_level) = &mut self.loaded_level {
-			loaded_level.frame_update(queue, delta_time);
+			loaded_level.frame_update(&self.queue, delta_time);
 			let mut rpass = encoder.begin_render_pass(&RenderPassDescriptor {
 				label: None,
 				color_attachments: &[
@@ -1273,13 +1226,13 @@ impl Gui for TrTool {
 				.collect::<Vec<_>>();
 			let solid = loaded_level.solid_mode.as_ref().map(|solid_mode| {
 				let (solid_pl, solid_bg) = match solid_mode {
-					SolidMode::Bit24 => (&self.solid_24bit_pl, &loaded_level.solid_24bit_bg),
+					SolidMode::Bit24 => (&self.solid_24bit_pl, &loaded_level.shared.palette_24bit_bg),
 					SolidMode::Bit32 => (&self.solid_32bit_pl, &loaded_level.solid_32bit_bg),
 				};
 				(solid_pl, solid_bg.as_ref().unwrap())
 			});
 			let (texture_pls, texture_bg) = match loaded_level.texture_mode {
-				TextureMode::Palette => (&self.shared.palette_pls, &loaded_level.shared.texture_palette_bg),
+				TextureMode::Palette => (&self.shared.palette_pls, &loaded_level.shared.palette_24bit_bg),
 				TextureMode::Bit16 => (&self.shared.bit16_pls, &loaded_level.shared.texture_16bit_bg),
 				TextureMode::Bit32 => (&self.shared.bit32_pls, &loaded_level.shared.texture_32bit_bg),
 			};
@@ -1373,10 +1326,10 @@ impl Gui for TrTool {
 		}
 	}
 	
-	fn gui(&mut self, win: &Window, device: &Device, queue: &Queue, ctx: &egui::Context) {
+	fn gui(&mut self, ctx: &egui::Context) {
 		self.file_dialog.update(ctx);
 		if let Some(path) = self.file_dialog.get_level_path() {
-			match load_level(win, device, queue, self.window_size, &self.bind_group_layouts, &path) {
+			match load_level(&self.window, &self.device, &self.queue, self.window_size, &self.bind_group_layout, &path) {
 				Ok(loaded_level) => self.loaded_level = Some(loaded_level),
 				Err(e) => self.error = Some(e.to_string()),
 			}
@@ -1396,18 +1349,20 @@ impl Gui for TrTool {
 					loaded_level.render_options(ui)
 				});
 				draw_window(ctx, "Textures", true, &mut self.show_textures_window, |ui| {
-					if [
-						&loaded_level.shared.texture_palette_bg,
-						&loaded_level.shared.texture_16bit_bg,
-						&loaded_level.shared.texture_32bit_bg,
-						&loaded_level.shared.misc_images_bg,
-					].into_iter().map(|bg| bg.is_some()).count() > 1 {
+					let ll = &loaded_level.shared;
+					let bind_groups = [
+						&ll.palette_24bit_bg,
+						&ll.texture_16bit_bg,
+						&ll.texture_32bit_bg,
+						&ll.misc_images_bg,
+					];
+					if bind_groups.into_iter().filter(|bg| bg.is_some()).count() > 1 {
 						ui.horizontal(|ui| {
 							for (bg, tab) in [
-								(&loaded_level.shared.texture_palette_bg, TexturesTab::Textures(TextureMode::Palette)),
-								(&loaded_level.shared.texture_16bit_bg, TexturesTab::Textures(TextureMode::Bit16)),
-								(&loaded_level.shared.texture_32bit_bg, TexturesTab::Textures(TextureMode::Bit32)),
-								(&loaded_level.shared.misc_images_bg, TexturesTab::Misc),
+								(&ll.palette_24bit_bg, TexturesTab::Textures(TextureMode::Palette)),
+								(&ll.texture_16bit_bg, TexturesTab::Textures(TextureMode::Bit16)),
+								(&ll.texture_32bit_bg, TexturesTab::Textures(TextureMode::Bit32)),
+								(&ll.misc_images_bg, TexturesTab::Misc),
 							] {
 								if bg.is_some() {
 									ui.selectable_value(&mut loaded_level.textures_tab, tab, tab.label());
@@ -1415,44 +1370,66 @@ impl Gui for TrTool {
 							}
 						});
 					}
+					if ui.button("Save").clicked() {
+						self.file_dialog.save_texture(loaded_level.textures_tab);
+					}
+					ui.add_space(2.0);
 					let (num_images, id): (_, u8) = match loaded_level.textures_tab {
 						TexturesTab::Textures(_) => (loaded_level.num_atlases, 0),
 						TexturesTab::Misc => (loaded_level.num_misc_images.unwrap(), 1),
 					};
-					let height = num_images * 256;
-					egui::ScrollArea::vertical().id_source(id).show(ui, |ui| {
-						let (rect, _) = ui.allocate_exact_size(egui::vec2(256.0, height as f32), egui::Sense::hover());
-						// let rect = egui::Rect {
-						// 	min: egui::Pos2 { x: 0.0, y: 0.0 },
-						// 	max: egui::Pos2 { x: 256.0, y: f32::INFINITY },
-						// };
+					let scroll_output = egui::ScrollArea::vertical().id_source(id).show(ui, |ui| {
+						const WIDTH: f32 = tr1::ATLAS_SIDE_LEN as f32;
+						let height = (num_images * 256) as f32;
+						let (_, rect) = ui.allocate_space(egui::vec2(WIDTH, height));
 						let textures_cb = TexturesCallback {
+							queue: self.queue.clone(),
 							tr_tool_shared: self.shared.clone(),
 							loaded_level_shared: loaded_level.shared.clone(),
-							textures_tab: loaded_level.textures_tab.clone(),
+							textures_tab: loaded_level.textures_tab,
 						};
-						let cb = egui_wgpu::Callback::new_paint_callback(rect, textures_cb);
-						ui.painter().add(cb);
+						ui.painter().add(egui_wgpu::Callback::new_paint_callback(rect, textures_cb));
 					});
+					let scroll_offset_bytes = scroll_output.state.offset.as_bytes();
+					self.queue.write_buffer(&loaded_level.scroll_offset_buffer, 0, scroll_offset_bytes);
 				});
-				// if let Some((path, texture)) = self.file_dialog.get_texture_path() {
-				// 	let egui_texture = match texture {
-				// 		TexturesTab::Textures(texture_index) => {
-				// 			&loaded_level.color_modes[texture_index].egui_texture
-				// 		},
-				// 		TexturesTab::Misc => loaded_level.misc_texture.as_ref().expect("misc texture"),
-				// 	};
-				// 	let rgba = &egui_texture.rgba;
-				// 	let [width, height] = egui_texture.texture_handle.size().map(|s| s as u32);
-				// 	if let Err(e) = image::save_buffer(path, rgba, width, height, image::ColorType::Rgba8) {
-				// 		self.error = Some(e.to_string());
-				// 	}
-				// }
+				if let Some((path, texture)) = self.file_dialog.get_texture_path() {
+					let level = loaded_level.level.as_dyn();
+					let rgba = match texture {
+						TexturesTab::Textures(TextureMode::Palette) => {
+							let palette = level.palette_24bit().unwrap();
+							let atlases = level.atlases_palette().unwrap();
+							palette_images_to_rgba(palette, atlases)
+						},
+						TexturesTab::Textures(TextureMode::Bit16) => {
+							let atlases = level.atlases_16bit().unwrap();
+							bit16_images_to_rgba(atlases)
+						},
+						TexturesTab::Textures(TextureMode::Bit32) => {
+							let atlases = level.atlases_32bit().unwrap();
+							bit32_images_to_rgba(atlases)
+						},
+						TexturesTab::Misc => {
+							let images = level.misc_images().unwrap();
+							bit32_images_to_rgba(images)
+						},
+					};
+					let result = image::save_buffer(
+						path,
+						&rgba,
+						tr1::ATLAS_SIDE_LEN as u32,
+						(rgba.len() / (tr1::ATLAS_SIDE_LEN * 4)) as u32,
+						image::ColorType::Rgba8,
+					);
+					if let Err(e) = result {
+						self.error = Some(e.to_string());
+					}
+				}
 			}
 		}
 		if let Some(error) = &self.error {
 			let mut show = true;
-			draw_window(ctx, "Error", false, &mut show, |ui| _ = ui.label(error));
+			draw_window(ctx, "Error", false, &mut show, |ui| ui.label(error));
 			if !show {
 				self.error = None;
 			}
@@ -1546,30 +1523,28 @@ fn make_pipeline(
 	)
 }
 
-fn make_gui(window: &Window, device: &Device, queue: &Queue, window_size: PhysicalSize<u32>) -> TrTool {
-	let shader = make::shader(device, include_str!("shader/mesh.wgsl"));
-	//entries
-	const VERT: ShaderStages = ShaderStages::VERTEX;
-	const FRAG: ShaderStages = ShaderStages::FRAGMENT;
-	let data_entry = (DATA_ENTRY, make::storage_layout_entry(GEOM_BUFFER_SIZE), VERT);
-	let statics_entry = (STATICS_ENTRY, make::uniform_layout_entry(size_of::<Statics>()), VERT);
-	let camera_entry = (CAMERA_ENTRY, make::uniform_layout_entry(size_of::<Mat4>()), VERT);
-	let perspective_entry = (PERSPECTIVE_ENTRY, make::uniform_layout_entry(size_of::<Mat4>()), VERT);
-	let palette_entry = (PALETTE_ENTRY, make::texture_layout_entry(TextureViewDimension::D1), FRAG);
-	let atlases_entry = (ATLASES_ENTRY, make::texture_layout_entry(TextureViewDimension::D2Array), FRAG);
-	let viewport_entry = (VIEWPORT_ENTRY, make::uniform_layout_entry(size_of::<[u32; 2]>()), VERT);
-	let common_entries = &[data_entry, statics_entry, camera_entry, perspective_entry][..];
-	//bind group layouts
-	let solid_bgl = make::bind_group_layout(device, &[common_entries, &[palette_entry]].concat());
-	let texture_palette_bgl = make::bind_group_layout(device, &[common_entries, &[atlases_entry, palette_entry]].concat());
-	let texture_direct_bgl = make::bind_group_layout(device, &[common_entries, &[atlases_entry]].concat());
+fn make_gui(
+	window: Arc<Window>, device: Arc<Device>, queue: Arc<Queue>, window_size: PhysicalSize<u32>,
+) -> TrTool {
+	let shader = make::shader(&device, include_str!("shader/mesh.wgsl"));
+	let entries = [
+		(DATA_ENTRY, make::storage_layout_entry(GEOM_BUFFER_SIZE), ShaderStages::VERTEX),
+		(STATICS_ENTRY, make::uniform_layout_entry(size_of::<Statics>()), ShaderStages::VERTEX),
+		(CAMERA_ENTRY, make::uniform_layout_entry(size_of::<Mat4>()), ShaderStages::VERTEX),
+		(PERSPECTIVE_ENTRY, make::uniform_layout_entry(size_of::<Mat4>()), ShaderStages::VERTEX),
+		(PALETTE_ENTRY, make::texture_layout_entry(TextureViewDimension::D1), ShaderStages::FRAGMENT),
+		(ATLASES_ENTRY, make::texture_layout_entry(TextureViewDimension::D2Array), ShaderStages::FRAGMENT),
+		(VIEWPORT_ENTRY, make::uniform_layout_entry(size_of::<Viewport>()), ShaderStages::VERTEX),
+		(SCROLL_OFFSET_ENTRY, make::uniform_layout_entry(size_of::<egui::Vec2>()), ShaderStages::VERTEX),
+	];
+	let bind_group_layout = make::bind_group_layout(&device, &entries);
 	//pipelines
 	let [solid_24bit_pl, solid_32bit_pl] = [
 		("solid_24bit_vs_main", "solid_24bit_fs_main"), ("solid_32bit_vs_main", "solid_32bit_fs_main"),
 	].map(|(vs_entry, fs_entry)| {
 		make_pipeline(
-			device,
-			&solid_bgl,
+			&device,
+			&bind_group_layout,
 			&shader,
 			vs_entry,
 			fs_entry,
@@ -1581,20 +1556,20 @@ fn make_gui(window: &Window, device: &Device, queue: &Queue, window_size: Physic
 		)
 	});
 	let texture_modes = [
-		(&texture_palette_bgl, "texture_palette_fs_main", "flat_palette_fs_main"),
-		(&texture_direct_bgl, "texture_16bit_fs_main", "flat_16bit_fs_main"),
-		(&texture_direct_bgl, "texture_32bit_fs_main", "flat_32bit_fs_main"),
+		("texture_palette_fs_main", "flat_palette_fs_main"),
+		("texture_16bit_fs_main", "flat_16bit_fs_main"),
+		("texture_32bit_fs_main", "flat_32bit_fs_main"),
 	];
 	let render_modes = [
 		("texture_vs_main", FACE_INSTANCE_FORMAT, None),
 		("texture_vs_main", FACE_INSTANCE_FORMAT, Some(ADDITIVE_BLEND)),
 		("sprite_vs_main", VertexFormat::Sint32x4, None),
 	];
-	let [palette_pls, bit16_pls, bit32_pls] = texture_modes.map(|(bgl, tex_fs_entry, flat_fs_entry)| {
+	let [palette_pls, bit16_pls, bit32_pls] = texture_modes.map(|(tex_fs_entry, flat_fs_entry)| {
 		let [opaque, additive, sprite] = render_modes.map(|(vs_entry, instance, blend)| {
 			make_pipeline(
-				device,
-				bgl,
+				&device,
+				&bind_group_layout,
 				&shader,
 				vs_entry,
 				tex_fs_entry,
@@ -1606,8 +1581,8 @@ fn make_gui(window: &Window, device: &Device, queue: &Queue, window_size: Physic
 			)
 		});
 		let flat = make_pipeline(
-			device,
-			bgl,
+			&device,
+			&bind_group_layout,
 			&shader,
 			"flat_vs_main",
 			flat_fs_entry,
@@ -1619,23 +1594,21 @@ fn make_gui(window: &Window, device: &Device, queue: &Queue, window_size: Physic
 		);
 		TexturePipelines { opaque, additive, sprite, flat }
 	});
-	let bind_group_layouts = BindGroupLayouts {
-		solid: solid_bgl,
-		texture_palette: texture_palette_bgl,
-		texture_direct: texture_direct_bgl,
-	};
-	let face_vertex_index_buffer = make::buffer(device, FACE_VERTEX_INDICES.as_bytes(), BufferUsages::VERTEX);
-	let reverse_indices_buffer = make::buffer(device, REVERSE_INDICES.as_bytes(), BufferUsages::INDEX);
+	let face_vertex_index_buffer = make::buffer(&device, FACE_VERTEX_INDICES.as_bytes(), BufferUsages::VERTEX);
+	let reverse_indices_buffer = make::buffer(&device, REVERSE_INDICES.as_bytes(), BufferUsages::INDEX);
 	let mut loaded_level = None;
-	if let Some(arg) = args().skip(1).next() {
-		match load_level(window, device, queue, window_size, &bind_group_layouts, &arg.into()) {
+	if let Some(arg) = env::args().skip(1).next() {
+		match load_level(&window, &device, &queue, window_size, &bind_group_layout, &arg.into()) {
 			Ok(level) => loaded_level = Some(level),
 			Err(e) => eprintln!("{}", e),
 		}
 	}
 	let shared = Arc::new(TrToolShared { palette_pls, bit16_pls, bit32_pls, face_vertex_index_buffer });
 	TrTool {
-		bind_group_layouts,
+		window,
+		device,
+		queue,
+		bind_group_layout,
 		solid_24bit_pl,
 		solid_32bit_pl,
 		shared,
