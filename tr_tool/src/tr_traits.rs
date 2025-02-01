@@ -1,7 +1,7 @@
 use std::f32::consts::TAU;
 use glam::{I16Vec3, IVec3, Mat4, U16Vec2, U16Vec3, Vec3};
-use tr_model::{tr1, tr2, tr3, tr4, tr5, Readable};
-use crate::{as_bytes::ReinterpretAsBytes, object_data::PolyType};
+use tr_model::{tr1, tr2, tr3, tr4, tr5};
+use crate::as_bytes::ReinterpretAsBytes;
 
 pub enum LevelStore {
 	Tr1(Box<tr1::Level>),
@@ -35,12 +35,12 @@ pub trait Model {
 	fn num_meshes(&self) -> u16;
 }
 
-pub trait RoomVertex: ReinterpretAsBytes {
+pub trait RoomVertex {
 	fn pos(&self) -> Vec3;
 }
 
-pub trait Face: ReinterpretAsBytes {
-	const POLY_TYPE: PolyType;
+pub trait Face {
+	fn vertex_indices(&self) -> &[u16];
 }
 
 pub trait TexturedFace: Face {
@@ -67,9 +67,9 @@ pub trait RoomStaticMesh {
 }
 
 pub trait Room {
-	type RoomVertex: RoomVertex;
-	type RoomQuad: RoomFace;
-	type RoomTri: RoomFace;
+	type RoomVertex: RoomVertex + ReinterpretAsBytes;
+	type RoomQuad: RoomFace + ReinterpretAsBytes;
+	type RoomTri: RoomFace + ReinterpretAsBytes;
 	type RoomStaticMesh: RoomStaticMesh;
 	fn pos(&self) -> IVec3;
 	fn vertices(&self) -> &[Self::RoomVertex];
@@ -88,7 +88,7 @@ pub trait Entity {
 }
 
 #[allow(dead_code)]//todo: remove
-pub trait ObjectTexture: ReinterpretAsBytes {
+pub trait ObjectTexture {
 	const UVS_OFFSET: u32;
 	fn blend_mode(&self) -> u16;
 	fn atlas_index(&self) -> u16;
@@ -96,10 +96,10 @@ pub trait ObjectTexture: ReinterpretAsBytes {
 }
 
 pub trait Mesh<'a> {
-	type TexturedQuad: MeshTexturedFace;
-	type TexturedTri: MeshTexturedFace;
-	type SolidQuad: SolidFace;
-	type SolidTri: SolidFace;
+	type TexturedQuad: MeshTexturedFace + ReinterpretAsBytes;
+	type TexturedTri: MeshTexturedFace + ReinterpretAsBytes;
+	type SolidQuad: SolidFace + ReinterpretAsBytes;
+	type SolidTri: SolidFace + ReinterpretAsBytes;
 	fn vertices(&self) -> &'a [I16Vec3];
 	fn textured_quads(&self) -> &'a [Self::TexturedQuad];
 	fn textured_tris(&self) -> &'a [Self::TexturedTri];
@@ -127,11 +127,11 @@ pub trait LevelDyn {
 	fn store(self: Box<Self>) -> LevelStore;
 }
 
-pub trait Level: LevelDyn + Readable {
+pub trait Level: LevelDyn {
 	type Model: Model;
 	type Room: Room;
 	type Entity: Entity;
-	type ObjectTexture: ObjectTexture;
+	type ObjectTexture: ObjectTexture + ReinterpretAsBytes;
 	type Mesh<'a>: Mesh<'a> where Self: 'a;
 	type Frame<'a>: Frame where Self: 'a;
 	fn models(&self) -> &[Self::Model];
@@ -168,8 +168,13 @@ impl RoomVertex for tr1::RoomVertex {
 	fn pos(&self) -> Vec3 { self.pos.as_vec3() }
 }
 
-impl Face for tr1::TexturedQuad { const POLY_TYPE: PolyType = PolyType::Quad; }
-impl Face for tr1::TexturedTri { const POLY_TYPE: PolyType = PolyType::Tri; }
+impl Face for tr1::TexturedQuad {
+	fn vertex_indices(&self) -> &[u16] { &self.vertex_indices }
+}
+
+impl Face for tr1::TexturedTri {
+	fn vertex_indices(&self) -> &[u16] { &self.vertex_indices }
+}
 
 impl TexturedFace for tr1::TexturedQuad {
 	fn object_texture_index(&self) -> u16 { self.object_texture_index }
@@ -223,8 +228,13 @@ impl ObjectTexture for tr1::ObjectTexture {
 	fn uvs(&self) -> [U16Vec2; 4] { self.uvs }
 }
 
-impl Face for tr1::SolidQuad { const POLY_TYPE: PolyType = PolyType::Quad; }
-impl Face for tr1::SolidTri { const POLY_TYPE: PolyType = PolyType::Tri; }
+impl Face for tr1::SolidQuad {
+	fn vertex_indices(&self) -> &[u16] { &self.vertex_indices }
+}
+
+impl Face for tr1::SolidTri {
+	fn vertex_indices(&self) -> &[u16] { &self.vertex_indices }
+}
 
 impl SolidFace for tr1::SolidQuad {
 	fn color_index_24bit(&self) -> u8 { self.color_index as u8 }
@@ -329,8 +339,13 @@ impl Entity for tr2::Entity {
 	fn angle(&self) -> u16 { self.angle }
 }
 
-impl Face for tr2::SolidQuad { const POLY_TYPE: PolyType = PolyType::Quad; }
-impl Face for tr2::SolidTri { const POLY_TYPE: PolyType = PolyType::Tri; }
+impl Face for tr2::SolidQuad {
+	fn vertex_indices(&self) -> &[u16] { &self.vertex_indices }
+}
+
+impl Face for tr2::SolidTri {
+	fn vertex_indices(&self) -> &[u16] { &self.vertex_indices }
+}
 
 impl SolidFace for tr2::SolidQuad {
 	fn color_index_24bit(&self) -> u8 { self.color_index_24bit }
@@ -412,8 +427,13 @@ impl RoomVertex for tr3::RoomVertex {
 	fn pos(&self) -> Vec3 { self.pos.as_vec3() }
 }
 
-impl Face for tr3::DsQuad { const POLY_TYPE: PolyType = PolyType::Quad; }
-impl Face for tr3::DsTri { const POLY_TYPE: PolyType = PolyType::Tri; }
+impl Face for tr3::DsQuad {
+	fn vertex_indices(&self) -> &[u16] { &self.vertex_indices }
+}
+
+impl Face for tr3::DsTri {
+	fn vertex_indices(&self) -> &[u16] { &self.vertex_indices }
+}
 
 impl TexturedFace for tr3::DsQuad {
 	fn object_texture_index(&self) -> u16 { self.texture.object_texture_index() }
@@ -518,8 +538,13 @@ impl ObjectTexture for tr4::ObjectTexture {
 	fn uvs(&self) -> [U16Vec2; 4] { self.uvs }
 }
 
-impl Face for tr4::EffectsQuad { const POLY_TYPE: PolyType = PolyType::Quad; }
-impl Face for tr4::EffectsTri { const POLY_TYPE: PolyType = PolyType::Tri; }
+impl Face for tr4::EffectsQuad {
+	fn vertex_indices(&self) -> &[u16] { &self.vertex_indices }
+}
+
+impl Face for tr4::EffectsTri {
+	fn vertex_indices(&self) -> &[u16] { &self.vertex_indices }
+}
 
 impl TexturedFace for tr4::EffectsQuad {
 	fn object_texture_index(&self) -> u16 { self.object_texture_index }
@@ -618,7 +643,7 @@ impl RoomVertex for tr5::RoomVertex {
 }
 
 impl Face for tr5::EffectsQuad {
-	const POLY_TYPE: PolyType = PolyType::Quad;
+	fn vertex_indices(&self) -> &[u16] { &self.vertex_indices }
 }
 
 impl TexturedFace for tr5::EffectsQuad {
@@ -630,7 +655,7 @@ impl RoomFace for tr5::EffectsQuad {
 }
 
 impl Face for tr5::EffectsTri {
-	const POLY_TYPE: PolyType = PolyType::Tri;
+	fn vertex_indices(&self) -> &[u16] { &self.vertex_indices }
 }
 
 impl TexturedFace for tr5::EffectsTri {

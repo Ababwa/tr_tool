@@ -1,17 +1,10 @@
 use std::{iter, mem::size_of};
 use glam::Mat4;
 use tr_model::tr1;
-use crate::{as_bytes::{AsBytes, ReinterpretAsBytes}, object_data::PolyType, tr_traits::Face};
+use crate::{as_bytes::{AsBytes, ReinterpretAsBytes}, tr_traits::Face};
 
 /// 4 MB
 pub const GEOM_BUFFER_SIZE: usize = 4194304;
-
-fn texture_offset(poly_type: PolyType) -> u16 {
-	match poly_type {
-		PolyType::Quad => 4,
-		PolyType::Tri => 3,
-	}
-}
 
 pub struct Output {
 	pub data_buffer: Box<[u8; GEOM_BUFFER_SIZE]>,
@@ -66,7 +59,8 @@ impl GeomBuffer {
 	`F`: Faces. Always a multiple of 2 bytes.  
 	Returns index of face array.
 	*/
-	pub fn write_face_array<F: Face>(&mut self, faces: &[F], vertex_array_offset: u32) -> u16 {
+	pub fn write_face_array<F: Face + ReinterpretAsBytes>(&mut self, faces: &[F], vertex_array_offset: u32) -> u16 {
+		let texture_offset = faces.get(0).map(|face| face.vertex_indices().len()).unwrap_or_default() as u16;
 		let index = self.face_array_offsets.len().try_into().unwrap();
 		let offset = self.geom.len();//always multiple of 2
 		let padding = offset % 4;//pad to 4-align
@@ -74,7 +68,7 @@ impl GeomBuffer {
 		self.geom.extend(iter::repeat_n(0, padding));
 		self.geom.extend_from_slice(vertex_array_offset.as_bytes());
 		self.geom.extend_from_slice((size_of::<F>() as u16 / 2).as_bytes());
-		self.geom.extend_from_slice(texture_offset(F::POLY_TYPE).as_bytes());
+		self.geom.extend_from_slice(texture_offset.as_bytes());
 		self.geom.extend_from_slice(faces.as_bytes());
 		self.face_array_offsets.push((offset + padding) as u32 / 4);
 		index

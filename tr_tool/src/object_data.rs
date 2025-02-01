@@ -1,7 +1,8 @@
+use glam::Vec3;
 use tr_model::{tr1, tr2};
 use crate::{
 	tr_traits::{
-		Entity, Level, Mesh, Model, ObjectTexture, Room, RoomFace, RoomStaticMesh, SolidFace, TexturedFace,
+		Entity, Level, Mesh, Model, ObjectTexture, Room, RoomFace, RoomStaticMesh, RoomVertex, SolidFace, TexturedFace
 	},
 	InteractPixel,
 };
@@ -52,6 +53,16 @@ pub enum ObjectData {
 	},
 }
 
+fn cw(verts: &[Vec3], dim: usize) -> i8 {
+	let d1 = (dim + 1) % 3;
+	let d2 = (dim + 2) % 3;
+	let a1 = verts[1][d1] - verts[0][d1];
+	let a2 = verts[1][d2] - verts[0][d2];
+	let b1 = verts[2][d1] - verts[0][d1];
+	let b2 = verts[2][d2] - verts[0][d2];
+	((a1 * b2 - a2 * b1) as i8).signum()
+}
+
 pub fn print_object_data<L: Level>(level: &L, object_data: &[ObjectData], index: InteractPixel) {
 	println!("object data index: {}", index);
 	let data = match object_data.get(index as usize) {
@@ -75,18 +86,18 @@ pub fn print_object_data<L: Level>(level: &L, object_data: &[ObjectData], index:
 			let room = &level.rooms()[room_index as usize];
 			//unwrap: proven in level parse
 			let geom = room.geom().into_iter().nth(geom_index as usize).unwrap();
-			let (double_sided, object_texture_index) = match face_type {
-				PolyType::Quad => {
-					let quad = &geom.quads[face_index as usize];
-					(quad.double_sided(), quad.object_texture_index())
-				},
-				PolyType::Tri => {
-					let tri = &geom.tris[face_index as usize];
-					(tri.double_sided(), tri.object_texture_index())
-				},
+			let face: &dyn RoomFace = match face_type {
+				PolyType::Quad => &geom.quads[face_index as usize],
+				PolyType::Tri => &geom.tris[face_index as usize],
 			};
-			println!("double sided: {}", double_sided);
-			let object_texture = &level.object_textures()[object_texture_index as usize];
+			let verts = face.vertex_indices().iter().map(|&i| geom.vertices[i as usize].pos()).collect::<Vec<_>>();
+			for (index, vert) in verts.iter().enumerate() {
+				println!("vert {}: {}", index, vert);
+			}
+			let [x, y, z] = [0, 1, 2].map(|d| cw(&verts, d));
+			println!("cw: {}, {}, {}", x, y, z);
+			let object_texture = &level.object_textures()[face.object_texture_index() as usize];
+			println!("double sided: {}", face.double_sided());
 			println!("blend mode: {}", object_texture.blend_mode());
 			None
 		},
@@ -101,6 +112,7 @@ pub fn print_object_data<L: Level>(level: &L, object_data: &[ObjectData], index:
 				.find(|static_mesh| static_mesh.id as u16 == static_mesh_id)
 				.unwrap();
 			let mesh_offset = level.mesh_offsets()[static_mesh.mesh_offset_index as usize];
+			println!("static mesh id: {}", static_mesh_id);
 			Some((mesh_offset, face_type, face_index))
 		},
 		ObjectData::RoomSprite { room_index, sprite_index } => {
@@ -112,6 +124,7 @@ pub fn print_object_data<L: Level>(level: &L, object_data: &[ObjectData], index:
 			//unwrap: proven in level parse
 			let model = level.models().iter().find(|model| model.id() as u16 == model_id).unwrap();
 			let mesh_offset = level.mesh_offsets()[(model.mesh_offset_index() + mesh_index) as usize];
+			println!("model id: {}", model_id);
 			Some((mesh_offset, face_type, face_index))
 		},
 		ObjectData::EntitySprite { entity_index } => {

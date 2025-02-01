@@ -2,7 +2,13 @@ use crate::vec_tail::VecTail;
 use winit::dpi::PhysicalSize;
 use std::num::NonZeroU64;
 use wgpu::{
-	util::{BufferInitDescriptor, DeviceExt, TextureDataOrder}, BindGroup, BindGroupDescriptor, BindGroupEntry, BindGroupLayout, BindGroupLayoutDescriptor, BindGroupLayoutEntry, BindingResource, BindingType, Buffer, BufferBindingType, BufferUsages, CompareFunction, DepthBiasState, DepthStencilState, Device, Extent3d, Queue, ShaderModule, ShaderModuleDescriptor, ShaderSource, ShaderStages, StencilState, Texture, TextureDescriptor, TextureDimension, TextureFormat, TextureSampleType, TextureUsages, TextureView, TextureViewDescriptor, TextureViewDimension, VertexAttribute, VertexBufferLayout, VertexFormat, VertexStepMode
+	util::{BufferInitDescriptor, DeviceExt, TextureDataOrder},
+	BindGroup, BindGroupDescriptor, BindGroupEntry, BindGroupLayout, BindGroupLayoutDescriptor,
+	BindGroupLayoutEntry, BindingResource, BindingType, Buffer, BufferBindingType, BufferUsages,
+	CompareFunction, DepthBiasState, DepthStencilState, Device, Extent3d, Queue, ShaderModule,
+	ShaderModuleDescriptor, ShaderSource, ShaderStages, StencilState, Texture, TextureDescriptor,
+	TextureDimension, TextureFormat, TextureSampleType, TextureUsages, TextureView, TextureViewDescriptor,
+	TextureViewDimension, VertexAttribute, VertexBufferLayout, VertexFormat, VertexStepMode,
 };
 
 pub fn buffer(device: &Device, contents: &[u8], usage: BufferUsages) -> Buffer {

@@ -1172,6 +1172,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e2db585e1d738fc771bf08a151420d3ed193d9d895a36df7f6f8a9456b911ddc"
 
 [[package]]
+name = "leb128"
+version = "0.2.5"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "884e2677b40cc8c339eaefcb701c32ef1fd2493d71118dc0ca4b6a736c93bd67"
+
+[[package]]
 name = "libc"
 version = "0.2.159"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2348,6 +2354,7 @@ dependencies = [
 name = "tr_tool"
 version = "0.1.0"
 dependencies = [
+ "bitflags 2.6.0",
  "egui",
  "egui-file-dialog",
  "egui-wgpu",
@@ -2355,6 +2362,7 @@ dependencies = [
  "env_logger",
  "glam",
  "image",
+ "leb128",
  "pollster",
  "shared",
  "softbuffer",

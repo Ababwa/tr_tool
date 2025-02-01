@@ -4,6 +4,7 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
+bitflags = "2.6.0"
 egui = "0.26.2"
 egui-file-dialog = "0.4.0"
 egui-wgpu = "0.26.2"
@@ -11,6 +12,7 @@ egui-winit = "0.26.2"
 env_logger = "0.11.1"
 glam = { workspace = true }
 image = { version = "0.24.9", default-features = false, features = ["png"] }
+leb128 = "0.2.5"
 pollster = "0.3.0"
 shared = { workspace = true }
 softbuffer = "0.4.1"

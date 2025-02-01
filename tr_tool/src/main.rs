@@ -8,11 +8,12 @@ mod geom_buffer;
 mod data_writer;
 mod file_dialog;
 mod object_data;
+mod prj2;
 
 use std::{
 	collections::HashMap, env, f32::consts::{FRAC_PI_2, FRAC_PI_4, PI, TAU}, fs::File,
-	io::{BufReader, Error, Read, Result, Seek}, mem::{self, size_of, MaybeUninit}, ops::Range,
-	path::PathBuf, slice, sync::Arc, thread::{self, JoinHandle}, time::Duration,
+	io::{BufReader, BufWriter, Error, Read, Result, Seek, Write}, mem::{self, size_of, MaybeUninit},
+	ops::Range, path::Path, slice, sync::Arc, thread::{self, JoinHandle}, time::Duration,
 };
 use data_writer::{DataWriter, MeshFaceOffsets, Output, RoomFaceOffsets};
 use file_dialog::FileDialogWrapper;
@@ -23,7 +24,7 @@ use glam::{DVec2, EulerRot, Mat4, Vec3, Vec3Swizzles};
 use gui::Gui;
 use object_data::{print_object_data, ObjectData, PolyType};
 use shared::min_max::{MinMax, VecMinMaxFromIterator};
-use tr_model::{tr1, tr2, tr3, tr4, tr5};
+use tr_model::{tr1, tr2, tr3, tr4, tr5, Readable};
 use tr_traits::{
 	Entity, Face, Frame, Level, LevelStore, Mesh, Model, Room, RoomGeom, RoomStaticMesh, RoomVertex,
 };
@@ -356,8 +357,8 @@ impl LoadedLevel {
 			.reduce(|a, b| a + b);
 		if let Some(movement) = movement {
 			self.pos += 5000.0
-				* if self.key_states.any(self.action_map.fast) { 5.0 } else { 1.0 }
-				* if self.key_states.any(self.action_map.slow) { 0.2 } else { 1.0 }
+				* (1.0 + self.key_states.any(self.action_map.fast) as u8 as f32 * 4.0)
+				* (1.0 + self.key_states.any(self.action_map.slow) as u8 as f32 * -0.8)
 				* delta_time.as_secs_f32()
 				* Mat4::from_rotation_y(self.yaw).transform_point3(movement);
 		}
@@ -475,7 +476,7 @@ struct WrittenMesh<'a, L: Level + 'a> {
 	solid_tris: WrittenFaceArray<'a, <L::Mesh<'a> as Mesh<'a>>::SolidTri>,
 }
 
-fn write_face_array<'a, F: Face>(
+fn write_face_array<'a, F: Face + ReinterpretAsBytes>(
 	geom_buffer: &mut GeomBuffer,
 	vertex_array_offset: u32,
 	faces: &'a [F],
@@ -523,7 +524,7 @@ where T: ReinterpretAsBytes {
 	)
 }
 
-fn parse_level<L: Level>(
+fn parse_level<L: Level + Readable>(
 	device: &Device,
 	queue: &Queue,
 	bind_group_layout: &BindGroupLayout,
@@ -949,7 +950,7 @@ fn load_level(
 	queue: &Queue,
 	win_size: PhysicalSize<u32>,
 	bind_group_layout: &BindGroupLayout,
-	path: &PathBuf,
+	path: &Path,
 ) -> Result<LoadedLevel> {
 	let mut reader = BufReader::new(File::open(path)?);
 	let mut version = [0; 4];
@@ -1523,6 +1524,18 @@ fn make_pipeline(
 	)
 }
 
+fn try_export(level: &LevelStore, wad: &str, textures: &str, out: &str) -> Result<()> {
+	let LevelStore::Tr1(level) = level else {
+		return Err(Error::other("can only export TR1"));
+	};
+	let level = level.as_ref();
+	let mut file = BufWriter::new(File::create(out)?);
+	prj2::export(&mut file, level, wad, textures)?;
+	file.flush()?;
+	println!("exported");
+	Ok(())
+}
+
 fn make_gui(
 	window: Arc<Window>, device: Arc<Device>, queue: Arc<Queue>, window_size: PhysicalSize<u32>,
 ) -> TrTool {
@@ -1597,9 +1610,23 @@ fn make_gui(
 	let face_vertex_index_buffer = make::buffer(&device, FACE_VERTEX_INDICES.as_bytes(), BufferUsages::VERTEX);
 	let reverse_indices_buffer = make::buffer(&device, REVERSE_INDICES.as_bytes(), BufferUsages::INDEX);
 	let mut loaded_level = None;
-	if let Some(arg) = env::args().skip(1).next() {
-		match load_level(&window, &device, &queue, window_size, &bind_group_layout, &arg.into()) {
-			Ok(level) => loaded_level = Some(level),
+	let mut args = env::args().skip(1);
+	if let Some(arg) = args.next() {
+		match load_level(&window, &device, &queue, window_size, &bind_group_layout, arg.as_ref()) {
+			Ok(level) => {
+				let args = args.map(|arg| arg.to_ascii_lowercase()).collect::<Vec<_>>();
+				let args = args.iter().map(|arg| arg.as_str()).collect::<Vec<_>>();
+				match args[..] {
+					["ex", wad, textures, out] => {
+						if let Err(e) = try_export(&level.level, wad, textures, out) {
+							println!("FAILED TO EXPORT: {}", e);
+						}
+					},
+					[] => {},
+					_ => println!("incorrect arguments"),
+				}
+				loaded_level = Some(level);
+			},
 			Err(e) => eprintln!("{}", e),
 		}
 	}

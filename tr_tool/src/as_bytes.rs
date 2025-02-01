@@ -1,5 +1,5 @@
 use std::{mem::{size_of, MaybeUninit}, slice::from_raw_parts};
-use glam::{I16Vec3, IVec3, IVec4, Mat4, U16Vec2};
+use glam::{I16Vec3, IVec3, IVec4, Mat4, U16Vec2, Vec3};
 use tr_model::{tr1, tr2, tr3, tr4, tr5};
 
 pub trait AsBytes {
@@ -35,6 +35,7 @@ impl ReinterpretAsBytes for U16Vec2 {}
 impl ReinterpretAsBytes for I16Vec3 {}
 impl ReinterpretAsBytes for IVec3 {}
 impl ReinterpretAsBytes for IVec4 {}
+impl ReinterpretAsBytes for Vec3 {}
 impl ReinterpretAsBytes for Mat4 {}
 impl ReinterpretAsBytes for egui::Vec2 {}
 impl ReinterpretAsBytes for tr1::Color24Bit {}

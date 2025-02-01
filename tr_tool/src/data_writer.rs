@@ -2,7 +2,9 @@ use std::ops::Range;
 use glam::IVec3;
 use tr_model::{tr1, tr3};
 use crate::{
-	as_bytes::ReinterpretAsBytes, geom_buffer::{self, GeomBuffer}, object_data::{MeshFaceType, ObjectData}, tr_traits::{Level, MeshTexturedFace, ObjectTexture, RoomFace, RoomVertex}, WrittenFaceArray, WrittenMesh
+	as_bytes::ReinterpretAsBytes, geom_buffer::{self, GeomBuffer}, object_data::{MeshFaceType, ObjectData},
+	tr_traits::{Level, MeshTexturedFace, ObjectTexture, RoomFace, RoomVertex},
+	WrittenFaceArray, WrittenMesh,
 };
 
 #[repr(C)]
@@ -104,7 +106,7 @@ impl DataWriter {
 		index
 	}
 	
-	pub fn write_room_face_array<L: Level, F: RoomFace, O: Fn(u16) -> ObjectData>(
+	pub fn write_room_face_array<L: Level, F: RoomFace + ReinterpretAsBytes, O: Fn(u16) -> ObjectData>(
 		&mut self, level: &L, vertex_array_offset: u32, faces: &[F], transform_index: u16,
 		object_data_maker: O,
 	) -> RoomFaceOffsets {

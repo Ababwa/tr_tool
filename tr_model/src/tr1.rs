@@ -109,7 +109,7 @@ pub struct RoomStaticMesh {
 
 bitfield! {
 	#[repr(C)]
-	#[derive(Clone, Debug)]
+	#[derive(Clone, Copy, Debug)]
 	pub struct RoomFlags(u16);
 	pub water, _: 0;
 }
