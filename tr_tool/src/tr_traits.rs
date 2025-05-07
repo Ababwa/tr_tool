@@ -11,14 +11,6 @@ pub enum LevelStore {
 	Tr5(Box<tr5::Level>),
 }
 
-// pub enum LevelRef<'a> {
-// 	Tr1(&'a tr1::Level),
-// 	Tr2(&'a tr2::Level),
-// 	Tr3(&'a tr3::Level),
-// 	Tr4(&'a tr4::Level),
-// 	Tr5(&'a tr5::Level),
-// }
-
 impl LevelStore {
 	pub fn as_dyn(&self) -> &dyn LevelDyn {
 		match self {
@@ -29,16 +21,6 @@ impl LevelStore {
 			LevelStore::Tr5(level) => level.as_ref(),
 		}
 	}
-	
-	// pub fn as_ref(&self) -> LevelRef {
-	// 	match self {
-	// 		LevelStore::Tr1(level) => LevelRef::Tr1(level.as_ref()),
-	// 		LevelStore::Tr2(level) => LevelRef::Tr2(level.as_ref()),
-	// 		LevelStore::Tr3(level) => LevelRef::Tr3(level.as_ref()),
-	// 		LevelStore::Tr4(level) => LevelRef::Tr4(level.as_ref()),
-	// 		LevelStore::Tr5(level) => LevelRef::Tr5(level.as_ref()),
-	// 	}
-	// }
 }
 
 pub struct RoomGeom<'a, V, Q, T> {
@@ -91,7 +73,7 @@ pub trait Room {
 	type RoomStaticMesh: RoomStaticMesh;
 	fn pos(&self) -> IVec3;
 	fn vertices(&self) -> &[Self::RoomVertex];
-	fn geom(&self) -> impl IntoIterator<Item = RoomGeom<Self::RoomVertex, Self::RoomQuad, Self::RoomTri>>;
+	fn geom(&self) -> Vec<RoomGeom<Self::RoomVertex, Self::RoomQuad, Self::RoomTri>>;
 	fn sprites(&self) -> &[tr1::Sprite];
 	fn room_static_meshes(&self) -> &[Self::RoomStaticMesh];
 	fn flip_room_index(&self) -> u16;
@@ -223,8 +205,8 @@ impl Room for tr1::Room {
 	type RoomStaticMesh = tr1::RoomStaticMesh;
 	fn pos(&self) -> IVec3 { IVec3::new(self.x, 0, self.z) }
 	fn vertices(&self) -> &[Self::RoomVertex] { &self.vertices }
-	fn geom(&self) -> impl IntoIterator<Item = RoomGeom<Self::RoomVertex, Self::RoomQuad, Self::RoomTri>> {
-		[RoomGeom { vertices: &self.vertices, quads: &self.quads, tris: &self.tris }]
+	fn geom(&self) -> Vec<RoomGeom<Self::RoomVertex, Self::RoomQuad, Self::RoomTri>> {
+		vec![RoomGeom { vertices: &self.vertices, quads: &self.quads, tris: &self.tris }]
 	}
 	fn sprites(&self) -> &[tr1::Sprite] { &self.sprites }
 	fn room_static_meshes(&self) -> &[Self::RoomStaticMesh] { &self.room_static_meshes }
@@ -341,8 +323,8 @@ impl Room for tr2::Room {
 	type RoomStaticMesh = tr2::RoomStaticMesh;
 	fn pos(&self) -> IVec3 { IVec3::new(self.x, 0, self.z) }
 	fn vertices(&self) -> &[Self::RoomVertex] { &self.vertices }
-	fn geom(&self) -> impl IntoIterator<Item = RoomGeom<Self::RoomVertex, Self::RoomQuad, Self::RoomTri>> {
-		[RoomGeom { vertices: &self.vertices, quads: &self.quads, tris: &self.tris }]
+	fn geom(&self) -> Vec<RoomGeom<Self::RoomVertex, Self::RoomQuad, Self::RoomTri>> {
+		vec![RoomGeom { vertices: &self.vertices, quads: &self.quads, tris: &self.tris }]
 	}
 	fn sprites(&self) -> &[tr1::Sprite] { &self.sprites }
 	fn room_static_meshes(&self) -> &[Self::RoomStaticMesh] { &self.room_static_meshes }
@@ -482,8 +464,8 @@ impl Room for tr3::Room {
 	type RoomStaticMesh = tr3::RoomStaticMesh;
 	fn pos(&self) -> IVec3 { IVec3::new(self.x, 0, self.z) }
 	fn vertices(&self) -> &[Self::RoomVertex] { &self.vertices }
-	fn geom(&self) -> impl IntoIterator<Item = RoomGeom<Self::RoomVertex, Self::RoomQuad, Self::RoomTri>> {
-		[RoomGeom { vertices: &self.vertices, quads: &self.quads, tris: &self.tris }]
+	fn geom(&self) -> Vec<RoomGeom<Self::RoomVertex, Self::RoomQuad, Self::RoomTri>> {
+		vec![RoomGeom { vertices: &self.vertices, quads: &self.quads, tris: &self.tris }]
 	}
 	fn sprites(&self) -> &[tr1::Sprite] { &self.sprites }
 	fn room_static_meshes(&self) -> &[Self::RoomStaticMesh] { &self.room_static_meshes }
@@ -533,8 +515,8 @@ impl Room for tr4::Room {
 	type RoomStaticMesh = tr3::RoomStaticMesh;
 	fn pos(&self) -> IVec3 { IVec3::new(self.x, 0, self.z) }
 	fn vertices(&self) -> &[Self::RoomVertex] { &self.vertices }
-	fn geom(&self) -> impl IntoIterator<Item = RoomGeom<Self::RoomVertex, Self::RoomQuad, Self::RoomTri>> {
-		[RoomGeom { vertices: &self.vertices, quads: &self.quads, tris: &self.tris }]
+	fn geom(&self) -> Vec<RoomGeom<Self::RoomVertex, Self::RoomQuad, Self::RoomTri>> {
+		vec![RoomGeom { vertices: &self.vertices, quads: &self.quads, tris: &self.tris }]
 	}
 	fn sprites(&self) -> &[tr1::Sprite] { &self.sprites }
 	fn room_static_meshes(&self) -> &[Self::RoomStaticMesh] { &self.room_static_meshes }
@@ -691,17 +673,18 @@ impl Room for tr5::Room {
 	type RoomStaticMesh = tr3::RoomStaticMesh;
 	fn pos(&self) -> IVec3 { self.pos1 }
 	fn vertices(&self) -> &[Self::RoomVertex] { &self.vertices }
-	fn geom(&self) -> impl IntoIterator<Item = RoomGeom<Self::RoomVertex, Self::RoomQuad, Self::RoomTri>> {
-		let mut vertex_offset = 0;
-		self.layers.iter().enumerate().map(move |(index, layer)| {
-			let offset = vertex_offset;
-			vertex_offset += layer.num_vertices;
+	fn geom(&self) -> Vec<RoomGeom<Self::RoomVertex, Self::RoomQuad, Self::RoomTri>> {
+		let mut vertex_count = 0;
+		self.layers.iter().enumerate().map(|(index, layer)| {
+			let vertex_offset = vertex_count as usize;
+			vertex_count += layer.num_vertices as usize;
+			let layer_faces = &self.layer_faces[index];
 			RoomGeom {
-				vertices: &self.vertices[offset as usize..][..layer.num_vertices as usize],
-				quads: &self.layer_faces[index].quads,
-				tris: &self.layer_faces[index].tris,
+				vertices: &self.vertices[vertex_offset..vertex_count],
+				quads: &layer_faces.quads,
+				tris: &layer_faces.tris,
 			}
-		})
+		}).collect()
 	}
 	fn sprites(&self) -> &[tr1::Sprite] { &[] }
 	fn room_static_meshes(&self) -> &[Self::RoomStaticMesh] { &self.room_static_meshes }

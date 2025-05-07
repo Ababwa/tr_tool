@@ -949,7 +949,7 @@ fn load_level(
 	device: &Device,
 	queue: &Queue,
 	win_size: PhysicalSize<u32>,
-	bind_group_layout: &BindGroupLayout,
+	bgl: &BindGroupLayout,
 	path: &Path,
 ) -> Result<LoadedLevel> {
 	let mut reader = BufReader::new(File::open(path)?);
@@ -960,13 +960,14 @@ fn load_level(
 	let extension = path
 		.extension()
 		.and_then(|e| e.to_str())
-		.ok_or(Error::other("Failed to get file extension"))?;
-	let loaded_level = match (version, extension.to_ascii_lowercase().as_str()) {
-		(0x00000020, "phd") => parse_level::<tr1::Level>(device, queue, bind_group_layout, win_size, &mut reader),
-		(0x0000002D, "tr2") => parse_level::<tr2::Level>(device, queue, bind_group_layout, win_size, &mut reader),
-		(0xFF180038, "tr2") => parse_level::<tr3::Level>(device, queue, bind_group_layout, win_size, &mut reader),
-		(0x00345254, "tr4") => parse_level::<tr4::Level>(device, queue, bind_group_layout, win_size, &mut reader),
-		(0x00345254, "trc") => parse_level::<tr5::Level>(device, queue, bind_group_layout, win_size, &mut reader),
+		.ok_or(Error::other("Failed to get file extension"))?
+		.to_ascii_lowercase();
+	let loaded_level = match (version, extension.as_str()) {
+		(0x00000020, "phd") => parse_level::<tr1::Level>(device, queue, bgl, win_size, &mut reader),
+		(0x0000002D, "tr2") => parse_level::<tr2::Level>(device, queue, bgl, win_size, &mut reader),
+		(0xFF180038, "tr2") => parse_level::<tr3::Level>(device, queue, bgl, win_size, &mut reader),
+		(0x00345254, "tr4") => parse_level::<tr4::Level>(device, queue, bgl, win_size, &mut reader),
+		(0x00345254, "trc") => parse_level::<tr5::Level>(device, queue, bgl, win_size, &mut reader),
 		_ => return Err(Error::other(format!("Unknown file type\nVersion: 0x{:X}", version))),
 	}?;
 	if let Some(file_name) = path.file_name().map(|f| f.to_string_lossy()) {

@@ -25,8 +25,8 @@ pub struct NumAtlases {
 }
 
 impl ToLen for NumAtlases {
-	fn get_len(&self) -> Result<usize> {
-		Ok((self.num_room_atlases + self.num_obj_atlases + self.num_bump_atlases) as usize)
+	fn get_len(&self) -> usize {
+		(self.num_room_atlases + self.num_obj_atlases + self.num_bump_atlases) as usize
 	}
 }
 
@@ -285,6 +285,7 @@ pub struct Mesh<'a> {
 
 impl<'a> Mesh<'a> {
 	pub(crate) fn get(mesh_data: &'a [u16], mesh_offset: u32) -> Self {
+		assert!(mesh_offset % 2 == 0);
 		let mut cursor = U16Cursor::new(&mesh_data[mesh_offset as usize / 2..]);
 		unsafe {
 			Self {

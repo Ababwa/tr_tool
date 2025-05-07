@@ -6,7 +6,7 @@ An "index" points to an entry in an array.
 16-bit color type names list channels in bit-order, high first.
 */
 
-use std::{io::Result, mem::transmute, slice::from_raw_parts};
+use std::{mem::transmute, slice::from_raw_parts};
 use bitfield::bitfield;
 use glam::{I16Vec2, I16Vec3, IVec3, U16Vec2, U16Vec3};
 use glam_traits::ext::U8Vec2;
@@ -71,8 +71,8 @@ pub struct NumSectors {
 }
 
 impl ToLen for NumSectors {
-	fn get_len(&self) -> Result<usize> {
-		Ok((self.z * self.x) as usize)
+	fn get_len(&self) -> usize {
+		(self.z * self.x) as usize
 	}
 }
 
@@ -376,6 +376,7 @@ macro_rules! decl_mesh {
 		
 		impl<'a> $mesh<'a> {
 			pub(crate) fn get(mesh_data: &'a [u16], mesh_offset: u32) -> Self {
+				assert!(mesh_offset % 2 == 0);
 				let mut cursor = crate::u16_cursor::U16Cursor::new(&mesh_data[mesh_offset as usize / 2..]);
 				unsafe {
 					Self {
@@ -464,6 +465,7 @@ impl Level {
 	}
 	
 	pub fn get_frame(&self, model: &Model) -> &Frame {
+		assert!(model.frame_byte_offset % 2 == 0);
 		let ptr = self.frame_data
 			[model.frame_byte_offset as usize / 2..]
 			[..10 + model.num_meshes as usize * (size_of::<FrameRotation>() / 2)]//bound check

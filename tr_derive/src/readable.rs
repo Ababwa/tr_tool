@@ -141,7 +141,7 @@ fn get_field_init(field: Field, initialized_fields: &[Ident], saved_positions: &
 			}
 		} else if initialized_fields.contains(&len_arg) {
 			quote! {
-				let len = tr_readable::ToLen::get_len(&(*this).#len_arg)?;
+				let len = tr_readable::ToLen::get_len(&(*this).#len_arg);
 			}
 		} else {
 			return Err("`list` argument must either be a unsigned integer type or a preceding field".to_string());

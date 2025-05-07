@@ -10,20 +10,20 @@ pub trait Readable {
 }
 
 pub trait ToLen {
-	fn get_len(&self) -> Result<usize>;
+	fn get_len(&self) -> usize;
 }
 
 impl<T> ToLen for Box<[T]> {
-	fn get_len(&self) -> Result<usize> {
-		Ok(self.len())
+	fn get_len(&self) -> usize {
+		self.len()
 	}
 }
 
 macro_rules! impl_to_len_prim {
 	($type:ty) => {
 		impl ToLen for $type {
-			fn get_len(&self) -> Result<usize> {
-				Ok(*self as usize)
+			fn get_len(&self) -> usize {
+				*self as usize
 			}
 		}
 	};

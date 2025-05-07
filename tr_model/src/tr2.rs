@@ -242,6 +242,7 @@ macro_rules! decl_frame {
 
 		impl<'a> $frame<'a> {
 			pub(crate) fn get(frame_data: &'a [u16], frame_byte_offset: u32, num_meshes: u16) -> Self {
+				assert!(frame_byte_offset % 2 == 0);
 				let frame_data = &frame_data[frame_byte_offset as usize / 2..];
 				let ptr = frame_data[..9].as_ptr() as usize;
 				let frame_data = unsafe { transmute([ptr, frame_data.len() - 9]) };

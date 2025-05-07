@@ -27,6 +27,7 @@ impl ToBytes<[(); 0]> for PathBuf {
 		Ok(self.into_os_string().into_string().expect("not UTF-8"))
 	}
 }
+
 pub struct Leb128Bytes([u8; 9], u8);
 
 impl AsRef<[u8]> for Leb128Bytes {
