@@ -37,7 +37,7 @@ fn sb_surface(window: &Window, size: PhysicalSize<u32>) -> softbuffer::Surface<&
 	).expect("sb surface");
 	surface.resize(
 		NonZeroU32::new(size.width).expect("nonzero window width"),
-		NonZeroU32::new(size.width).expect("nonzero window height"),
+		NonZeroU32::new(size.height).expect("nonzero window height"),
 	).expect("sb resize");
 	surface
 }

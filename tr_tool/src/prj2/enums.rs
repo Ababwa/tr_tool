@@ -1,7 +1,5 @@
 use bitflags::bitflags;
 
-use super::{XN, XP, ZN, ZP};
-
 macro_rules! impl_i64_enum {
 	($name:ty) => {
 		impl From<$name> for i64 {
@@ -180,6 +178,7 @@ impl_i64_enum!(SectorFace);
 
 impl SectorFace {
 	pub fn from_side_level(side: usize, level: i8) -> Self {
+		use super::{XN, XP, ZN, ZP};
 		match (side, level) {
 			(XN, 0) => Self::WallNegativeXMiddle,
 			(ZP, 0) => Self::WallPositiveZMiddle,
@@ -279,6 +278,19 @@ impl SectorFace {
 			_ => panic!("unknown sector face: {}, {}", side, level),
 		}
 	}
+}
+
+/// Indicates the corner tri that is a step or wall. The other corner tri must be flat.
+// #[derive(Clone, Copy)]
+// pub enum DiagonalCorner {
+// 	XnZp = 1,
+// 	XpZp = 2,
+// 	XpZn = 3,
+// 	XnZn = 4,
+// }
+
+pub fn diag_details_from_corner(corner: u8) -> u8 {
+	(1 - (corner % 2)) | (corner + 1)
 }
 
 bitflags! {

@@ -11,6 +11,14 @@ pub enum LevelStore {
 	Tr5(Box<tr5::Level>),
 }
 
+// pub enum LevelRef<'a> {
+// 	Tr1(&'a tr1::Level),
+// 	Tr2(&'a tr2::Level),
+// 	Tr3(&'a tr3::Level),
+// 	Tr4(&'a tr4::Level),
+// 	Tr5(&'a tr5::Level),
+// }
+
 impl LevelStore {
 	pub fn as_dyn(&self) -> &dyn LevelDyn {
 		match self {
@@ -21,6 +29,16 @@ impl LevelStore {
 			LevelStore::Tr5(level) => level.as_ref(),
 		}
 	}
+	
+	// pub fn as_ref(&self) -> LevelRef {
+	// 	match self {
+	// 		LevelStore::Tr1(level) => LevelRef::Tr1(level.as_ref()),
+	// 		LevelStore::Tr2(level) => LevelRef::Tr2(level.as_ref()),
+	// 		LevelStore::Tr3(level) => LevelRef::Tr3(level.as_ref()),
+	// 		LevelStore::Tr4(level) => LevelRef::Tr4(level.as_ref()),
+	// 		LevelStore::Tr5(level) => LevelRef::Tr5(level.as_ref()),
+	// 	}
+	// }
 }
 
 pub struct RoomGeom<'a, V, Q, T> {
