@@ -1,4 +1,4 @@
-use glam_traits::{GBVec, GVec};
+use glam_traits::{BVec, GVec};
 
 /// Some volume defined by a minimum and maximum.
 #[repr(C)]

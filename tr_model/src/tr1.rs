@@ -8,8 +8,7 @@ An "index" points to an entry in an array.
 
 use std::{mem::transmute, slice::from_raw_parts};
 use bitfield::bitfield;
-use glam::{I16Vec2, I16Vec3, IVec3, U16Vec2, U16Vec3};
-use glam_traits::ext::U8Vec2;
+use glam::{I16Vec2, I16Vec3, IVec3, U16Vec2, U16Vec3, U8Vec2};
 use shared::min_max::MinMax;
 use tr_readable::{Readable, ToLen};
 

@@ -6,6 +6,5 @@ edition = "2021"
 [dependencies]
 bitfield = "0.14.0"
 glam = { workspace = true }
-glam-traits = { workspace = true }
 shared = { workspace = true }
 tr_readable = { path = "../tr_readable" }

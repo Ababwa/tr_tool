@@ -925,18 +925,17 @@ dependencies = [
 
 [[package]]
 name = "glam"
-version = "0.29.0"
+version = "0.30.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c28091a37a5d09b555cb6628fd954da299b536433834f5b8e59eba78e0cbbf8a"
+checksum = "6b46b9ca4690308844c644e7c634d68792467260e051c8543e0c7871662b3ba7"
 
 [[package]]
 name = "glam-traits"
-version = "0.2.0"
+version = "0.3.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a0f728f99f94fd6fca6a24650e3271e05c680cab7e0aafc45401f276efd48528"
+checksum = "5b7a53ae863abe0acb8bc1771f58f4da64018d5266f2760f7e850d307619622a"
 dependencies = [
  "glam",
- "num-traits",
 ]
 
 [[package]]
@@ -2337,7 +2336,6 @@ version = "0.1.0"
 dependencies = [
  "bitfield",
  "glam",
- "glam-traits",
  "shared",
  "tr_readable",
 ]

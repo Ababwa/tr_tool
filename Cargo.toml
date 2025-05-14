@@ -3,6 +3,5 @@ members = ["shared", "tr_readable", "tr_derive", "tr_model", "tr_tool"]
 resolver = "2"
 
 [workspace.dependencies]
-glam = "0.29.0"
-glam-traits = { version = "0.2.0", features = ["ext"] }
+glam = "0.30.3"
 shared = { path = "shared" }
