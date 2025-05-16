@@ -597,9 +597,7 @@ fn parse_level<L: Level + Readable>(
 		let room_index = room_index as u16;
 		let room_pos = room.pos();
 		//room geom
-		let geom = {
-			room.geom().into_iter().enumerate()
-		}.map(|(geom_index, RoomGeom { vertices, quads, tris })| {
+		let geom = room.geom().enumerate().map(|(geom_index, RoomGeom { vertices, quads, tris })| {
 			let geom_index = geom_index as u16;
 			let vertex_array_offset = data_writer.geom_buffer.write_vertex_array(vertices);
 			let transform = Mat4::from_translation(room_pos.as_vec3());
@@ -1396,25 +1394,33 @@ impl Gui for TrTool {
 					self.queue.write_buffer(&loaded_level.scroll_offset_buffer, 0, scroll_offset_bytes);
 				});
 				if let Some((path, texture)) = self.file_dialog.get_texture_path() {
-					let level = loaded_level.level.as_dyn();
-					let rgba = match texture {
-						TexturesTab::Textures(TextureMode::Palette) => {
-							let palette = level.palette_24bit().unwrap();
-							let atlases = level.atlases_palette().unwrap();
-							palette_images_to_rgba(palette, atlases)
-						},
-						TexturesTab::Textures(TextureMode::Bit16) => {
-							let atlases = level.atlases_16bit().unwrap();
-							bit16_images_to_rgba(atlases)
-						},
-						TexturesTab::Textures(TextureMode::Bit32) => {
-							let atlases = level.atlases_32bit().unwrap();
-							bit32_images_to_rgba(atlases)
-						},
-						TexturesTab::Misc => {
-							let images = level.misc_images().unwrap();
-							bit32_images_to_rgba(images)
-						},
+					fn get_rgba<L: Level>(level: &L, texture: TexturesTab) -> Vec<u8> {
+						match texture {
+							TexturesTab::Textures(TextureMode::Palette) => {
+								let palette = level.palette_24bit().unwrap();
+								let atlases = level.atlases_palette().unwrap();
+								palette_images_to_rgba(palette, atlases)
+							},
+							TexturesTab::Textures(TextureMode::Bit16) => {
+								let atlases = level.atlases_16bit().unwrap();
+								bit16_images_to_rgba(atlases)
+							},
+							TexturesTab::Textures(TextureMode::Bit32) => {
+								let atlases = level.atlases_32bit().unwrap();
+								bit32_images_to_rgba(atlases)
+							},
+							TexturesTab::Misc => {
+								let images = level.misc_images().unwrap();
+								bit32_images_to_rgba(images)
+							},
+						}
+					}
+					let rgba = match &loaded_level.level {
+						LevelStore::Tr1(level) => get_rgba(level.as_ref(), texture),
+						LevelStore::Tr2(level) => get_rgba(level.as_ref(), texture),
+						LevelStore::Tr3(level) => get_rgba(level.as_ref(), texture),
+						LevelStore::Tr4(level) => get_rgba(level.as_ref(), texture),
+						LevelStore::Tr5(level) => get_rgba(level.as_ref(), texture),
 					};
 					let result = image::save_buffer(
 						path,

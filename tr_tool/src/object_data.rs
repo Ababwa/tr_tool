@@ -85,7 +85,7 @@ pub fn print_object_data<L: Level>(level: &L, object_data: &[ObjectData], index:
 		ObjectData::RoomFace { room_index, geom_index, face_type, face_index } => {
 			let room = &level.rooms()[room_index as usize];
 			//unwrap: proven in level parse
-			let geom = room.geom().into_iter().nth(geom_index as usize).unwrap();
+			let geom = room.geom().nth(geom_index as usize).unwrap();
 			let face: &dyn RoomFace = match face_type {
 				PolyType::Quad => &geom.quads[face_index as usize],
 				PolyType::Tri => &geom.tris[face_index as usize],
