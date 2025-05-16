@@ -7,7 +7,7 @@ use crate::{
 		ObjectTexture, Portal, RoomFlags, Sector, SoundSource, Sprite, SpriteSequence, SpriteTexture,
 		StateChange, StaticMesh, ATLAS_PIXELS, LIGHT_MAP_LEN, PALETTE_LEN,
 	},
-	tr2::{Color16BitArgb, Color32BitRgb, Entity, Frame, Mesh, TrBox, SOUND_MAP_LEN},
+	tr2::{Color16BitArgb, Color32BitRgb, Entity, Frame, Mesh, TrBox, SOUND_MAP_LEN, ZONE_SIZE},
 };
 
 pub mod blend_mode {
@@ -155,7 +155,7 @@ pub struct Level {
 	#[list(u32)] pub sound_sources: Box<[SoundSource]>,
 	#[list(u32)] pub boxes: Box<[TrBox]>,
 	#[list(u32)] pub overlap_data: Box<[u16]>,
-	#[list(boxes)] pub zone_data: Box<[[u16; 10]]>,
+	#[list(boxes)] pub zone_data: Box<[[u16; ZONE_SIZE]]>,
 	#[list(u32)] pub animated_textures: Box<[u16]>,
 	#[list(u32)] pub object_textures: Box<[ObjectTexture]>,
 	#[list(u32)] pub entities: Box<[Entity]>,

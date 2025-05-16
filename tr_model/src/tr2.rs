@@ -1,16 +1,21 @@
-use std::{mem::transmute, slice::Iter};
+use std::{mem, slice};
 use bitfield::bitfield;
 use glam::{I16Vec3, IVec3, U16Vec3};
 use shared::min_max::MinMax;
 use tr_readable::Readable;
-use crate::tr1::{
-	decl_mesh, get_packed_angles, AnimDispatch, Animation, Camera, CinematicFrame, Color24Bit, MeshLighting,
-	MeshNode, Model, NumSectors, ObjectTexture, Portal, RoomFlags, Sector, SoundDetails, SoundSource,
-	Sprite, SpriteSequence, SpriteTexture, StateChange, StaticMesh, TexturedQuad, TexturedTri, ATLAS_PIXELS,
-	LIGHT_MAP_LEN, PALETTE_LEN,
+use crate::{
+	tr1::{
+		decl_mesh, get_packed_angles, AnimDispatch, Animation, Camera, CinematicFrame, Color24Bit,
+		MeshLighting, MeshNode, Model, NumSectors, ObjectTexture, Portal, RoomFlags, Sector, SoundDetails,
+		SoundSource, Sprite, SpriteSequence, SpriteTexture, StateChange, StaticMesh, TexturedQuad,
+		TexturedTri, ATLAS_PIXELS, LIGHT_MAP_LEN, PALETTE_LEN,
+	},
+	u16_cursor::U16Cursor,
 };
 
 pub const SOUND_MAP_LEN: usize = 370;
+pub const ZONE_SIZE: usize = 10;
+pub const SINGLE_ANGLE_MASK: u16 = 0x3FF;
 
 //model
 
@@ -146,7 +151,7 @@ pub struct Level {
 	#[list(u32)] pub sound_sources: Box<[SoundSource]>,
 	#[list(u32)] pub boxes: Box<[TrBox]>,
 	#[list(u32)] pub overlap_data: Box<[u16]>,
-	#[list(boxes)] pub zone_data: Box<[[u16; 10]]>,
+	#[list(boxes)] pub zone_data: Box<[[u16; ZONE_SIZE]]>,
 	#[list(u32)] pub animated_textures: Box<[u16]>,
 	#[list(u32)] pub entities: Box<[Entity]>,
 	#[boxed] pub light_map: Box<[[u8; PALETTE_LEN]; LIGHT_MAP_LEN]>,
@@ -176,14 +181,6 @@ decl_solid_face_type!(SolidTri, 3);
 
 decl_mesh!(Mesh, MeshLighting, TexturedQuad, TexturedTri, SolidQuad, SolidTri);
 
-#[repr(C)]
-#[derive(Debug)]
-pub struct FrameData {
-	pub bound_box: MinMax<I16Vec3>,
-	pub offset: I16Vec3,
-	pub rotation_data: [u16],
-}
-
 #[derive(Clone, Debug)]
 pub enum Axis {
 	X,
@@ -192,25 +189,39 @@ pub enum Axis {
 }
 
 macro_rules! decl_frame {
-	($frame:ident, $rotation_iterator:ident, $frame_rotation:ident, $single_angle_mask:literal) => {
+	(
+		$frame_data:ident,
+		$frame:ident,
+		$rotation_iterator:ident,
+		$frame_rotation:ident,
+		$single_angle_mask:expr
+	) => {
+		#[repr(C)]
+		#[derive(Debug)]
+		pub struct $frame_data {
+			pub bound_box: MinMax<I16Vec3>,
+			pub offset: I16Vec3,
+			pub rotation_data: [u16],
+		}
+		
 		#[derive(Clone, Debug)]
 		pub struct $frame<'a> {
 			pub num_meshes: usize,
-			pub frame_data: &'a FrameData,
+			pub frame_data: &'a $frame_data,
 		}
-
+		
 		#[derive(Clone, Debug)]
 		pub struct $rotation_iterator<'a> {
-			rotation_data: Iter<'a, u16>,
+			rotation_data: slice::Iter<'a, u16>,
 			remaining: usize,
 		}
-
+		
 		#[derive(Clone, Debug)]
 		pub enum $frame_rotation {
 			AllAxes(U16Vec3),
 			SingleAxis(Axis, u16),
 		}
-
+		
 		impl Iterator for $rotation_iterator<'_> {
 			type Item = $frame_rotation;
 			
@@ -239,14 +250,28 @@ macro_rules! decl_frame {
 				Some(rotation)
 			}
 		}
-
+		
 		impl<'a> $frame<'a> {
 			pub(crate) fn get(frame_data: &'a [u16], frame_byte_offset: u32, num_meshes: u16) -> Self {
-				assert!(frame_byte_offset % 2 == 0);
-				let frame_data = &frame_data[frame_byte_offset as usize / 2..];
-				let ptr = frame_data[..9].as_ptr() as usize;
-				let frame_data = unsafe { transmute([ptr, frame_data.len() - 9]) };
-				Self { num_meshes: num_meshes as usize, frame_data }
+				//size of FrameData cannot be calculated without iterating rotations since rotations can be
+				//1 or 2 u16s, so FrameData is given the rest of the available frame data
+				
+				/// Size of the known part of FrameData in u16s.
+				const FRAME_DATA_KNOWN_SIZE: usize = 9;
+				let byte_offset = frame_byte_offset as usize;
+				assert!(byte_offset % size_of::<u16>() == 0);
+				let offset = byte_offset / size_of::<u16>();
+				let known_end = offset + FRAME_DATA_KNOWN_SIZE;
+				assert!(known_end <= frame_data.len());
+				let len = frame_data.len() - known_end;
+				let frame_data = unsafe {
+					let ptr = frame_data.as_ptr().add(offset) as usize;
+					mem::transmute([ptr, len])
+				};
+				Self {
+					num_meshes: num_meshes as usize,
+					frame_data,
+				}
 			}
 			
 			pub fn iter_rotations(&self) -> $rotation_iterator<'a> {
@@ -260,7 +285,7 @@ macro_rules! decl_frame {
 }
 pub(crate) use decl_frame;
 
-decl_frame!(Frame, RotationIterator, FrameRotation, 0x3FF);
+decl_frame!(FrameData, Frame, RotationIterator, FrameRotation, SINGLE_ANGLE_MASK);
 
 impl Level {
 	pub fn get_mesh(&self, mesh_offset: u32) -> Mesh {

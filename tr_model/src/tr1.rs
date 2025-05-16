@@ -6,17 +6,19 @@ An "index" points to an entry in an array.
 16-bit color type names list channels in bit-order, high first.
 */
 
-use std::{mem::transmute, slice::from_raw_parts};
+use std::{mem, slice};
 use bitfield::bitfield;
 use glam::{I16Vec2, I16Vec3, IVec3, U16Vec2, U16Vec3, U8Vec2};
 use shared::min_max::MinMax;
 use tr_readable::{Readable, ToLen};
+use crate::u16_cursor::U16Cursor;
 
 pub const ATLAS_SIDE_LEN: usize = 256;
 pub const ATLAS_PIXELS: usize = ATLAS_SIDE_LEN * ATLAS_SIDE_LEN;
 pub const PALETTE_LEN: usize = 256;
 pub const LIGHT_MAP_LEN: usize = 32;
 pub const SOUND_MAP_LEN: usize = 256;
+pub const ZONE_SIZE: usize = 6;
 
 pub mod blend_mode {
 	pub const OPAQUE: u16 = 0;
@@ -330,7 +332,7 @@ pub struct Level {
 	#[list(u32)] pub sound_sources: Box<[SoundSource]>,
 	#[list(u32)] pub boxes: Box<[TrBox]>,
 	#[list(u32)] pub overlap_data: Box<[u16]>,
-	#[list(boxes)] pub zone_data: Box<[[u16; 6]]>,
+	#[list(boxes)] pub zone_data: Box<[[u16; ZONE_SIZE]]>,
 	#[list(u32)] pub animated_textures: Box<[u16]>,
 	#[list(u32)] pub entities: Box<[Entity]>,
 	#[boxed] pub light_map: Box<[[u8; PALETTE_LEN]; LIGHT_MAP_LEN]>,
@@ -356,7 +358,11 @@ decl_face_type!(SolidTri, 3, color_index);
 
 macro_rules! decl_mesh {
 	(
-		$mesh:ident, $mesh_lighting:ident, $textured_quad:ty, $textured_tri:ty, $solid_quad:ty,
+		$mesh:ident,
+		$mesh_lighting:ident,
+		$textured_quad:ty,
+		$textured_tri:ty,
+		$solid_quad:ty,
 		$solid_tri:ty
 	) => {
 		#[derive(Clone, Debug)]
@@ -374,9 +380,12 @@ macro_rules! decl_mesh {
 		}
 		
 		impl<'a> $mesh<'a> {
-			pub(crate) fn get(mesh_data: &'a [u16], mesh_offset: u32) -> Self {
-				assert!(mesh_offset % 2 == 0);
-				let mut cursor = crate::u16_cursor::U16Cursor::new(&mesh_data[mesh_offset as usize / 2..]);
+			pub(crate) fn get(mesh_data: &'a [u16], mesh_byte_offset: u32) -> Self {
+				let byte_offset = mesh_byte_offset as usize;
+				assert!(byte_offset % size_of::<u16>() == 0);
+				let offset = byte_offset / size_of::<u16>();
+				let mesh_data = &mesh_data[offset..];
+				let mut cursor = U16Cursor::new(mesh_data);
 				unsafe {
 					Self {
 						center: cursor.read(),
@@ -418,12 +427,14 @@ pub struct MeshNode {
 
 impl MeshNode {
 	pub(crate) fn get<'a>(mesh_node_data: &'a [u32], mesh_node_offset: u32, num_meshes: u16) -> &'a [Self] {
-		let ptr = mesh_node_data
-			[mesh_node_offset as usize..]
-			[..(num_meshes as usize - 1) * (size_of::<Self>() / 4)]//bound check
-			.as_ptr()
-			.cast::<Self>();
-		unsafe { from_raw_parts(ptr, num_meshes as usize - 1) }
+		let offset = mesh_node_offset as usize;
+		let len = num_meshes as usize - 1;
+		let size = len * (size_of::<Self>() / size_of::<u32>());
+		assert!(offset + size <= mesh_node_data.len());
+		unsafe {
+			let ptr = mesh_node_data.as_ptr().add(offset).cast();
+			slice::from_raw_parts(ptr, len)
+		}
 	}
 }
 
@@ -437,7 +448,7 @@ pub(crate) fn get_packed_angles(xy: u16, yz: u16) -> U16Vec3 {
 
 #[repr(C)]
 #[derive(Clone, Debug)]
-pub struct FrameRotation(u16, u16);
+pub struct FrameRotation(pub u16, pub u16);
 
 impl FrameRotation {
 	pub fn get_angles(&self) -> U16Vec3 {
@@ -455,8 +466,8 @@ pub struct Frame {
 }
 
 impl Level {
-	pub fn get_mesh(&self, mesh_offset: u32) -> Mesh {
-		Mesh::get(&self.mesh_data, mesh_offset)
+	pub fn get_mesh(&self, mesh_byte_offset: u32) -> Mesh {
+		Mesh::get(&self.mesh_data, mesh_byte_offset)
 	}
 	
 	pub fn get_mesh_nodes(&self, model: &Model) -> &[MeshNode] {
@@ -464,11 +475,17 @@ impl Level {
 	}
 	
 	pub fn get_frame(&self, model: &Model) -> &Frame {
-		assert!(model.frame_byte_offset % 2 == 0);
-		let ptr = self.frame_data
-			[model.frame_byte_offset as usize / 2..]
-			[..10 + model.num_meshes as usize * (size_of::<FrameRotation>() / 2)]//bound check
-			.as_ptr() as usize;
-		unsafe { transmute([ptr, model.num_meshes as usize]) }//no nice way to make unsized struct
+		/// Size of the known part of Frame in u16s.
+		const FRAME_KNOWN_SIZE: usize = 10;
+		let byte_offset = model.frame_byte_offset as usize;
+		assert!(byte_offset % size_of::<u16>() == 0);
+		let offset = (byte_offset / size_of::<u16>()) as usize;
+		let len = model.num_meshes as usize;
+		let size = FRAME_KNOWN_SIZE + len * (size_of::<FrameRotation>() / size_of::<u16>());
+		assert!(offset + size <= self.frame_data.len());
+		unsafe {
+			let ptr = self.frame_data.as_ptr().add(offset) as usize;
+			mem::transmute([ptr, len])//no nice way to make unsized struct
+		}
 	}
 }

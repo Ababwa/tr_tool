@@ -269,21 +269,22 @@ fn texture_palette_fs_main(vtf: TextureVTF) -> Out {
 
 @fragment
 fn texture_16bit_fs_main(vtf: TextureVTF) -> Out {
-	// let color_16bit = get_pixel(vtf.atlas_index, vtf.uv);
-	// let color = get_color_16bit(color_16bit);
-	// return Out(color, vtf.object_id);
-	let a = vtf.object_id;
-	let b = ((a >> 16) ^ a) & 0xFFFF;
-	let c = ((b >> 8) ^ b) & 0xFF;
-	return Out(
-		vec4f(
-			f32(c & 7) / 7.0,
-			f32((c >> 3) & 7) / 7.0,
-			f32((c >> 6) & 3) / 3.0,
-			1.0,
-		),
-		vtf.object_id,
-	);
+	let color_16bit = get_pixel(vtf.atlas_index, vtf.uv);
+	let color = get_color_16bit(color_16bit);
+	return Out(color, vtf.object_id);
+	//for debugging
+	// let a = vtf.object_id;
+	// let b = ((a >> 16) ^ a) & 0xFFFF;
+	// let c = ((b >> 8) ^ b) & 0xFF;
+	// return Out(
+	// 	vec4f(
+	// 		f32(c & 7) / 7.0,
+	// 		f32((c >> 3) & 7) / 7.0,
+	// 		f32((c >> 6) & 3) / 3.0,
+	// 		1.0,
+	// 	),
+	// 	vtf.object_id,
+	// );
 }
 
 @fragment

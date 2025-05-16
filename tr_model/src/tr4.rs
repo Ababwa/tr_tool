@@ -1,6 +1,7 @@
-use std::{io::{Read, Result}, mem::transmute, slice::Iter};
+use std::{io::{Read, Result}, mem, slice};
 use bitfield::bitfield;
 use glam::{I16Vec3, IVec3, U16Vec2, U16Vec3, UVec2, Vec3};
+use shared::min_max::MinMax;
 use tr_readable::{read_into, Readable, ToLen};
 use crate::{
 	tr1::{
@@ -8,12 +9,14 @@ use crate::{
 		Portal, RoomFlags, Sector, SoundSource, Sprite, SpriteSequence, SpriteTexture, StateChange,
 		StaticMesh, ATLAS_PIXELS,
 	},
-	tr2::{decl_frame, Axis, Color16BitArgb, FrameData, TrBox, SOUND_MAP_LEN},
-	tr3::{DsQuad, RoomStaticMesh, DsTri, RoomVertex, SoundDetails},
+	tr2::{decl_frame, Axis, Color16BitArgb, TrBox, SOUND_MAP_LEN, ZONE_SIZE},
+	tr3::{DsQuad, DsTri, RoomStaticMesh, RoomVertex, SoundDetails},
 	u16_cursor::U16Cursor,
 };
 
 pub const EXTENDED_SOUND_MAP_LEN: usize = 1024;
+pub const SINGLE_ANGLE_MASK: u16 = 0xFFF;
+pub const NUM_MISC_IMAGES: usize = 2;
 
 //model
 
@@ -181,7 +184,8 @@ pub enum SoundMap {
 }
 
 unsafe fn read_sound_map<R: Read>(reader: &mut R, this: *mut SoundMap, demo_data: &Box<[u8]>) -> Result<()> {
-	if demo_data.len() == 2048 {
+	const EXTENDED_DEMO_DATA_LEN: usize = 2048;
+	if demo_data.len() == EXTENDED_DEMO_DATA_LEN {
 		let mut sound_map = Box::new_uninit();
 		read_into(reader, sound_map.as_mut_ptr())?;
 		this.write(SoundMap::Extended(sound_map.assume_init()));
@@ -217,7 +221,7 @@ pub struct LevelData {
 	#[list(u32)] pub sound_sources: Box<[SoundSource]>,
 	#[list(u32)] pub boxes: Box<[TrBox]>,
 	#[list(u32)] pub overlap_data: Box<[u16]>,
-	#[list(boxes)] pub zone_data: Box<[[u16; 10]]>,
+	#[list(boxes)] pub zone_data: Box<[[u16; ZONE_SIZE]]>,
 	#[list(u32)] pub animated_textures: Box<[u16]>,
 	pub animated_textures_uv_count: u8,
 	pub tex: [u8; 3],
@@ -243,7 +247,7 @@ pub struct Level {
 	pub num_atlases: NumAtlases,
 	#[zlib] #[list(num_atlases)] pub atlases_32bit: Box<[[Color32BitBgra; ATLAS_PIXELS]]>,
 	#[zlib] #[list(num_atlases)] pub atlases_16bit: Box<[[Color16BitArgb; ATLAS_PIXELS]]>,
-	#[zlib] #[boxed] pub misc_images: Box<[[Color32BitBgra; ATLAS_PIXELS]; 2]>,
+	#[zlib] #[boxed] pub misc_images: Box<[[Color32BitBgra; ATLAS_PIXELS]; NUM_MISC_IMAGES]>,
 	#[zlib] #[delegate] pub level_data: LevelData,
 	#[list(u32)] #[delegate] pub samples: Box<[Sample]>,
 }
@@ -284,9 +288,12 @@ pub struct Mesh<'a> {
 }
 
 impl<'a> Mesh<'a> {
-	pub(crate) fn get(mesh_data: &'a [u16], mesh_offset: u32) -> Self {
-		assert!(mesh_offset % 2 == 0);
-		let mut cursor = U16Cursor::new(&mesh_data[mesh_offset as usize / 2..]);
+	pub(crate) fn get(mesh_data: &'a [u16], mesh_byte_offset: u32) -> Self {
+		let byte_offset = mesh_byte_offset as usize;
+		assert!(byte_offset % size_of::<u16>() == 0);
+		let offset = byte_offset / size_of::<u16>();
+		let mesh_data = &mesh_data[offset..];
+		let mut cursor = U16Cursor::new(mesh_data);
 		unsafe {
 			Self {
 				center: cursor.read(),
@@ -303,7 +310,7 @@ impl<'a> Mesh<'a> {
 	}
 }
 
-decl_frame!(Frame, RotationIterator, FrameRotation, 0xFFF);
+decl_frame!(FrameData, Frame, RotationIterator, FrameRotation, SINGLE_ANGLE_MASK);
 
 impl Level {
 	pub fn get_mesh(&self, mesh_offset: u32) -> Mesh {

@@ -8,7 +8,7 @@ use crate::{
 		AnimDispatch, Camera, MeshNode, NumSectors, Portal, RoomFlags, Sector, SoundSource, SpriteSequence,
 		SpriteTexture, StateChange, StaticMesh, ATLAS_PIXELS,
 	},
-	tr2::{Color16BitArgb, TrBox},
+	tr2::{Color16BitArgb, TrBox, ZONE_SIZE},
 	tr3::{RoomStaticMesh, SoundDetails},
 	tr4::{
 		Ai, Animation, AtlasIndexFaceType, Color32BitBgra, Entity, FaceEffects, FlybyCamera, Frame, Mesh,
@@ -17,6 +17,7 @@ use crate::{
 };
 
 pub const SOUND_MAP_LEN: usize = 450;
+pub const NUM_MISC_IMAGES: usize = 3;
 
 //model
 
@@ -213,7 +214,7 @@ pub struct Level {
 	pub num_atlases: NumAtlases,
 	#[zlib] #[list(num_atlases)] pub atlases_32bit: Box<[[Color32BitBgra; ATLAS_PIXELS]]>,
 	#[zlib] #[list(num_atlases)] pub atlases_16bit: Box<[[Color16BitArgb; ATLAS_PIXELS]]>,
-	#[zlib] #[boxed] pub misc_images: Box<[[Color32BitBgra; ATLAS_PIXELS]; 3]>,
+	#[zlib] #[boxed] pub misc_images: Box<[[Color32BitBgra; ATLAS_PIXELS]; NUM_MISC_IMAGES]>,
 	pub lara_type: u16,
 	pub weather_type: u16,
 	pub padding1: [u8; 28],
@@ -240,7 +241,7 @@ pub struct Level {
 	#[list(u32)] pub sound_sources: Box<[SoundSource]>,
 	#[list(u32)] pub boxes: Box<[TrBox]>,
 	#[list(u32)] pub overlap_data: Box<[u16]>,
-	#[list(boxes)] pub zone_data: Box<[[u16; 10]]>,
+	#[list(boxes)] pub zone_data: Box<[[u16; ZONE_SIZE]]>,
 	#[list(u32)] pub animated_textures: Box<[u16]>,
 	pub animated_textures_uv_count: u8,
 	pub tex0: [u8; 4],
