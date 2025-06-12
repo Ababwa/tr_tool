@@ -931,9 +931,9 @@ checksum = "6b46b9ca4690308844c644e7c634d68792467260e051c8543e0c7871662b3ba7"
 
 [[package]]
 name = "glam-traits"
-version = "0.3.0"
+version = "0.3.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "5b7a53ae863abe0acb8bc1771f58f4da64018d5266f2760f7e850d307619622a"
+checksum = "d4e8bd857cb1216e8fff969d667884eafae3b882b36175675cdb9cb30c456937"
 dependencies = [
  "glam",
 ]
@@ -2359,6 +2359,7 @@ dependencies = [
  "egui-winit",
  "env_logger",
  "glam",
+ "glam-traits",
  "image",
  "leb128",
  "pollster",

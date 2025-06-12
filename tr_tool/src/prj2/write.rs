@@ -1,30 +1,30 @@
 use std::{fmt::Debug, io::{Result, Write}, path::PathBuf};
+use glam::Vec3;
 use crate::as_bytes::AsBytes;
 
-/// `T` is a discriminant to enable multiple blanket impls.
-pub trait ToBytes<T> {
+pub trait ToBytes {
 	type Bytes: AsRef<[u8]>;
 	fn to_bytes(self) -> Result<Self::Bytes>;
 }
 
-// impl ToBytes<[(); 0]> for &[u8] {
-// 	type Bytes = Self;
-// 	fn to_bytes(self) -> Result<Self::Bytes> {
-// 		Ok(self)
-// 	}
-// }
-
-impl ToBytes<[(); 0]> for &str {
+impl ToBytes for &[u8] {
 	type Bytes = Self;
 	fn to_bytes(self) -> Result<Self::Bytes> {
 		Ok(self)
 	}
 }
 
-impl ToBytes<[(); 0]> for PathBuf {
-	type Bytes = String;
+impl ToBytes for &str {
+	type Bytes = Self;
 	fn to_bytes(self) -> Result<Self::Bytes> {
-		Ok(self.into_os_string().into_string().expect("not UTF-8"))
+		Ok(self)
+	}
+}
+
+impl<'a> ToBytes for &'a PathBuf {
+	type Bytes = &'a str;
+	fn to_bytes(self) -> Result<Self::Bytes> {
+		Ok(self.to_str().unwrap())
 	}
 }
 
@@ -38,7 +38,7 @@ impl AsRef<[u8]> for Leb128Bytes {
 
 pub struct Leb128<T>(pub T);
 
-impl<T> ToBytes<[(); 0]> for Leb128<T> where T: TryInto<i64>, T::Error: Debug {
+impl<T> ToBytes for Leb128<T> where T: TryInto<i64>, T::Error: Debug {
 	type Bytes = Leb128Bytes;
 	fn to_bytes(self) -> Result<Self::Bytes> {
 		let mut bytes = [0; 9];
@@ -47,7 +47,7 @@ impl<T> ToBytes<[(); 0]> for Leb128<T> where T: TryInto<i64>, T::Error: Debug {
 	}
 }
 
-impl<F: FnOnce(&mut Vec<u8>) -> Result<()>> ToBytes<[(); 0]> for F {
+impl<F: FnOnce(&mut Vec<u8>) -> Result<()>> ToBytes for F {
 	type Bytes = Vec<u8>;
 	fn to_bytes(self) -> Result<Self::Bytes> {
 		let mut vec = vec![];
@@ -56,25 +56,25 @@ impl<F: FnOnce(&mut Vec<u8>) -> Result<()>> ToBytes<[(); 0]> for F {
 	}
 }
 
-pub struct AsBytesRef<T>(T);
+pub struct AsBytesWrapper<T>(T);
 
-impl<T: AsBytes> AsRef<[u8]> for AsBytesRef<T> {
+impl<T> AsRef<[u8]> for AsBytesWrapper<T> {
 	fn as_ref(&self) -> &[u8] {
 		self.0.as_bytes()
 	}
 }
 
-impl<T: AsBytes> ToBytes<[(); 1]> for T {
-	type Bytes = AsBytesRef<T>;
+impl ToBytes for Vec3 {
+	type Bytes = AsBytesWrapper<Self>;
 	fn to_bytes(self) -> Result<Self::Bytes> {
-		Ok(AsBytesRef(self))
+		Ok(AsBytesWrapper(self))
 	}
 }
 
 pub struct ChunkWriter<'a, T>(&'a mut T);
 
 impl<'a, T: Write> ChunkWriter<'a, T> {
-	pub fn chunk<A, D: ToBytes<A>>(&mut self, id: &[u8], data: D) -> Result<()> {
+	pub fn chunk<D: ToBytes>(&mut self, id: &[u8], data: D) -> Result<()> {
 		self.0.leb128(id.len())?;
 		self.0.write_all(id)?;
 		let data = data.to_bytes()?;

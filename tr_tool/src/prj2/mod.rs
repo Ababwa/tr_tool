@@ -4,13 +4,13 @@ mod floor_ceiling;
 mod walls;
 
 use core::str;
-use std::{io::{Error, Result, Write}, path};
+use std::{io::{Error, Result, Write}, path::{self, Path}};
 use enums::*;
 use floor_ceiling::{ConnectedTris, SingleTri, SteppedTris, SurfaceType, Tris};
 use glam::{I16Vec3, Vec3};
 use tr_model::tr1;
 use write::{Leb128, WriteExt};
-use crate::{as_bytes::AsBytes, palette_images_to_rgba, tr_traits::Room};
+use crate::{as_bytes::AsBytes, palette_images_to_rgba, tr_traits::*};
 
 const PRJ2: &[u8; 4] = b"PRJ2";
 
@@ -121,10 +121,10 @@ corner indices:
 3-2
 */
 
-pub fn export<W: Write>(w: &mut W, level: &tr1::Level, wad_path: &str, textures_path: &str) -> Result<()> {
+pub fn export<W: Write, L: Level>(w: &mut W, level: &L, wad_path: &str, textures_path: &str) -> Result<()> {
 	let wad_path = path::absolute(wad_path)?;
 	let textures_path = path::absolute(textures_path)?;
-	let rgba = palette_images_to_rgba(&level.palette, &level.atlases);
+	let rgba = palette_images_to_rgba(&level.palette_24bit().unwrap(), &level.atlases_palette().unwrap());
 	let height = rgba.len() as u32 / 1024;
 	image::save_buffer(&textures_path, &rgba, 256, height, image::ColorType::Rgba8).map_err(Error::other)?;
 	w.write_all(PRJ2)?;
@@ -138,7 +138,7 @@ pub fn export<W: Write>(w: &mut W, level: &tr1::Level, wad_path: &str, textures_
 					c.chunk_stream(|mut s| {
 						s.chunk(b"TeWad", |c: V| {
 							c.chunk_stream(|mut s| {
-								s.chunk(b"TePath", wad_path)
+								s.chunk(b"TePath", &wad_path)
 							})
 						})
 					})
@@ -148,7 +148,7 @@ pub fn export<W: Write>(w: &mut W, level: &tr1::Level, wad_path: &str, textures_
 						s.chunk(b"TeLvlTexture", |c: V| {
 							c.chunk_stream(|mut s| {
 								s.chunk(b"TeI", Leb128(0))?;
-								s.chunk(b"TePath", textures_path)?;
+								s.chunk(b"TePath", &textures_path)?;
 								Ok(())
 							})
 						})
@@ -159,11 +159,17 @@ pub fn export<W: Write>(w: &mut W, level: &tr1::Level, wad_path: &str, textures_
 		})?;
 		s.chunk(b"TeRooms", |c: V| {
 			c.chunk_stream(|mut s| {
-				for (room_index, room) in level.rooms.iter().enumerate() {
-					let sectors_x = room.num_sectors.x as i16;
-					let sectors_z = room.num_sectors.z as i16;
+				for (room_index, room) in level.rooms().iter().enumerate() {
+					let num_sectors = room.num_sectors();
+					let sectors_x = num_sectors.x as i16;
+					let sectors_z = num_sectors.z as i16;
 					println!("room {}: sectors: x: {}, z: {}", room_index, sectors_x, sectors_z);
-					let snapped_verts = room.vertices.iter().map(|v| snap_vert(v.pos)).collect::<Vec<_>>();
+					let snapped_verts = room.vertices().iter().map(|v| snap_vert(v.pos())).collect::<Vec<_>>();
+					for geom in room.geom() {
+						for quad in geom.quads {
+							quad.
+						}
+					}
 					let snapped_quads = room.quads.iter().filter_map(|&tr1::TexturedQuad { vertex_indices, object_texture_index }| snap_face(&snapped_verts, vertex_indices, object_texture_index)).collect::<Vec<_>>();
 					let snapped_tris = room.tris.iter().filter_map(|&tr1::TexturedTri { vertex_indices, object_texture_index }| snap_face(&snapped_verts, vertex_indices, object_texture_index)).collect::<Vec<_>>();
 					s.chunk(b"TeRoom", |c: V| {

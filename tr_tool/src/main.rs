@@ -8,7 +8,7 @@ mod geom_buffer;
 mod data_writer;
 mod file_dialog;
 mod object_data;
-mod prj2;
+// mod prj2;
 
 use std::{
 	collections::HashMap, env, f32::consts::{FRAC_PI_2, FRAC_PI_4, PI, TAU}, fs::File,
@@ -18,15 +18,16 @@ use std::{
 use data_writer::{DataWriter, MeshFaceOffsets, Output, RoomFaceOffsets};
 use file_dialog::FileDialogWrapper;
 use geom_buffer::{GeomBuffer, GEOM_BUFFER_SIZE};
+use glam_traits::GVec;
 use keys::{KeyGroup, KeyStates};
-use as_bytes::{AsBytes, ReinterpretAsBytes};
+use as_bytes::AsBytes;
 use glam::{DVec2, EulerRot, Mat4, Vec3, Vec3Swizzles};
 use gui::Gui;
 use object_data::{print_object_data, ObjectData, PolyType};
 use shared::min_max::{MinMax, VecMinMaxFromIterator};
 use tr_model::{tr1, tr2, tr3, tr4, tr5, Readable};
 use tr_traits::{
-	Entity, Face, Frame, Level, LevelStore, Mesh, Model, Room, RoomGeom, RoomStaticMesh, RoomVertex,
+	Entity, Face, Frame, Level, LevelStore, Mesh, Model, Room, Layer, RoomStaticMesh, RoomVertex,
 };
 use wgpu::{
 	BindGroup, BindGroupLayout, BindingResource, BlendComponent, BlendFactor, BlendOperation, BlendState,
@@ -60,8 +61,6 @@ struct Viewport {
 	clip: [i32; 4],
 	view: [i32; 4],
 }
-
-impl ReinterpretAsBytes for Viewport {}
 
 const DATA_ENTRY: u32 = 0;
 const STATICS_ENTRY: u32 = 1;
@@ -286,8 +285,6 @@ struct Statics {
 	num_atlases: u32,
 }
 
-impl ReinterpretAsBytes for Statics {}
-
 fn make_camera_transform(pos: Vec3, yaw: f32, pitch: f32) -> Mat4 {
 	Mat4::from_euler(EulerRot::XYZ, pitch, yaw, PI) * Mat4::from_translation(-pos)
 }
@@ -330,11 +327,11 @@ impl LoadedLevel {
 			if click_handle.is_finished() {
 				let o_idx = click_handle.join().expect("join click handle");
 				match &self.level {
-					LevelStore::Tr1(level) => print_object_data(level.as_ref(), &self.object_data, o_idx),
-					LevelStore::Tr2(level) => print_object_data(level.as_ref(), &self.object_data, o_idx),
-					LevelStore::Tr3(level) => print_object_data(level.as_ref(), &self.object_data, o_idx),
-					LevelStore::Tr4(level) => print_object_data(level.as_ref(), &self.object_data, o_idx),
-					LevelStore::Tr5(level) => print_object_data(level.as_ref(), &self.object_data, o_idx),
+					LevelStore::Tr1(level) => print_object_data(level, &self.object_data, o_idx),
+					LevelStore::Tr2(level) => print_object_data(level, &self.object_data, o_idx),
+					LevelStore::Tr3(level) => print_object_data(level, &self.object_data, o_idx),
+					LevelStore::Tr4(level) => print_object_data(level, &self.object_data, o_idx),
+					LevelStore::Tr5(level) => print_object_data(level, &self.object_data, o_idx),
 				}
 			} else {
 				self.click_handle = Some(click_handle);
@@ -476,7 +473,7 @@ struct WrittenMesh<'a, L: Level + 'a> {
 	solid_tris: WrittenFaceArray<'a, <L::Mesh<'a> as Mesh<'a>>::SolidTri>,
 }
 
-fn write_face_array<'a, F: Face + ReinterpretAsBytes>(
+fn write_face_array<'a, const N: usize, F: Face<N>>(
 	geom_buffer: &mut GeomBuffer,
 	vertex_array_offset: u32,
 	faces: &'a [F],
@@ -484,7 +481,7 @@ fn write_face_array<'a, F: Face + ReinterpretAsBytes>(
 	WrittenFaceArray { index: geom_buffer.write_face_array(faces, vertex_array_offset), faces }
 }
 
-fn make_atlases_view_gen<T: ReinterpretAsBytes>(
+fn make_atlases_view_gen<T>(
 	device: &Device, queue: &Queue, atlases: &[T], format: TextureFormat, size: u32,
 ) -> TextureView {
 	make::texture_view_with_data(
@@ -502,13 +499,11 @@ fn make_atlases_view_gen<T: ReinterpretAsBytes>(
 	)
 }
 
-fn make_atlases_view<T>(device: &Device, queue: &Queue, atlases: &[T], format: TextureFormat) -> TextureView
-where T: ReinterpretAsBytes {
+fn make_atlases_view<T>(device: &Device, queue: &Queue, atlases: &[T], format: TextureFormat) -> TextureView {
 	make_atlases_view_gen(device, queue, atlases, format, tr1::ATLAS_SIDE_LEN as u32)
 }
 
-fn make_palette_view<T>(device: &Device, queue: &Queue, palette: &T) -> TextureView
-where T: ReinterpretAsBytes {
+fn make_palette_view<T>(device: &Device, queue: &Queue, palette: &T) -> TextureView {
 	make::texture_view_with_data(
 		device,
 		queue,
@@ -596,9 +591,9 @@ fn parse_level<L: Level + Readable>(
 	}.map(|(((room_index, room), entity_indices), (room_sprites, entity_sprites))| {
 		let room_index = room_index as u16;
 		let room_pos = room.pos();
-		//room geom
-		let geom = room.geom().enumerate().map(|(geom_index, RoomGeom { vertices, quads, tris })| {
-			let geom_index = geom_index as u16;
+		//room layer
+		let geom = room.layers().enumerate().map(|(layer_index, Layer { vertices, quads, tris })| {
+			let layer_index = layer_index as u16;
 			let vertex_array_offset = data_writer.geom_buffer.write_vertex_array(vertices);
 			let transform = Mat4::from_translation(room_pos.as_vec3());
 			let transform_index = data_writer.geom_buffer.write_transform(&transform);
@@ -610,7 +605,7 @@ fn parse_level<L: Level + Readable>(
 				|face_index| {
 					ObjectData::RoomFace {
 						room_index,
-						geom_index,
+						layer_index,
 						face_type: PolyType::Quad,
 						face_index,
 					}
@@ -624,7 +619,7 @@ fn parse_level<L: Level + Readable>(
 				|face_index| {
 					ObjectData::RoomFace {
 						room_index,
-						geom_index,
+						layer_index,
 						face_type: PolyType::Tri,
 						face_index,
 					}
@@ -760,7 +755,7 @@ fn parse_level<L: Level + Readable>(
 		let (center, radius) = room
 			.vertices()
 			.iter()
-			.map(|v| v.pos())
+			.map(|v| v.pos().as_vec())
 			.min_max()
 			.map(|MinMax { min, max }| {
 				let center = (max + min) / 2.0;
@@ -906,8 +901,8 @@ fn parse_level<L: Level + Readable>(
 		depth_view: make::depth_view(device, window_size),
 		interact_texture,
 		interact_view,
-		face_instance_buffer: make::buffer(device, face_buffer.as_bytes(), BufferUsages::VERTEX),
-		sprite_instance_buffer: make::buffer(device, sprite_buffer.as_bytes(), BufferUsages::VERTEX),
+		face_instance_buffer: make::buffer(device, face_buffer[..].as_bytes(), BufferUsages::VERTEX),
+		sprite_instance_buffer: make::buffer(device, sprite_buffer[..].as_bytes(), BufferUsages::VERTEX),
 		camera_transform_buffer,
 		perspective_transform_buffer,
 		scroll_offset_buffer,
@@ -1416,11 +1411,11 @@ impl Gui for TrTool {
 						}
 					}
 					let rgba = match &loaded_level.level {
-						LevelStore::Tr1(level) => get_rgba(level.as_ref(), texture),
-						LevelStore::Tr2(level) => get_rgba(level.as_ref(), texture),
-						LevelStore::Tr3(level) => get_rgba(level.as_ref(), texture),
-						LevelStore::Tr4(level) => get_rgba(level.as_ref(), texture),
-						LevelStore::Tr5(level) => get_rgba(level.as_ref(), texture),
+						LevelStore::Tr1(level) => get_rgba(level, texture),
+						LevelStore::Tr2(level) => get_rgba(level, texture),
+						LevelStore::Tr3(level) => get_rgba(level, texture),
+						LevelStore::Tr4(level) => get_rgba(level, texture),
+						LevelStore::Tr5(level) => get_rgba(level, texture),
 					};
 					let result = image::save_buffer(
 						path,
@@ -1532,14 +1527,17 @@ fn make_pipeline(
 }
 
 fn try_export(level: &LevelStore, wad: &str, textures: &str, out: &str) -> Result<()> {
-	let LevelStore::Tr1(level) = level else {
-		return Err(Error::other("can only export TR1"));
-	};
-	let level = level.as_ref();
-	let mut file = BufWriter::new(File::create(out)?);
-	prj2::export(&mut file, level, wad, textures)?;
-	file.flush()?;
-	println!("exported");
+	unimplemented!();
+	// let mut file = BufWriter::new(File::create(out)?);
+	// match level {
+	// 	LevelStore::Tr1(level) => prj2::export(&mut file, level.as_ref(), wad, textures)?,
+	// 	LevelStore::Tr2(level) => prj2::export(&mut file, level.as_ref(), wad, textures)?,
+	// 	LevelStore::Tr3(level) => prj2::export(&mut file, level.as_ref(), wad, textures)?,
+	// 	LevelStore::Tr4(level) => prj2::export(&mut file, level.as_ref(), wad, textures)?,
+	// 	LevelStore::Tr5(level) => prj2::export(&mut file, level.as_ref(), wad, textures)?,
+	// }
+	// file.flush()?;
+	// println!("exported");
 	Ok(())
 }
 

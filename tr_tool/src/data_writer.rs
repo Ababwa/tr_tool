@@ -1,8 +1,9 @@
 use std::ops::Range;
 use glam::IVec3;
+use glam_traits::GVec;
 use tr_model::{tr1, tr3};
 use crate::{
-	as_bytes::ReinterpretAsBytes, geom_buffer::{self, GeomBuffer}, object_data::{MeshFaceType, ObjectData},
+	geom_buffer::{self, GeomBuffer}, object_data::{MeshFaceType, ObjectData},
 	tr_traits::{Level, MeshTexturedFace, ObjectTexture, RoomFace, RoomVertex},
 	WrittenFaceArray, WrittenMesh,
 };
@@ -16,16 +17,12 @@ pub struct FaceInstance {
 	object_data_index: u32,
 }
 
-impl ReinterpretAsBytes for FaceInstance {}
-
 #[repr(C)]
 pub struct SpriteInstance {
 	pos: IVec3,
 	sprite_texture_index: u16,
 	object_data_index: u16,
 }
-
-impl ReinterpretAsBytes for SpriteInstance {}
 
 pub struct MeshTexturedFaceOffsets {
 	pub opaque: u32,
@@ -106,7 +103,7 @@ impl DataWriter {
 		index
 	}
 	
-	pub fn write_room_face_array<L: Level, F: RoomFace + ReinterpretAsBytes, O: Fn(u16) -> ObjectData>(
+	pub fn write_room_face_array<const N: usize, L: Level, F: RoomFace<N>, O: Fn(u16) -> ObjectData>(
 		&mut self, level: &L, vertex_array_offset: u32, faces: &[F], transform_index: u16,
 		object_data_maker: O,
 	) -> RoomFaceOffsets {
@@ -158,11 +155,11 @@ impl DataWriter {
 		RoomFaceOffsets { opaque_obverse, opaque_reverse, additive_obverse, additive_reverse, end }
 	}
 	
-	fn mesh_textured_face_array<L, F, O>(
+	fn mesh_textured_face_array<const N: usize, L, F, O>(
 		&mut self, level: &L, face_array: &WrittenFaceArray<F>, transform_index: u16,
 		object_data_maker: O,
 	) -> MeshTexturedFaceOffsets
-	where L: Level, F: MeshTexturedFace, O: Fn(u16) -> ObjectData {
+	where L: Level, F: MeshTexturedFace<N>, O: Fn(u16) -> ObjectData {
 		let mut opaque_faces = Vec::with_capacity(face_array.faces.len());
 		let mut additive_faces = Vec::with_capacity(face_array.faces.len());
 		for (face_index, face) in face_array.faces.iter().enumerate() {
@@ -242,7 +239,7 @@ impl DataWriter {
 		for &tr1::Sprite { vertex_index, sprite_texture_index } in sprites {
 			let object_data_index = self.add_object_data(object_data_maker(sprite_texture_index)) as u16;
 			self.sprite_buffer.push(SpriteInstance {
-				pos: room_pos + vertices[vertex_index as usize].pos().as_ivec3(),
+				pos: room_pos + vertices[vertex_index as usize].pos().as_ivec(),
 				sprite_texture_index,
 				object_data_index,
 			});
@@ -256,9 +253,7 @@ impl DataWriter {
 		self.sprite_buffer.push(SpriteInstance { pos, sprite_texture_index, object_data_index });
 	}
 	
-	pub fn done<O: ReinterpretAsBytes>(
-		self, object_textures: &[O], sprite_textures: &[tr1::SpriteTexture],
-	) -> Output {
+	pub fn done<O>(self, object_textures: &[O], sprite_textures: &[tr1::SpriteTexture]) -> Output {
 		Output {
 			geom_output: self.geom_buffer.into_buffer(object_textures, sprite_textures),
 			face_buffer: self.face_buffer,

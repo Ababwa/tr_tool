@@ -4,4 +4,5 @@ resolver = "2"
 
 [workspace.dependencies]
 glam = "0.30.3"
+glam-traits = "0.3.1"
 shared = { path = "shared" }

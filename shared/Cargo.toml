@@ -4,4 +4,4 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
-glam-traits = "0.3.0"
+glam-traits = { workspace = true }

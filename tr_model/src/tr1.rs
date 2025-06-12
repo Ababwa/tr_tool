@@ -65,7 +65,7 @@ pub struct Portal {
 }
 
 #[repr(C)]
-#[derive(Clone, Debug)]
+#[derive(Clone, Copy, Debug)]
 pub struct NumSectors {
 	pub z: u16,
 	pub x: u16,
@@ -73,7 +73,7 @@ pub struct NumSectors {
 
 impl ToLen for NumSectors {
 	fn get_len(&self) -> usize {
-		(self.z * self.x) as usize
+		self.z as usize * self.x as usize
 	}
 }
 

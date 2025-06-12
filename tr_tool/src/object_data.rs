@@ -1,4 +1,5 @@
-use glam::Vec3;
+use glam::{I16Vec3, IVec3, Vec3};
+use glam_traits::GVec;
 use tr_model::{tr1, tr2};
 use crate::{
 	tr_traits::{
@@ -25,7 +26,7 @@ pub enum MeshFaceType {
 pub enum ObjectData {
 	RoomFace {
 		room_index: u16,
-		geom_index: u16,
+		layer_index: u16,
 		face_type: PolyType,
 		face_index: u16,
 	},
@@ -82,22 +83,25 @@ pub fn print_object_data<L: Level>(level: &L, object_data: &[ObjectData], index:
 		data => data,
 	};
 	let mesh_face = match data {
-		ObjectData::RoomFace { room_index, geom_index, face_type, face_index } => {
-			let room = &level.rooms()[room_index as usize];
-			//unwrap: proven in level parse
-			let geom = room.geom().nth(geom_index as usize).unwrap();
-			let face: &dyn RoomFace = match face_type {
-				PolyType::Quad => &geom.quads[face_index as usize],
-				PolyType::Tri => &geom.tris[face_index as usize],
-			};
-			let verts = face.vertex_indices().iter().map(|&i| geom.vertices[i as usize].pos()).collect::<Vec<_>>();
-			for (index, vert) in verts.iter().enumerate() {
-				println!("vert {}: {}", index, vert);
+		ObjectData::RoomFace { room_index, layer_index, face_type, face_index } => {
+			fn face_data<const N: usize, T: RoomFace<N>, L: Level>(faces: &[T], face_index: u16, vertices: &[<<L as Level>::Room as Room>::RoomVertex]) -> (u16, bool) {
+				let face = &faces[face_index as usize];
+				let verts = face.vertex_indices().map(|i| vertices[i as usize].pos().as_vec());
+				for (index, vert) in verts.iter().enumerate() {
+					println!("vert {}: {}", index, vert);
+				}
+				let [x, y, z] = [0, 1, 2].map(|d| cw(&verts, d));
+				println!("cw: {}, {}, {}", x, y, z);
+				(face.object_texture_index(), face.double_sided())
 			}
-			let [x, y, z] = [0, 1, 2].map(|d| cw(&verts, d));
-			println!("cw: {}, {}, {}", x, y, z);
-			let object_texture = &level.object_textures()[face.object_texture_index() as usize];
-			println!("double sided: {}", face.double_sided());
+			let room = &level.rooms()[room_index as usize];
+			let layer = room.layers().nth(layer_index as usize).unwrap();//unwrap: proven in level parse
+			let (object_texture_index, double_sided) = match face_type {
+				PolyType::Quad => face_data::<4, _, L>(&layer.quads, face_index, layer.vertices),
+				PolyType::Tri => face_data::<3, _, L>(&layer.tris, face_index, layer.vertices),
+			};
+			let object_texture = &level.object_textures()[object_texture_index as usize];
+			println!("double sided: {}", double_sided);
 			println!("blend mode: {}", object_texture.blend_mode());
 			None
 		},

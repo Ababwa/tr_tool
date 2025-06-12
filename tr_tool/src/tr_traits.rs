@@ -1,21 +1,21 @@
 use std::{f32::consts::TAU, iter};
 use glam::{I16Vec3, IVec3, Mat4, U16Vec2, U16Vec3, Vec3};
+use glam_traits::GVec3;
 use tr_model::{tr1, tr2, tr3, tr4, tr5};
-use crate::as_bytes::ReinterpretAsBytes;
 
 const SINGLE_ANGLE_DIVISOR_TR2: f32 = (tr2::SINGLE_ANGLE_MASK + 1) as f32;
 const SINGLE_ANGLE_DIVISOR_TR4: f32 = (tr4::SINGLE_ANGLE_MASK + 1) as f32;
 const MULTI_ANGLE_DIVISOR: f32 = 1024.0;
 
 pub enum LevelStore {
-	Tr1(Box<tr1::Level>),
-	Tr2(Box<tr2::Level>),
-	Tr3(Box<tr3::Level>),
-	Tr4(Box<tr4::Level>),
-	Tr5(Box<tr5::Level>),
+	Tr1(tr1::Level),
+	Tr2(tr2::Level),
+	Tr3(tr3::Level),
+	Tr4(tr4::Level),
+	Tr5(tr5::Level),
 }
 
-pub struct RoomGeom<'a, V, Q, T> {
+pub struct Layer<'a, V, Q, T> {
 	pub vertices: &'a [V],
 	pub quads: &'a [Q],
 	pub tris: &'a [T],
@@ -28,26 +28,27 @@ pub trait Model {
 }
 
 pub trait RoomVertex {
-	fn pos(&self) -> Vec3;
+	type Pos: GVec3;
+	fn pos(&self) -> Self::Pos;
 }
 
-pub trait Face {
-	fn vertex_indices(&self) -> &[u16];
+pub trait Face<const N: usize> {
+	fn vertex_indices(&self) -> [u16; N];
 }
 
-pub trait TexturedFace: Face {
+pub trait TexturedFace<const N: usize>: Face<N> {
 	fn object_texture_index(&self) -> u16;
 }
 
-pub trait RoomFace: TexturedFace {
+pub trait RoomFace<const N: usize>: TexturedFace<N> {
 	fn double_sided(&self) -> bool;
 }
 
-pub trait MeshTexturedFace: TexturedFace {
+pub trait MeshTexturedFace<const N: usize>: TexturedFace<N> {
 	fn additive(&self) -> bool;
 }
 
-pub trait SolidFace: Face {
+pub trait SolidFace<const N: usize>: Face<N> {
 	fn color_index_24bit(&self) -> u8;
 	fn color_index_32bit(&self) -> Option<u8>;
 }
@@ -59,14 +60,15 @@ pub trait RoomStaticMesh {
 }
 
 pub trait Room {
-	type RoomVertex: RoomVertex + ReinterpretAsBytes;
-	type RoomQuad: RoomFace + ReinterpretAsBytes;
-	type RoomTri: RoomFace + ReinterpretAsBytes;
+	type RoomVertex: RoomVertex;
+	type RoomQuad: RoomFace<4>;
+	type RoomTri: RoomFace<3>;
 	type RoomStaticMesh: RoomStaticMesh;
 	fn pos(&self) -> IVec3;
 	fn vertices(&self) -> &[Self::RoomVertex];
-	fn geom(&self) -> impl Iterator<Item = RoomGeom<Self::RoomVertex, Self::RoomQuad, Self::RoomTri>>;
+	fn layers(&self) -> impl Iterator<Item = Layer<Self::RoomVertex, Self::RoomQuad, Self::RoomTri>>;
 	fn sprites(&self) -> &[tr1::Sprite];
+	fn num_sectors(&self) -> tr1::NumSectors;
 	fn room_static_meshes(&self) -> &[Self::RoomStaticMesh];
 	fn flip_room_index(&self) -> u16;
 	fn flip_group(&self) -> u8;
@@ -79,7 +81,7 @@ pub trait Entity {
 	fn angle(&self) -> u16;
 }
 
-#[allow(dead_code)]//todo: remove
+// #[allow(dead_code)]//todo: remove
 pub trait ObjectTexture {
 	const UVS_OFFSET: u32;
 	fn blend_mode(&self) -> u16;
@@ -88,10 +90,10 @@ pub trait ObjectTexture {
 }
 
 pub trait Mesh<'a> {
-	type TexturedQuad: MeshTexturedFace + ReinterpretAsBytes;
-	type TexturedTri: MeshTexturedFace + ReinterpretAsBytes;
-	type SolidQuad: SolidFace + ReinterpretAsBytes;
-	type SolidTri: SolidFace + ReinterpretAsBytes;
+	type TexturedQuad: MeshTexturedFace<4>;
+	type TexturedTri: MeshTexturedFace<3>;
+	type SolidQuad: SolidFace<4>;
+	type SolidTri: SolidFace<3>;
 	fn vertices(&self) -> &'a [I16Vec3];
 	fn textured_quads(&self) -> &'a [Self::TexturedQuad];
 	fn textured_tris(&self) -> &'a [Self::TexturedTri];
@@ -108,7 +110,7 @@ pub trait Level {
 	type Model: Model;
 	type Room: Room;
 	type Entity: Entity;
-	type ObjectTexture: ObjectTexture + ReinterpretAsBytes;
+	type ObjectTexture: ObjectTexture;
 	type Mesh<'a>: Mesh<'a> where Self: 'a;
 	type Frame<'a>: Frame where Self: 'a;
 	fn models(&self) -> &[Self::Model];
@@ -129,7 +131,7 @@ pub trait Level {
 	fn atlases_16bit(&self) -> Option<&[[tr2::Color16BitArgb; tr1::ATLAS_PIXELS]]>;
 	fn atlases_32bit(&self) -> Option<&[[tr4::Color32BitBgra; tr1::ATLAS_PIXELS]]>;
 	fn misc_images(&self) -> Option<&[[tr4::Color32BitBgra; tr1::ATLAS_PIXELS]]>;
-	fn store(self: Box<Self>) -> LevelStore;
+	fn store(self) -> LevelStore;
 }
 
 //impl helpers
@@ -163,30 +165,31 @@ impl Model for tr1::Model {
 }
 
 impl RoomVertex for tr1::RoomVertex {
-	fn pos(&self) -> Vec3 { self.pos.as_vec3() }
+	type Pos = I16Vec3;
+	fn pos(&self) -> Self::Pos { self.pos }
 }
 
-impl Face for tr1::TexturedQuad {
-	fn vertex_indices(&self) -> &[u16] { &self.vertex_indices }
+impl Face<4> for tr1::TexturedQuad {
+	fn vertex_indices(&self) -> [u16; 4] { self.vertex_indices }
 }
 
-impl Face for tr1::TexturedTri {
-	fn vertex_indices(&self) -> &[u16] { &self.vertex_indices }
+impl Face<3> for tr1::TexturedTri {
+	fn vertex_indices(&self) -> [u16; 3] { self.vertex_indices }
 }
 
-impl TexturedFace for tr1::TexturedQuad {
+impl TexturedFace<4> for tr1::TexturedQuad {
 	fn object_texture_index(&self) -> u16 { self.object_texture_index }
 }
 
-impl TexturedFace for tr1::TexturedTri {
+impl TexturedFace<3> for tr1::TexturedTri {
 	fn object_texture_index(&self) -> u16 { self.object_texture_index }
 }
 
-impl RoomFace for tr1::TexturedQuad {
+impl RoomFace<4> for tr1::TexturedQuad {
 	fn double_sided(&self) -> bool { false }
 }
 
-impl RoomFace for tr1::TexturedTri {
+impl RoomFace<3> for tr1::TexturedTri {
 	fn double_sided(&self) -> bool { false }
 }
 
@@ -203,15 +206,16 @@ impl Room for tr1::Room {
 	type RoomStaticMesh = tr1::RoomStaticMesh;
 	fn pos(&self) -> IVec3 { IVec3::new(self.x, 0, self.z) }
 	fn vertices(&self) -> &[Self::RoomVertex] { &self.vertices }
-	fn geom(&self) -> impl Iterator<Item = RoomGeom<Self::RoomVertex, Self::RoomQuad, Self::RoomTri>> {
-		let geom = RoomGeom {
+	fn layers(&self) -> impl Iterator<Item = Layer<Self::RoomVertex, Self::RoomQuad, Self::RoomTri>> {
+		let layer = Layer {
 			vertices: &self.vertices,
 			quads: &self.quads,
 			tris: &self.tris,
 		};
-		iter::once(geom)
+		iter::once(layer)
 	}
 	fn sprites(&self) -> &[tr1::Sprite] { &self.sprites }
+	fn num_sectors(&self) -> tr1::NumSectors { self.num_sectors }
 	fn room_static_meshes(&self) -> &[Self::RoomStaticMesh] { &self.room_static_meshes }
 	fn flip_room_index(&self) -> u16 { self.flip_room_index }
 	fn flip_group(&self) -> u8 { 0 }
@@ -231,29 +235,29 @@ impl ObjectTexture for tr1::ObjectTexture {
 	fn uvs(&self) -> [U16Vec2; 4] { self.uvs }
 }
 
-impl Face for tr1::SolidQuad {
-	fn vertex_indices(&self) -> &[u16] { &self.vertex_indices }
+impl Face<4> for tr1::SolidQuad {
+	fn vertex_indices(&self) -> [u16; 4] { self.vertex_indices }
 }
 
-impl Face for tr1::SolidTri {
-	fn vertex_indices(&self) -> &[u16] { &self.vertex_indices }
+impl Face<3> for tr1::SolidTri {
+	fn vertex_indices(&self) -> [u16; 3] { self.vertex_indices }
 }
 
-impl SolidFace for tr1::SolidQuad {
+impl SolidFace<4> for tr1::SolidQuad {
 	fn color_index_24bit(&self) -> u8 { self.color_index as u8 }
 	fn color_index_32bit(&self) -> Option<u8> { None }
 }
 
-impl SolidFace for tr1::SolidTri {
+impl SolidFace<3> for tr1::SolidTri {
 	fn color_index_24bit(&self) -> u8 { self.color_index as u8 }
 	fn color_index_32bit(&self) -> Option<u8> { None }
 }
 
-impl MeshTexturedFace for tr1::TexturedQuad {
+impl MeshTexturedFace<4> for tr1::TexturedQuad {
 	fn additive(&self) -> bool { false }
 }
 
-impl MeshTexturedFace for tr1::TexturedTri {
+impl MeshTexturedFace<3> for tr1::TexturedTri {
 	fn additive(&self) -> bool { false }
 }
 
@@ -301,13 +305,14 @@ impl Level for tr1::Level {
 	fn atlases_16bit(&self) -> Option<&[[tr2::Color16BitArgb; tr1::ATLAS_PIXELS]]> { None }
 	fn atlases_32bit(&self) -> Option<&[[tr4::Color32BitBgra; tr1::ATLAS_PIXELS]]> { None }
 	fn misc_images(&self) -> Option<&[[tr4::Color32BitBgra; tr1::ATLAS_PIXELS]]> { None }
-	fn store(self: Box<Self>) -> LevelStore { LevelStore::Tr1(self) }
+	fn store(self) -> LevelStore { LevelStore::Tr1(self) }
 }
 
 //tr2
 
 impl RoomVertex for tr2::RoomVertex {
-	fn pos(&self) -> Vec3 { self.pos.as_vec3() }
+	type Pos = I16Vec3;
+	fn pos(&self) -> Self::Pos { self.pos }
 }
 
 impl RoomStaticMesh for tr2::RoomStaticMesh {
@@ -323,15 +328,16 @@ impl Room for tr2::Room {
 	type RoomStaticMesh = tr2::RoomStaticMesh;
 	fn pos(&self) -> IVec3 { IVec3::new(self.x, 0, self.z) }
 	fn vertices(&self) -> &[Self::RoomVertex] { &self.vertices }
-	fn geom(&self) -> impl Iterator<Item = RoomGeom<Self::RoomVertex, Self::RoomQuad, Self::RoomTri>> {
-		let geom = RoomGeom {
+	fn layers(&self) -> impl Iterator<Item = Layer<Self::RoomVertex, Self::RoomQuad, Self::RoomTri>> {
+		let layer = Layer {
 			vertices: &self.vertices,
 			quads: &self.quads,
 			tris: &self.tris,
 		};
-		iter::once(geom)
+		iter::once(layer)
 	}
 	fn sprites(&self) -> &[tr1::Sprite] { &self.sprites }
+	fn num_sectors(&self) -> tr1::NumSectors { self.num_sectors }
 	fn room_static_meshes(&self) -> &[Self::RoomStaticMesh] { &self.room_static_meshes }
 	fn flip_room_index(&self) -> u16 { self.flip_room_index }
 	fn flip_group(&self) -> u8 { 0 }
@@ -344,20 +350,20 @@ impl Entity for tr2::Entity {
 	fn angle(&self) -> u16 { self.angle }
 }
 
-impl Face for tr2::SolidQuad {
-	fn vertex_indices(&self) -> &[u16] { &self.vertex_indices }
+impl Face<4> for tr2::SolidQuad {
+	fn vertex_indices(&self) -> [u16; 4] { self.vertex_indices }
 }
 
-impl Face for tr2::SolidTri {
-	fn vertex_indices(&self) -> &[u16] { &self.vertex_indices }
+impl Face<3> for tr2::SolidTri {
+	fn vertex_indices(&self) -> [u16; 3] { self.vertex_indices }
 }
 
-impl SolidFace for tr2::SolidQuad {
+impl SolidFace<4> for tr2::SolidQuad {
 	fn color_index_24bit(&self) -> u8 { self.color_index_24bit }
 	fn color_index_32bit(&self) -> Option<u8> { Some(self.color_index_32bit) }
 }
 
-impl SolidFace for tr2::SolidTri {
+impl SolidFace<3> for tr2::SolidTri {
 	fn color_index_24bit(&self) -> u8 { self.color_index_24bit }
 	fn color_index_32bit(&self) -> Option<u8> { Some(self.color_index_32bit) }
 }
@@ -416,36 +422,37 @@ impl Level for tr2::Level {
 	}
 	fn atlases_32bit(&self) -> Option<&[[tr4::Color32BitBgra; tr1::ATLAS_PIXELS]]> { None }
 	fn misc_images(&self) -> Option<&[[tr4::Color32BitBgra; tr1::ATLAS_PIXELS]]> { None }
-	fn store(self: Box<Self>) -> LevelStore { LevelStore::Tr2(self) }
+	fn store(self) -> LevelStore { LevelStore::Tr2(self) }
 }
 
 //tr3
 
 impl RoomVertex for tr3::RoomVertex {
-	fn pos(&self) -> Vec3 { self.pos.as_vec3() }
+	type Pos = I16Vec3;
+	fn pos(&self) -> Self::Pos { self.pos }
 }
 
-impl Face for tr3::DsQuad {
-	fn vertex_indices(&self) -> &[u16] { &self.vertex_indices }
+impl Face<4> for tr3::DsQuad {
+	fn vertex_indices(&self) -> [u16; 4] { self.vertex_indices }
 }
 
-impl Face for tr3::DsTri {
-	fn vertex_indices(&self) -> &[u16] { &self.vertex_indices }
+impl Face<3> for tr3::DsTri {
+	fn vertex_indices(&self) -> [u16; 3] { self.vertex_indices }
 }
 
-impl TexturedFace for tr3::DsQuad {
+impl TexturedFace<4> for tr3::DsQuad {
 	fn object_texture_index(&self) -> u16 { self.texture.object_texture_index() }
 }
 
-impl TexturedFace for tr3::DsTri {
+impl TexturedFace<3> for tr3::DsTri {
 	fn object_texture_index(&self) -> u16 { self.texture.object_texture_index() }
 }
 
-impl RoomFace for tr3::DsQuad {
+impl RoomFace<4> for tr3::DsQuad {
 	fn double_sided(&self) -> bool { self.texture.double_sided() }
 }
 
-impl RoomFace for tr3::DsTri {
+impl RoomFace<3> for tr3::DsTri {
 	fn double_sided(&self) -> bool { self.texture.double_sided() }
 }
 
@@ -462,15 +469,16 @@ impl Room for tr3::Room {
 	type RoomStaticMesh = tr3::RoomStaticMesh;
 	fn pos(&self) -> IVec3 { IVec3::new(self.x, 0, self.z) }
 	fn vertices(&self) -> &[Self::RoomVertex] { &self.vertices }
-	fn geom(&self) -> impl Iterator<Item = RoomGeom<Self::RoomVertex, Self::RoomQuad, Self::RoomTri>> {
-		let geom = RoomGeom {
+	fn layers(&self) -> impl Iterator<Item = Layer<Self::RoomVertex, Self::RoomQuad, Self::RoomTri>> {
+		let layer = Layer {
 			vertices: &self.vertices,
 			quads: &self.quads,
 			tris: &self.tris,
 		};
-		iter::once(geom)
+		iter::once(layer)
 	}
 	fn sprites(&self) -> &[tr1::Sprite] { &self.sprites }
+	fn num_sectors(&self) -> tr1::NumSectors { self.num_sectors }
 	fn room_static_meshes(&self) -> &[Self::RoomStaticMesh] { &self.room_static_meshes }
 	fn flip_room_index(&self) -> u16 { self.flip_room_index }
 	fn flip_group(&self) -> u8 { 0 }
@@ -503,7 +511,7 @@ impl Level for tr3::Level {
 	}
 	fn atlases_32bit(&self) -> Option<&[[tr4::Color32BitBgra; tr1::ATLAS_PIXELS]]> { None }
 	fn misc_images(&self) -> Option<&[[tr4::Color32BitBgra; tr1::ATLAS_PIXELS]]> { None }
-	fn store(self: Box<Self>) -> LevelStore { LevelStore::Tr3(self) }
+	fn store(self) -> LevelStore { LevelStore::Tr3(self) }
 }
 
 //tr4
@@ -515,15 +523,16 @@ impl Room for tr4::Room {
 	type RoomStaticMesh = tr3::RoomStaticMesh;
 	fn pos(&self) -> IVec3 { IVec3::new(self.x, 0, self.z) }
 	fn vertices(&self) -> &[Self::RoomVertex] { &self.vertices }
-	fn geom(&self) -> impl Iterator<Item = RoomGeom<Self::RoomVertex, Self::RoomQuad, Self::RoomTri>> {
-		let geom = RoomGeom {
+	fn layers(&self) -> impl Iterator<Item = Layer<Self::RoomVertex, Self::RoomQuad, Self::RoomTri>> {
+		let layer = Layer {
 			vertices: &self.vertices,
 			quads: &self.quads,
 			tris: &self.tris,
 		};
-		iter::once(geom)
+		iter::once(layer)
 	}
 	fn sprites(&self) -> &[tr1::Sprite] { &self.sprites }
+	fn num_sectors(&self) -> tr1::NumSectors { self.num_sectors }
 	fn room_static_meshes(&self) -> &[Self::RoomStaticMesh] { &self.room_static_meshes }
 	fn flip_room_index(&self) -> u16 { self.flip_room_index }
 	fn flip_group(&self) -> u8 { self.flip_group }
@@ -543,27 +552,27 @@ impl ObjectTexture for tr4::ObjectTexture {
 	fn uvs(&self) -> [U16Vec2; 4] { self.uvs }
 }
 
-impl Face for tr4::EffectsQuad {
-	fn vertex_indices(&self) -> &[u16] { &self.vertex_indices }
+impl Face<4> for tr4::EffectsQuad {
+	fn vertex_indices(&self) -> [u16; 4] { self.vertex_indices }
 }
 
-impl Face for tr4::EffectsTri {
-	fn vertex_indices(&self) -> &[u16] { &self.vertex_indices }
+impl Face<3> for tr4::EffectsTri {
+	fn vertex_indices(&self) -> [u16; 3] { self.vertex_indices }
 }
 
-impl TexturedFace for tr4::EffectsQuad {
+impl TexturedFace<4> for tr4::EffectsQuad {
 	fn object_texture_index(&self) -> u16 { self.object_texture_index }
 }
 
-impl TexturedFace for tr4::EffectsTri {
+impl TexturedFace<3> for tr4::EffectsTri {
 	fn object_texture_index(&self) -> u16 { self.object_texture_index }
 }
 
-impl MeshTexturedFace for tr4::EffectsQuad {
+impl MeshTexturedFace<4> for tr4::EffectsQuad {
 	fn additive(&self) -> bool { self.flags.additive() }
 }
 
-impl MeshTexturedFace for tr4::EffectsTri {
+impl MeshTexturedFace<3> for tr4::EffectsTri {
 	fn additive(&self) -> bool { self.flags.additive() }
 }
 
@@ -625,7 +634,7 @@ impl Level for tr4::Level {
 	fn misc_images(&self) -> Option<&[[tr4::Color32BitBgra; tr1::ATLAS_PIXELS]]> {
 		Some(&self.misc_images[..])
 	}
-	fn store(self: Box<Self>) -> LevelStore { LevelStore::Tr4(self) }
+	fn store(self) -> LevelStore { LevelStore::Tr4(self) }
 }
 
 //tr5
@@ -637,30 +646,31 @@ impl Model for tr5::Model {
 }
 
 impl RoomVertex for tr5::RoomVertex {
-	fn pos(&self) -> Vec3 { self.pos }
+	type Pos = Vec3;
+	fn pos(&self) -> Self::Pos { self.pos }
 }
 
-impl Face for tr5::EffectsQuad {
-	fn vertex_indices(&self) -> &[u16] { &self.vertex_indices }
+impl Face<4> for tr5::EffectsQuad {
+	fn vertex_indices(&self) -> [u16; 4] { self.vertex_indices }
 }
 
-impl TexturedFace for tr5::EffectsQuad {
+impl Face<3> for tr5::EffectsTri {
+	fn vertex_indices(&self) -> [u16; 3] { self.vertex_indices }
+}
+
+impl TexturedFace<4> for tr5::EffectsQuad {
 	fn object_texture_index(&self) -> u16 { self.texture.object_texture_index() }
 }
 
-impl RoomFace for tr5::EffectsQuad {
+impl TexturedFace<3> for tr5::EffectsTri {
+	fn object_texture_index(&self) -> u16 { self.texture.object_texture_index() }
+}
+
+impl RoomFace<4> for tr5::EffectsQuad {
 	fn double_sided(&self) -> bool { self.texture.double_sided() }
 }
 
-impl Face for tr5::EffectsTri {
-	fn vertex_indices(&self) -> &[u16] { &self.vertex_indices }
-}
-
-impl TexturedFace for tr5::EffectsTri {
-	fn object_texture_index(&self) -> u16 { self.texture.object_texture_index() }
-}
-
-impl RoomFace for tr5::EffectsTri {
+impl RoomFace<3> for tr5::EffectsTri {
 	fn double_sided(&self) -> bool { self.texture.double_sided() }
 }
 
@@ -671,21 +681,22 @@ impl Room for tr5::Room {
 	type RoomStaticMesh = tr3::RoomStaticMesh;
 	fn pos(&self) -> IVec3 { self.pos1 }
 	fn vertices(&self) -> &[Self::RoomVertex] { &self.vertices }
-	fn geom(&self) -> impl Iterator<Item = RoomGeom<Self::RoomVertex, Self::RoomQuad, Self::RoomTri>> {
+	fn layers(&self) -> impl Iterator<Item = Layer<Self::RoomVertex, Self::RoomQuad, Self::RoomTri>> {
 		let mut vertex_count = 0;
-		let get_geom = move |index: usize| {
+		let get_layer = move |index: usize| {
 			let vertex_offset = vertex_count;
 			vertex_count += self.layers[index].num_vertices as usize;
 			let layer_faces = &self.layer_faces[index];
-			RoomGeom {
+			Layer {
 				vertices: &self.vertices[vertex_offset..vertex_count],
 				quads: &layer_faces.quads,
 				tris: &layer_faces.tris,
 			}
 		};
-		(0..self.layers.len()).map(get_geom)
+		(0..self.layers.len()).map(get_layer)
 	}
 	fn sprites(&self) -> &[tr1::Sprite] { &[] }
+	fn num_sectors(&self) -> tr1::NumSectors { self.num_sectors }
 	fn room_static_meshes(&self) -> &[Self::RoomStaticMesh] { &self.room_static_meshes }
 	fn flip_room_index(&self) -> u16 { self.flip_room_index }
 	fn flip_group(&self) -> u8 { self.flip_group }
@@ -729,5 +740,5 @@ impl Level for tr5::Level {
 	fn misc_images(&self) -> Option<&[[tr4::Color32BitBgra; tr1::ATLAS_PIXELS]]> {
 		Some(&self.misc_images[..])
 	}
-	fn store(self: Box<Self>) -> LevelStore { LevelStore::Tr5(self) }
+	fn store(self) -> LevelStore { LevelStore::Tr5(self) }
 }
