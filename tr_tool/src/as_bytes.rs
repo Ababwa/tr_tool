@@ -6,8 +6,9 @@ pub trait AsBytes {
 
 impl<T: ?Sized> AsBytes for T {
 	fn as_bytes(&self) -> &[u8] {
+		//Safety: Read-only bytes.
 		unsafe {
-			slice::from_raw_parts((self as *const T).cast(), size_of_val(self))
+			slice::from_raw_parts((&raw const *self).cast(), size_of_val(self))
 		}
 	}
 }

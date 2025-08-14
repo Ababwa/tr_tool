@@ -2,13 +2,13 @@ struct DataOffsets {
 	transforms_offset: u32,//16-byte units
 	face_array_offsets_offset: u32,//4-byte units
 	object_textures_offset: u32,//2-byte units
-	object_texture_size: u32,//2-byte units
 	sprite_textures_offset: u32,//2-byte units
+	object_texture_size: u32,//2-byte units
 	num_atlases: u32,
 }
 
-//2MB
-@group(0) @binding(0) var<storage> data: array<vec4u, 131072>;
+//4 MB
+@group(0) @binding(0) var<storage> data: array<vec4u, 262144>;
 @group(0) @binding(1) var<uniform> data_offsets: DataOffsets;
 @group(0) @binding(2) var<uniform> camera_transform: mat4x4f;
 @group(0) @binding(3) var<uniform> perspective_transform: mat4x4f;

@@ -8,8 +8,8 @@ struct WallFace {
 }
 
 /**
-Get sector wall faces by side.  
-Wall vertices facing the camera are clockwise.  
+Get sector wall faces by side.<br>
+Wall vertices facing the camera are clockwise.<br>
 Quads:
 ```
 0-1    1-2    2-3    3-0

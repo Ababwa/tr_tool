@@ -1,8 +1,6 @@
 [workspace]
-members = ["shared", "tr_readable", "tr_derive", "tr_model", "tr_tool"]
+members = ["tr_readable", "tr_derive", "tr_model", "tr_tool"]
 resolver = "2"
 
 [workspace.dependencies]
 glam = "0.30.3"
-glam-traits = "0.3.1"
-shared = { path = "shared" }

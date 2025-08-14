@@ -23,8 +23,18 @@ pub mod light_type {
 
 //model
 
+bitfield! {
+	#[repr(C)]
+	#[derive(Clone, Copy, Debug)]
+	pub struct Color16BitRgb(u16);
+	u8;
+	pub r, _: 14, 10;
+	pub g, _: 9, 5;
+	pub b, _: 4, 0;
+}
+
 #[repr(C)]
-#[derive(Clone, Debug)]
+#[derive(Clone, Copy, Debug)]
 pub struct RoomVertex {
 	/// Relative to room
 	pub pos: I16Vec3,
@@ -35,7 +45,7 @@ pub struct RoomVertex {
 
 bitfield! {
 	#[repr(C)]
-	#[derive(Clone, Debug)]
+	#[derive(Clone, Copy, Debug)]
 	pub struct DsFaceTexture(u16);
 	pub double_sided, _: 15;
 	pub object_texture_index, _: 14, 0;
@@ -56,7 +66,7 @@ decl_face_type!(DsQuad, 4);
 decl_face_type!(DsTri, 3);
 
 #[repr(C)]
-#[derive(Clone, Debug)]
+#[derive(Clone, Copy, Debug)]
 pub struct Light {
 	pub pos: IVec3,
 	pub color: Color24Bit,
@@ -65,18 +75,8 @@ pub struct Light {
 	pub light_data: [u32; 2],
 }
 
-bitfield! {
-	#[repr(C)]
-	#[derive(Clone, Debug)]
-	pub struct Color16BitRgb(u16);
-	u8;
-	pub r, _: 14, 10;
-	pub g, _: 9, 5;
-	pub b, _: 4, 0;
-}
-
 #[repr(C)]
-#[derive(Clone, Debug)]
+#[derive(Clone, Copy, Debug)]
 pub struct RoomStaticMesh {
 	/// World coords.
 	pub pos: IVec3,
@@ -117,7 +117,7 @@ pub struct Room {
 }
 
 #[repr(C)]
-#[derive(Clone, Debug)]
+#[derive(Clone, Copy, Debug)]
 pub struct SoundDetails {
 	/// Index into `Level.sample_indices`.
 	pub sample_index: u16,

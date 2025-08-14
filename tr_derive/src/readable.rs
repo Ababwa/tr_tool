@@ -144,7 +144,7 @@ fn get_field_init(field: Field, initialized_fields: &[Ident], saved_positions: &
 				let len = tr_readable::ToLen::get_len(&(*this).#len_arg);
 			}
 		} else {
-			return Err("`list` argument must either be a unsigned integer type or a preceding field".to_string());
+			return Err("`list` argument must either be an unsigned integer type or a preceding field".to_string());
 		};
 		let slice_init = match delegate {
 			None => quote! {

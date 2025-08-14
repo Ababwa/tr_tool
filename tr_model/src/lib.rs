@@ -1,5 +1,6 @@
-#[cfg(target_endian = "big")]
-const _: () = panic!("big endian not supported");
+//! This crate depends on reinterpreting byte chunks as little endian integers.
+
+const _: () = assert!(cfg!(target_endian = "little"));
 
 mod u16_cursor;
 pub mod tr1;

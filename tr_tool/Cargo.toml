@@ -4,22 +4,20 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
-bitflags = "2.6.0"
-egui = "0.26.2"
-egui-file-dialog = "0.4.0"
-egui-wgpu = "0.26.2"
-egui-winit = "0.26.2"
-env_logger = "0.11.1"
+bitflags = "2.9.1"
+egui = "0.32.0"
+egui-file-dialog = "0.11.0"
+# egui-file-dialog = { git = "https://github.com/Ababwa/egui-file-dialog" }
+egui-wgpu = "0.32.0"
+egui-winit = "0.32.0"
 glam = { workspace = true }
-glam-traits = { workspace = true }
-image = { version = "0.24.9", default-features = false, features = ["png"] }
+image = { version = "0.25.6", default-features = false, features = ["png"] }
 leb128 = "0.2.5"
-pollster = "0.3.0"
-shared = { workspace = true }
-softbuffer = "0.4.1"
+pollster = "0.4.0"
+softbuffer = "0.4.6"
 tr_model = { path = "../tr_model" }
-wgpu = "0.19.1"
-winit = "0.29.10"
+wgpu = "25.0.2"
+winit = "0.30.11"
 
 [build-dependencies]
-winresource = "0.1.17"
+winresource = "0.1.22"

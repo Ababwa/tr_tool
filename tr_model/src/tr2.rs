@@ -1,14 +1,13 @@
 use std::{mem, slice};
 use bitfield::bitfield;
 use glam::{I16Vec3, IVec3, U16Vec3};
-use shared::min_max::MinMax;
 use tr_readable::Readable;
 use crate::{
 	tr1::{
 		decl_mesh, get_packed_angles, AnimDispatch, Animation, Camera, CinematicFrame, Color24Bit,
-		MeshLighting, MeshNode, Model, NumSectors, ObjectTexture, Portal, RoomFlags, Sector, SoundDetails,
-		SoundSource, Sprite, SpriteSequence, SpriteTexture, StateChange, StaticMesh, TexturedQuad,
-		TexturedTri, ATLAS_PIXELS, LIGHT_MAP_LEN, PALETTE_LEN,
+		MeshLighting, MeshNode, MinMax, Model, NumSectors, ObjectTexture, Portal, RoomFlags, Sector,
+		SoundDetails, SoundSource, Sprite, SpriteSequence, SpriteTexture, StateChange, StaticMesh,
+		TexturedQuad, TexturedTri, ATLAS_PIXELS, LIGHT_MAP_LEN, PALETTE_LEN,
 	},
 	u16_cursor::U16Cursor,
 };
@@ -20,7 +19,7 @@ pub const SINGLE_ANGLE_MASK: u16 = 0x3FF;
 //model
 
 #[repr(C, align(4))]
-#[derive(Clone, Debug)]
+#[derive(Clone, Copy, Debug)]
 pub struct Color32BitRgb {
 	pub r: u8,
 	pub g: u8,
@@ -29,7 +28,7 @@ pub struct Color32BitRgb {
 
 bitfield! {
 	#[repr(C)]
-	#[derive(Clone, Debug)]
+	#[derive(Clone, Copy, Debug)]
 	pub struct Color16BitArgb(u16);
 	u8;
 	pub a, _: 15;
@@ -39,7 +38,7 @@ bitfield! {
 }
 
 #[repr(C)]
-#[derive(Clone, Debug)]
+#[derive(Clone, Copy, Debug)]
 pub struct RoomVertex {
 	/// Relative to room
 	pub pos: I16Vec3,
@@ -49,7 +48,7 @@ pub struct RoomVertex {
 }
 
 #[repr(C)]
-#[derive(Clone, Debug)]
+#[derive(Clone, Copy, Debug)]
 pub struct Light {
 	pub pos: IVec3,
 	pub brightness: u16,
@@ -59,7 +58,7 @@ pub struct Light {
 }
 
 #[repr(C)]
-#[derive(Clone, Debug)]
+#[derive(Clone, Copy, Debug)]
 pub struct RoomStaticMesh {
 	/// World coords.
 	pub pos: IVec3,
@@ -98,7 +97,7 @@ pub struct Room {
 }
 
 #[repr(C)]
-#[derive(Clone, Debug)]
+#[derive(Clone, Copy, Debug)]
 pub struct TrBox {
 	pub z: MinMax<u8>,
 	pub x: MinMax<u8>,
@@ -107,7 +106,7 @@ pub struct TrBox {
 }
 
 #[repr(C)]
-#[derive(Clone, Debug)]
+#[derive(Clone, Copy, Debug)]
 pub struct Entity {
 	/// Matched to `Model.id` in `Level.models` or `SpriteSequence.id` in `Level.sprite_sequences`.
 	pub model_id: u16,
@@ -167,7 +166,7 @@ pub struct Level {
 macro_rules! decl_solid_face_type {
 	($name:ident, $num_indices:literal) => {
 		#[repr(C)]
-		#[derive(Clone, Debug)]
+		#[derive(Clone, Copy, Debug)]
 		pub struct $name {
 			pub vertex_indices: [u16; $num_indices],
 			pub color_index_24bit: u8,
@@ -181,12 +180,15 @@ decl_solid_face_type!(SolidTri, 3);
 
 decl_mesh!(Mesh, MeshLighting, TexturedQuad, TexturedTri, SolidQuad, SolidTri);
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Copy, Debug)]
 pub enum Axis {
 	X,
 	Y,
 	Z,
 }
+
+/// Size of the known part of FrameData in u16s.
+pub(crate) const FRAME_DATA_KNOWN_SIZE: usize = 9;
 
 macro_rules! decl_frame {
 	(
@@ -204,7 +206,7 @@ macro_rules! decl_frame {
 			pub rotation_data: [u16],
 		}
 		
-		#[derive(Clone, Debug)]
+		#[derive(Clone, Copy, Debug)]
 		pub struct $frame<'a> {
 			pub num_meshes: usize,
 			pub frame_data: &'a $frame_data,
@@ -216,7 +218,7 @@ macro_rules! decl_frame {
 			remaining: usize,
 		}
 		
-		#[derive(Clone, Debug)]
+		#[derive(Clone, Copy, Debug)]
 		pub enum $frame_rotation {
 			AllAxes(U16Vec3),
 			SingleAxis(Axis, u16),
@@ -252,12 +254,11 @@ macro_rules! decl_frame {
 		}
 		
 		impl<'a> $frame<'a> {
-			pub(crate) fn get(frame_data: &'a [u16], frame_byte_offset: u32, num_meshes: u16) -> Self {
-				//size of FrameData cannot be calculated without iterating rotations since rotations can be
-				//1 or 2 u16s, so FrameData is given the rest of the available frame data
-				
-				/// Size of the known part of FrameData in u16s.
-				const FRAME_DATA_KNOWN_SIZE: usize = 9;
+			pub(crate) fn get(frame_data: &[u16], frame_byte_offset: u32, num_meshes: u16) -> Self {
+				/*
+				Size of `FrameData` cannot be calculated without iterating rotations since rotations can be
+				one or two u16s, so `FrameData` is given the rest of the available `frame_data`.
+				*/
 				let byte_offset = frame_byte_offset as usize;
 				assert!(byte_offset % size_of::<u16>() == 0);
 				let offset = byte_offset / size_of::<u16>();

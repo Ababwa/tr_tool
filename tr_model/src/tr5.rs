@@ -1,12 +1,11 @@
 use std::io::{Read, Result, Seek, SeekFrom};
 use bitfield::bitfield;
 use glam::{IVec3, U16Vec2, UVec2, Vec3};
-use shared::min_max::MinMax;
 use tr_readable::{read_slice_get, Readable, ToLen};
 use crate::{
 	tr1::{
-		AnimDispatch, Camera, MeshNode, NumSectors, Portal, RoomFlags, Sector, SoundSource, SpriteSequence,
-		SpriteTexture, StateChange, StaticMesh, ATLAS_PIXELS,
+		AnimDispatch, Camera, MeshNode, MinMax, NumSectors, Portal, RoomFlags, Sector, SoundSource,
+		SpriteSequence, SpriteTexture, StateChange, StaticMesh, ATLAS_PIXELS,
 	},
 	tr2::{Color16BitArgb, TrBox, ZONE_SIZE},
 	tr3::{RoomStaticMesh, SoundDetails},
@@ -22,7 +21,7 @@ pub const NUM_MISC_IMAGES: usize = 3;
 //model
 
 #[repr(C)]
-#[derive(Clone, Debug)]
+#[derive(Clone, Copy, Debug)]
 pub struct RoomVertex {
 	pub pos: Vec3,
 	pub normal: Vec3,
@@ -30,7 +29,7 @@ pub struct RoomVertex {
 }
 
 #[repr(C)]
-#[derive(Clone, Debug)]
+#[derive(Clone, Copy, Debug)]
 pub struct NumVertexBytes(pub u32);
 
 impl ToLen for NumVertexBytes {
@@ -41,7 +40,7 @@ impl ToLen for NumVertexBytes {
 }
 
 #[repr(C)]
-#[derive(Clone, Debug)]
+#[derive(Clone, Copy, Debug)]
 pub struct Light {
 	pub pos: Vec3,
 	pub color: Vec3,
@@ -59,7 +58,7 @@ pub struct Light {
 }
 
 #[repr(C)]
-#[derive(Clone, Debug)]
+#[derive(Clone, Copy, Debug)]
 pub struct FogBulb {
 	pub pos: Vec3,
 	pub color: Vec3,
@@ -69,7 +68,7 @@ pub struct FogBulb {
 }
 
 #[repr(C)]
-#[derive(Clone, Debug)]
+#[derive(Clone, Copy, Debug)]
 pub struct Layer {
 	pub num_vertices: u16,
 	pub unused1: [u16; 2],
@@ -82,7 +81,7 @@ pub struct Layer {
 
 bitfield! {
 	#[repr(C)]
-	#[derive(Clone, Debug)]
+	#[derive(Clone, Copy, Debug)]
 	pub struct EffectsFaceTexture(u16);
 	pub double_sided, _: 15;
 	pub object_texture_index, _: 13, 0;//unknown flag at bit 14
@@ -91,7 +90,7 @@ bitfield! {
 macro_rules! decl_face_type {
 	($name:ident, $num_indices:literal) => {
 		#[repr(C)]
-		#[derive(Clone, Debug)]
+		#[derive(Clone, Copy, Debug)]
 		pub struct $name {
 			pub vertex_indices: [u16; $num_indices],
 			pub texture: EffectsFaceTexture,
@@ -178,7 +177,7 @@ pub struct Room {
 }
 
 #[repr(C)]
-#[derive(Clone, Debug)]
+#[derive(Clone, Copy, Debug)]
 pub struct Model {
 	pub id: u32,
 	pub num_meshes: u16,
@@ -194,7 +193,7 @@ pub struct Model {
 }
 
 #[repr(C, packed(2))]
-#[derive(Clone, Debug)]
+#[derive(Clone, Copy, Debug)]
 pub struct ObjectTexture {
 	/// One of the blend modes in the `blend_mode` module.
 	pub blend_mode: u16,
@@ -255,6 +254,8 @@ pub struct Level {
 	pub padding2: [u8; 6],
 	#[list(u32)] #[delegate] pub samples: Box<[Sample]>,
 }
+
+//extraction
 
 impl Level {
 	pub fn get_mesh(&self, mesh_offset: u32) -> Mesh {

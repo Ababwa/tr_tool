@@ -1,15 +1,14 @@
 use std::{io::{Read, Result}, mem, slice};
 use bitfield::bitfield;
 use glam::{I16Vec3, IVec3, U16Vec2, U16Vec3, UVec2, Vec3};
-use shared::min_max::MinMax;
 use tr_readable::{read_into, Readable, ToLen};
 use crate::{
 	tr1::{
-		get_packed_angles, AnimDispatch, Camera, Color24Bit, MeshLighting, MeshNode, Model, NumSectors,
-		Portal, RoomFlags, Sector, SoundSource, Sprite, SpriteSequence, SpriteTexture, StateChange,
-		StaticMesh, ATLAS_PIXELS,
+		get_packed_angles, AnimDispatch, Camera, Color24Bit, MeshLighting, MeshNode, MinMax, Model,
+		NumSectors, Portal, RoomFlags, Sector, SoundSource, Sprite, SpriteSequence, SpriteTexture,
+		StateChange, StaticMesh, ATLAS_PIXELS,
 	},
-	tr2::{decl_frame, Axis, Color16BitArgb, TrBox, SOUND_MAP_LEN, ZONE_SIZE},
+	tr2::{decl_frame, Axis, Color16BitArgb, TrBox, FRAME_DATA_KNOWN_SIZE, SOUND_MAP_LEN, ZONE_SIZE},
 	tr3::{DsQuad, DsTri, RoomStaticMesh, RoomVertex, SoundDetails},
 	u16_cursor::U16Cursor,
 };
@@ -20,7 +19,7 @@ pub const NUM_MISC_IMAGES: usize = 2;
 
 //model
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Copy, Debug)]
 pub struct NumAtlases {
 	pub num_room_atlases: u16,
 	pub num_obj_atlases: u16,
@@ -34,7 +33,7 @@ impl ToLen for NumAtlases {
 }
 
 #[repr(C, align(4))]
-#[derive(Clone, Debug)]
+#[derive(Clone, Copy, Debug)]
 pub struct Color32BitBgra {
 	pub b: u8,
 	pub g: u8,
@@ -43,7 +42,7 @@ pub struct Color32BitBgra {
 }
 
 #[repr(C, packed(2))]
-#[derive(Clone, Debug)]
+#[derive(Clone, Copy, Debug)]
 pub struct Light {
 	pub pos: IVec3,
 	pub color: Color24Bit,
@@ -84,7 +83,7 @@ pub struct Room {
 }
 
 #[repr(C)]
-#[derive(Clone, Debug)]
+#[derive(Clone, Copy, Debug)]
 pub struct Animation {
 	/// Byte offset into `Level.frame_data`.
 	pub frame_byte_offset: u32,
@@ -111,7 +110,7 @@ pub struct Animation {
 }
 
 #[repr(C)]
-#[derive(Clone, Debug)]
+#[derive(Clone, Copy, Debug)]
 pub struct FlybyCamera {
 	pub pos: IVec3,
 	pub direction: IVec3,
@@ -135,7 +134,7 @@ bitfield! {
 }
 
 #[repr(C, packed(2))]
-#[derive(Clone, Debug)]
+#[derive(Clone, Copy, Debug)]
 pub struct ObjectTexture {
 	/// One of the blend modes in the `blend_mode` module.
 	pub blend_mode: u16,
@@ -149,7 +148,7 @@ pub struct ObjectTexture {
 }
 
 #[repr(C)]
-#[derive(Clone, Debug)]
+#[derive(Clone, Copy, Debug)]
 pub struct Entity {
 	/// Matched to `Model.id` in `Level.models` or `SpriteSequence.id` in `Level.sprite_sequences`.
 	pub model_id: u16,
@@ -165,7 +164,7 @@ pub struct Entity {
 	pub flags: u16,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Copy, Debug)]
 pub struct Ai {
 	pub model_id: u16,
 	/// Index into `LevelData.rooms`.
@@ -256,7 +255,7 @@ pub struct Level {
 
 bitfield! {
 	#[repr(C)]
-	#[derive(Clone, Debug)]
+	#[derive(Clone, Copy, Debug)]
 	pub struct FaceEffects(u16);
 	pub additive, _: 0;
 }
@@ -264,7 +263,7 @@ bitfield! {
 macro_rules! decl_face_type {
 	($name:ident, $num_indices:literal) => {
 		#[repr(C)]
-		#[derive(Clone, Debug)]
+		#[derive(Clone, Copy, Debug)]
 		pub struct $name {
 			pub vertex_indices: [u16; $num_indices],
 			pub object_texture_index: u16,
@@ -276,11 +275,11 @@ macro_rules! decl_face_type {
 decl_face_type!(EffectsQuad, 4);
 decl_face_type!(EffectsTri, 3);
 
+#[derive(Clone, Copy, Debug)]
 pub struct Mesh<'a> {
 	pub center: I16Vec3,
 	pub radius: i32,
-	/// If static mesh, relative to `RoomStaticMesh.pos`.
-	/// If entity mesh, relative to `Entity.pos`.
+	/// If static mesh, relative to `RoomStaticMesh.pos`. If entity mesh, relative to `Entity.pos`.
 	pub vertices: &'a [I16Vec3],
 	pub lighting: MeshLighting<'a>,
 	pub quads: &'a [EffectsQuad],

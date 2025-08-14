@@ -9,7 +9,6 @@ An "index" points to an entry in an array.
 use std::{mem, slice};
 use bitfield::bitfield;
 use glam::{I16Vec2, I16Vec3, IVec3, U16Vec2, U16Vec3, U8Vec2};
-use shared::min_max::MinMax;
 use tr_readable::{Readable, ToLen};
 use crate::u16_cursor::U16Cursor;
 
@@ -28,7 +27,7 @@ pub mod blend_mode {
 //model
 
 #[repr(C)]
-#[derive(Clone, Debug)]
+#[derive(Clone, Copy, Debug)]
 pub struct RoomVertex {
 	/// Relative to room
 	pub pos: I16Vec3,
@@ -38,7 +37,7 @@ pub struct RoomVertex {
 macro_rules! decl_face_type {
 	($name:ident, $num_indices:literal, $texture_field:ident) => {
 		#[repr(C)]
-		#[derive(Clone, Debug)]
+		#[derive(Clone, Copy, Debug)]
 		pub struct $name {
 			pub vertex_indices: [u16; $num_indices],
 			pub $texture_field: u16,
@@ -50,14 +49,14 @@ decl_face_type!(TexturedQuad, 4, object_texture_index);
 decl_face_type!(TexturedTri, 3, object_texture_index);
 
 #[repr(C)]
-#[derive(Clone, Debug)]
+#[derive(Clone, Copy, Debug)]
 pub struct Sprite {
 	pub vertex_index: u16,
 	pub sprite_texture_index: u16,
 }
 
 #[repr(C)]
-#[derive(Clone, Debug)]
+#[derive(Clone, Copy, Debug)]
 pub struct Portal {
 	pub adjoining_room_index: u16,
 	pub normal: I16Vec3,
@@ -78,7 +77,7 @@ impl ToLen for NumSectors {
 }
 
 #[repr(C)]
-#[derive(Clone, Debug)]
+#[derive(Clone, Copy, Debug)]
 pub struct Sector {
 	pub floor_data_index: u16,
 	pub box_index: u16,
@@ -89,7 +88,7 @@ pub struct Sector {
 }
 
 #[repr(C, packed(2))]
-#[derive(Clone, Debug)]
+#[derive(Clone, Copy, Debug)]
 pub struct Light {
 	pub pos: IVec3,
 	pub brightness: u16,
@@ -97,7 +96,7 @@ pub struct Light {
 }
 
 #[repr(C, packed(2))]
-#[derive(Clone, Debug)]
+#[derive(Clone, Copy, Debug)]
 pub struct RoomStaticMesh {
 	/// World coords.
 	pub pos: IVec3,
@@ -140,7 +139,7 @@ pub struct Room {
 }
 
 #[repr(C)]
-#[derive(Clone, Debug)]
+#[derive(Clone, Copy, Debug)]
 pub struct Animation {
 	pub frame_byte_offset: u32,
 	pub frame_duration: u8,
@@ -159,7 +158,7 @@ pub struct Animation {
 }
 
 #[repr(C)]
-#[derive(Clone, Debug)]
+#[derive(Clone, Copy, Debug)]
 pub struct StateChange {
 	pub state_id: u16,
 	pub num_anim_dispatches: u16,
@@ -167,7 +166,7 @@ pub struct StateChange {
 }
 
 #[repr(C)]
-#[derive(Clone, Debug)]
+#[derive(Clone, Copy, Debug)]
 pub struct AnimDispatch {
 	pub low_frame: u16,
 	pub high_frame: u16,
@@ -176,7 +175,7 @@ pub struct AnimDispatch {
 }
 
 #[repr(C, packed(2))]
-#[derive(Clone, Debug)]
+#[derive(Clone, Copy, Debug)]
 pub struct Model {
 	pub id: u32,
 	pub num_meshes: u16,
@@ -191,7 +190,14 @@ pub struct Model {
 }
 
 #[repr(C)]
-#[derive(Clone, Debug)]
+#[derive(Clone, Copy, Debug)]
+pub struct MinMax<T> {
+	pub min: T,
+	pub max: T,
+}
+
+#[repr(C)]
+#[derive(Clone, Copy, Debug)]
 pub struct BoundBox {
 	pub x: MinMax<i16>,
 	pub y: MinMax<i16>,
@@ -199,7 +205,7 @@ pub struct BoundBox {
 }
 
 #[repr(C)]
-#[derive(Clone, Debug)]
+#[derive(Clone, Copy, Debug)]
 pub struct StaticMesh {
 	pub id: u32,
 	/// Index into `Level.mesh_offsets`.
@@ -210,7 +216,7 @@ pub struct StaticMesh {
 }
 
 #[repr(C)]
-#[derive(Clone, Debug)]
+#[derive(Clone, Copy, Debug)]
 pub struct ObjectTexture {
 	/// One of the blend modes in the `blend_mode` module.
 	pub blend_mode: u16,
@@ -221,7 +227,7 @@ pub struct ObjectTexture {
 }
 
 #[repr(C)]
-#[derive(Clone, Debug)]
+#[derive(Clone, Copy, Debug)]
 pub struct SpriteTexture {
 	/// Index into `Level.atlases`.
 	pub atlas_index: u16,
@@ -231,7 +237,7 @@ pub struct SpriteTexture {
 }
 
 #[repr(C)]
-#[derive(Clone, Debug)]
+#[derive(Clone, Copy, Debug)]
 pub struct SpriteSequence {
 	pub id: u32,
 	pub neg_length: i16,
@@ -240,7 +246,7 @@ pub struct SpriteSequence {
 }
 
 #[repr(C)]
-#[derive(Clone, Debug)]
+#[derive(Clone, Copy, Debug)]
 pub struct Camera {
 	pub pos: IVec3,
 	pub room_index: u16,
@@ -248,7 +254,7 @@ pub struct Camera {
 }
 
 #[repr(C)]
-#[derive(Clone, Debug)]
+#[derive(Clone, Copy, Debug)]
 pub struct SoundSource {
 	pub pos: IVec3,
 	pub sound_id: u16,
@@ -256,7 +262,7 @@ pub struct SoundSource {
 }
 
 #[repr(C)]
-#[derive(Clone, Debug)]
+#[derive(Clone, Copy, Debug)]
 pub struct TrBox {
 	pub z: MinMax<u32>,
 	pub x: MinMax<u32>,
@@ -265,7 +271,7 @@ pub struct TrBox {
 }
 
 #[repr(C, packed(2))]
-#[derive(Clone, Debug)]
+#[derive(Clone, Copy, Debug)]
 pub struct Entity {
 	/// Matched to `Model.id` in `Level.models` or `SpriteSequence.id` in `Level.sprite_sequences`.
 	pub model_id: u16,
@@ -290,7 +296,7 @@ pub struct Color24Bit {
 }
 
 #[repr(C)]
-#[derive(Clone, Debug)]
+#[derive(Clone, Copy, Debug)]
 pub struct CinematicFrame {
 	pub target: I16Vec3,
 	pub pos: I16Vec3,
@@ -299,7 +305,7 @@ pub struct CinematicFrame {
 }
 
 #[repr(C)]
-#[derive(Clone, Debug)]
+#[derive(Clone, Copy, Debug)]
 pub struct SoundDetails {
 	pub sample_index: u16,
 	pub volume: u16,
@@ -347,7 +353,7 @@ pub struct Level {
 
 //extraction
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Copy, Debug)]
 pub enum MeshLighting<'a> {
 	Normals(&'a [I16Vec3]),
 	Lights(&'a [u16]),
@@ -365,7 +371,7 @@ macro_rules! decl_mesh {
 		$solid_quad:ty,
 		$solid_tri:ty
 	) => {
-		#[derive(Clone, Debug)]
+		#[derive(Clone, Copy, Debug)]
 		pub struct $mesh<'a> {
 			pub center: glam::I16Vec3,
 			pub radius: i32,
@@ -411,14 +417,14 @@ decl_mesh!(Mesh, MeshLighting, TexturedQuad, TexturedTri, SolidQuad, SolidTri);
 
 bitfield! {
 	#[repr(C)]
-	#[derive(Clone, Debug)]
+	#[derive(Clone, Copy, Debug)]
 	pub struct MeshNodeFlags(u32);
 	pub pop, _: 0;
 	pub push, _: 1;
 }
 
 #[repr(C)]
-#[derive(Clone, Debug)]
+#[derive(Clone, Copy, Debug)]
 pub struct MeshNode {
 	pub flags: MeshNodeFlags,
 	/// Relative to parent.
@@ -426,7 +432,7 @@ pub struct MeshNode {
 }
 
 impl MeshNode {
-	pub(crate) fn get<'a>(mesh_node_data: &'a [u32], mesh_node_offset: u32, num_meshes: u16) -> &'a [Self] {
+	pub(crate) fn get(mesh_node_data: &[u32], mesh_node_offset: u32, num_meshes: u16) -> &[MeshNode] {
 		let offset = mesh_node_offset as usize;
 		let len = num_meshes as usize - 1;
 		let size = len * (size_of::<Self>() / size_of::<u32>());
@@ -447,7 +453,7 @@ pub(crate) fn get_packed_angles(xy: u16, yz: u16) -> U16Vec3 {
 }
 
 #[repr(C)]
-#[derive(Clone, Debug)]
+#[derive(Clone, Copy, Debug)]
 pub struct FrameRotation(pub u16, pub u16);
 
 impl FrameRotation {
@@ -466,8 +472,8 @@ pub struct Frame {
 }
 
 impl Level {
-	pub fn get_mesh(&self, mesh_byte_offset: u32) -> Mesh {
-		Mesh::get(&self.mesh_data, mesh_byte_offset)
+	pub fn get_mesh(&self, mesh_offset: u32) -> Mesh {
+		Mesh::get(&self.mesh_data, mesh_offset)
 	}
 	
 	pub fn get_mesh_nodes(&self, model: &Model) -> &[MeshNode] {
@@ -475,7 +481,7 @@ impl Level {
 	}
 	
 	pub fn get_frame(&self, model: &Model) -> &Frame {
-		/// Size of the known part of Frame in u16s.
+		/// Size of the known part of `Frame` in u16s.
 		const FRAME_KNOWN_SIZE: usize = 10;
 		let byte_offset = model.frame_byte_offset as usize;
 		assert!(byte_offset % size_of::<u16>() == 0);
