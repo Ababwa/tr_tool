@@ -1,6 +1,7 @@
 use std::collections::HashMap;
 use tr_model::tr1;
 use crate::{boxed_slice::{self, Bsf}, tr_traits::{Entity, Level, Model, Room}};
+use super::{FlipState, RoomRenderData};
 
 pub fn get_static_mesh_map(static_meshes: &[tr1::StaticMesh]) -> HashMap<u16, &tr1::StaticMesh> {
 	let mut map = HashMap::with_capacity(static_meshes.len());
@@ -103,22 +104,21 @@ pub struct FlipGroup {
 	pub flipped: bool,
 	/// First half are original indices, second half are flipped indices.
 	pub room_indices: Box<[usize]>,
-	/// Count of preceding flip room. Offset into `LoadedLevel::all_room_indices`.
+	/// Count of preceding flip rooms. Offset into `LoadedLevel::all_room_indices`.
 	pub offset: usize,
 }
 
 impl FlipGroup {
-	fn get_number(&self) -> u8 {
-		self.number
-	}
-	
 	pub fn active_indices(&self) -> &[usize] {
 		let half = self.room_indices.len() / 2;
 		&self.room_indices[self.flipped as usize * half..][..half]
 	}
 }
 
-pub fn get_flip_groups<R: Room>(rooms: &[R]) -> (Box<[usize]>, Box<[FlipGroup]>) {
+pub fn get_flip_groups<R: Room>(
+	rooms: &[R],
+	room_render_data: &mut [RoomRenderData],
+) -> (Box<[usize]>, Box<[FlipGroup]>) {
 	#[derive(Clone, Copy)]
 	enum RoomState {
 		Static,
@@ -131,12 +131,22 @@ pub fn get_flip_groups<R: Room>(rooms: &[R]) -> (Box<[usize]>, Box<[FlipGroup]>)
 	let mut flip_group_counts = [0u8; 256];
 	for room_index in 0..rooms.len() {
 		let room = &rooms[room_index];
-		let flip_room_index = room.flip_room_index() as usize;
-		if flip_room_index != u16::MAX as usize {
+		let flip_index = room.flip_room_index() as usize;
+		if flip_index != u16::MAX as usize {
 			assert!(matches!(room_states[room_index], RoomState::Static));
-			assert!(matches!(room_states[flip_room_index], RoomState::Static));
+			assert!(matches!(room_states[flip_index], RoomState::Static));
 			room_states[room_index] = RoomState::FlipOriginal;
-			room_states[flip_room_index] = RoomState::FlipFlipped;
+			room_states[flip_index] = RoomState::FlipFlipped;
+			let orig_state = FlipState {
+				original: true,
+				other_index: flip_index,
+			};
+			let flip_state = FlipState {
+				original: false,
+				other_index: room_index,
+			};
+			room_render_data[room_index].flip_state = Some(orig_state);
+			room_render_data[flip_index].flip_state = Some(flip_state);
 			let flip_group_count = &mut flip_group_counts[room.flip_group() as usize];
 			if *flip_group_count == 0 {
 				num_flip_groups += 1;
@@ -170,7 +180,7 @@ pub fn get_flip_groups<R: Room>(rooms: &[R]) -> (Box<[usize]>, Box<[FlipGroup]>)
 				let room = &rooms[room_index];
 				let flip_room_index = room.flip_room_index() as usize;
 				let fg_num = room.flip_group();
-				let fg_index = flip_groups.binary_search_by_key(&fg_num, FlipGroup::get_number).unwrap();
+				let fg_index = flip_groups.binary_search_by_key(&fg_num, |f| f.number).unwrap();
 				let room_indices = &mut flip_groups[fg_index].room_indices;
 				let fg_rooms = room_indices.len() / 2;
 				let fg_left = &mut flip_group_counts[fg_num as usize];

@@ -1,5 +1,6 @@
 use std::{f32::consts::{FRAC_PI_2, FRAC_PI_4, PI}, ops::Range, time::Duration};
 use glam::{EulerRot, Mat4, Vec3};
+use tr_model::tr1;
 use wgpu::{
 	BindGroup, Buffer, CommandEncoder, Device, IndexFormat, Queue, RenderPass, RenderPipeline, Texture,
 	TextureView, TextureViewDescriptor,
@@ -10,22 +11,30 @@ use winit::{
 };
 use crate::{
 	as_bytes::AsBytes, boxed_slice::Bsf, gfx,
-	level::{BindGroups, LayerOffsets, LevelData, MeshOffsets, RoomRenderData},
-	render_resources::{BindingBuffers, GeomOffsets, PipelineGroup, RenderResources},
+	level_parse::{BindGroups, LayerOffsets, LevelData, MeshOffsets, RoomRenderData},
+	render_resources::{BindingBuffers, GeomOffsets, PipelineGroup, RenderResources, Viewport},
 };
-use super::{file_dialog::FileDialog, keys::{KeyGroup, KeyStates}};
+use super::{draw_window, file_dialog::FileDialog, keys::KeyStates, Ui};
 
-#[derive(Debug)]
+#[derive(Clone, Copy, PartialEq, Eq)]
 enum TextureModeTag {
 	Palette,
 	Bit16,
 	Bit32,
 }
 
-#[derive(Debug)]
+#[derive(Clone, Copy, PartialEq, Eq)]
 enum SolidModeTag {
 	Bit24,
 	Bit32,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum TextureTabTag {
+	Palette,
+	Bit16,
+	Bit32,
+	Misc,
 }
 
 struct TextureMode {
@@ -38,6 +47,13 @@ struct SolidMode {
 	pipeline: RenderPipeline,
 	bind_group: BindGroup,
 	tag: SolidModeTag,
+}
+
+struct TextureTab {
+	pipeline: RenderPipeline,
+	bind_group: BindGroup,
+	num_images: u32,
+	tag: TextureTabTag,
 }
 
 #[derive(Clone, Copy)]
@@ -54,8 +70,9 @@ pub struct LoadedLevel {
 	interact_texture: Texture,
 	texture_mode: TextureMode,
 	solid_mode: Option<SolidMode>,
+	texture_tab: TextureTab,
 	/// Index into `level_data.room_render_data` of room to render. If `None`, render all.
-	render_room_index: Option<usize>,
+	room_index: Option<usize>,
 	/**
 	Indices into `level_data.room_render_data` of all rooms, given flip group toggles.
 	Contains the active indices of flip groups in order, then static room indices.
@@ -68,9 +85,40 @@ pub struct LoadedLevel {
 	show_entity_meshes: bool,
 	show_room_sprites: bool,
 	show_entity_sprites: bool,
+	show_render_options: bool,
+	show_textures_window: bool,
 	key_states: KeyStates,
 	mouse_pos: PhysicalPosition<f64>,
 	level_data: LevelData,
+}
+
+struct TextureCallback {
+	queue: Queue,
+	viewport_buffer: Buffer,
+	face_vertex_index_buffer: Buffer,
+	pipeline: RenderPipeline,
+	bind_group: BindGroup,
+}
+
+impl egui_wgpu::CallbackTrait for TextureCallback {
+	fn paint(
+		&self,
+		info: egui::PaintCallbackInfo,
+		pass: &mut wgpu::RenderPass<'static>,
+		_: &egui_wgpu::CallbackResources,
+	) {
+		let c = info.clip_rect_in_pixels();
+		let v = info.viewport_in_pixels();
+		let viewport = Viewport {
+			clip: [c.left_px, c.top_px, c.width_px, c.height_px],
+			view: [v.left_px, v.top_px, v.width_px, v.height_px],
+		};
+		self.queue.write_buffer(&self.viewport_buffer, 0, viewport.as_bytes());
+		pass.set_vertex_buffer(0, self.face_vertex_index_buffer.slice(..));
+		pass.set_pipeline(&self.pipeline);
+		pass.set_bind_group(0, &self.bind_group, &[]);
+		pass.draw(0..NUM_QUAD_VERTICES, 0..1);
+	}
 }
 
 const FRAC_1_SQRT_3: f32 = 0.577350269189625764509148780501957456;
@@ -87,14 +135,14 @@ const START_PITCH: f32 = 0.615479708670387341067464589123993688;
 const NUM_QUAD_VERTICES: u32 = 4;
 const NUM_TRI_VERTICES: u32 = 3;
 
-const FORWARD_KEYS: KeyGroup = KeyGroup::new(&[KeyCode::KeyW, KeyCode::ArrowUp]);
-const BACKWARD_KEYS: KeyGroup = KeyGroup::new(&[KeyCode::KeyS, KeyCode::ArrowDown]);
-const LEFT_KEYS: KeyGroup = KeyGroup::new(&[KeyCode::KeyA, KeyCode::ArrowLeft]);
-const RIGHT_KEYS: KeyGroup = KeyGroup::new(&[KeyCode::KeyD, KeyCode::ArrowRight]);
-const UP_KEYS: KeyGroup = KeyGroup::new(&[KeyCode::KeyQ, KeyCode::PageUp]);
-const DOWN_KEYS: KeyGroup = KeyGroup::new(&[KeyCode::KeyE, KeyCode::PageDown]);
-const FAST_KEYS: KeyGroup = KeyGroup::new(&[KeyCode::ShiftLeft, KeyCode::ShiftRight]);
-const SLOW_KEYS: KeyGroup = KeyGroup::new(&[KeyCode::ControlLeft, KeyCode::ControlRight]);
+const FORWARD_KEYS: [KeyCode; 2] = [KeyCode::KeyW, KeyCode::ArrowUp];
+const BACKWARD_KEYS: [KeyCode; 2] = [KeyCode::KeyS, KeyCode::ArrowDown];
+const LEFT_KEYS: [KeyCode; 2] = [KeyCode::KeyA, KeyCode::ArrowLeft];
+const RIGHT_KEYS: [KeyCode; 2] = [KeyCode::KeyD, KeyCode::ArrowRight];
+const UP_KEYS: [KeyCode; 2] = [KeyCode::KeyQ, KeyCode::PageUp];
+const DOWN_KEYS: [KeyCode; 2] = [KeyCode::KeyE, KeyCode::PageDown];
+const FAST_KEYS: [KeyCode; 2] = [KeyCode::ShiftLeft, KeyCode::ShiftRight];
+const SLOW_KEYS: [KeyCode; 2] = [KeyCode::ControlLeft, KeyCode::ControlRight];
 
 const FORWARD_VEC: Vec3 = Vec3::NEG_Z;
 const BACKWARD_VEC: Vec3 = Vec3::Z;
@@ -103,11 +151,58 @@ const RIGHT_VEC: Vec3 = Vec3::NEG_X;
 const DOWN_VEC: Vec3 = Vec3::Y;
 const UP_VEC: Vec3 = Vec3::NEG_Y;
 
-// fn direction(yaw: f32, pitch: f32) -> Vec3 {
-// 	let (yaw_sin, yaw_cos) = yaw.sin_cos();
-// 	let (pitch_sin, pitch_cos) = pitch.sin_cos();
-// 	Vec3::new(-pitch_cos * yaw_sin, pitch_sin, -pitch_cos * yaw_cos)
-// }
+const ALL: &'static str = "All";
+
+impl TextureModeTag {
+	fn label(self) -> &'static str {
+		match self {
+			TextureModeTag::Palette => "Palette",
+			TextureModeTag::Bit16 => "16 Bit",
+			TextureModeTag::Bit32 => "32 Bit",
+		}
+	}
+	
+	fn to_tab(self) -> TextureTabTag {
+		match self {
+			TextureModeTag::Palette => TextureTabTag::Palette,
+			TextureModeTag::Bit16 => TextureTabTag::Bit16,
+			TextureModeTag::Bit32 => TextureTabTag::Bit32,
+		}
+	}
+}
+
+impl SolidModeTag {
+	fn label(self) -> &'static str {
+		match self {
+			SolidModeTag::Bit24 => "24 Bit",
+			SolidModeTag::Bit32 => "32 Bit",
+		}
+	}
+}
+
+impl TextureTabTag {
+	fn label(self) -> &'static str {
+		match self {
+			TextureTabTag::Palette => "Palette",
+			TextureTabTag::Bit16 => "16 Bit",
+			TextureTabTag::Bit32 => "32 Bit",
+			TextureTabTag::Misc => "Misc",
+		}
+	}
+	
+	fn scroll_id(self) -> u8 {
+		match self {
+			TextureTabTag::Palette | TextureTabTag::Bit16 | TextureTabTag::Bit32 => 0,
+			TextureTabTag::Misc => 1,
+		}
+	}
+}
+
+fn direction(yaw: f32, pitch: f32) -> Vec3 {
+	let (yaw_sin, yaw_cos) = yaw.sin_cos();
+	let (pitch_sin, pitch_cos) = pitch.sin_cos();
+	Vec3::new(-pitch_cos * yaw_sin, pitch_sin, -pitch_cos * yaw_cos)
+}
 
 fn make_camera_transform(camera: &Camera) -> Mat4 {
 	Mat4::from_euler(EulerRot::XYZ, camera.pitch, camera.yaw, PI) * Mat4::from_translation(-camera.pos)
@@ -139,7 +234,7 @@ fn get_texture_mode(rr: &RenderResources, bind_groups: &BindGroups) -> TextureMo
 			tag: TextureModeTag::Palette,
 		}
 	} else {
-		unreachable!("no texture");
+		panic!("no texture");
 	}
 }
 
@@ -277,6 +372,82 @@ fn write_buffers(
 	queue.write_buffer(&buffers.perspective_transform_buffer, 0, perspective_transform.as_bytes());
 }
 
+fn room_str(room_index: usize) -> String {
+	format!("Room {}", room_index)
+}
+
+fn texture_mode_ui(
+	ui: Ui,
+	texture_mode: &mut TextureMode,
+	pipeline_group: &PipelineGroup,
+	bind_group: &Option<BindGroup>,
+	tag: TextureModeTag,
+) {
+	if let Some(bind_group) = bind_group {
+		if ui.selectable_value(&mut texture_mode.tag, tag, tag.label()).changed() {
+			texture_mode.pipeline_group = pipeline_group.clone();
+			texture_mode.bind_group = bind_group.clone();
+		}
+	}
+}
+
+fn texture_modes_ui(ui: Ui, rr: &RenderResources, texture_mode: &mut TextureMode, bgs: &BindGroups) {
+	texture_mode_ui(ui, texture_mode, &rr.texture_palette_plg, &bgs.palette_bg, TextureModeTag::Palette);
+	texture_mode_ui(ui, texture_mode, &rr.texture_16bit_plg, &bgs.texture_16bit_bg, TextureModeTag::Bit16);
+	texture_mode_ui(ui, texture_mode, &rr.texture_32bit_plg, &bgs.texture_32bit_bg, TextureModeTag::Bit32);
+}
+
+fn solid_mode_ui(
+	ui: Ui,
+	solid_mode: &mut SolidMode,
+	pipeline: &RenderPipeline,
+	bind_group: &BindGroup,
+	tag: SolidModeTag,
+) {
+	if ui.selectable_value(&mut solid_mode.tag, tag, tag.label()).changed() {
+		solid_mode.pipeline = pipeline.clone();
+		solid_mode.bind_group = bind_group.clone();
+	}
+}
+
+fn texture_tab_ui(
+	ui: Ui,
+	texture_tab: &mut TextureTab,
+	pipeline_group: &PipelineGroup,
+	bind_group: &BindGroup,
+	tag: TextureTabTag,
+	num_images: u32,
+) {
+	if ui.selectable_value(&mut texture_tab.tag, tag, tag.label()).changed() {
+		texture_tab.pipeline = pipeline_group.flat_pl.clone();
+		texture_tab.bind_group = bind_group.clone();
+		texture_tab.num_images = num_images;
+	}
+}
+
+fn texture_tab_ui_test(
+	ui: Ui,
+	texture_tab: &mut TextureTab,
+	pipeline_group: &PipelineGroup,
+	bind_group: &Option<BindGroup>,
+	tag: TextureTabTag,
+	num_images: u32,
+) {
+	if let Some(bind_group) = bind_group {
+		texture_tab_ui(ui, texture_tab, pipeline_group, bind_group, tag, num_images);
+	}
+}
+
+fn texture_tabs_ui(ui: Ui, texture_tab: &mut TextureTab, bgs: &BindGroups, rr: &RenderResources, na: u32) {
+	use texture_tab_ui_test as tab;
+	tab(ui, texture_tab, &rr.texture_palette_plg, &bgs.palette_bg, TextureTabTag::Palette, na);
+	tab(ui, texture_tab, &rr.texture_16bit_plg, &bgs.texture_16bit_bg, TextureTabTag::Bit16, na);
+	tab(ui, texture_tab, &rr.texture_32bit_plg, &bgs.texture_32bit_bg, TextureTabTag::Bit32, na);
+	if let &Some((ref bind_group, num_images)) = &bgs.misc_images_bg {
+		texture_tab_ui(ui, texture_tab, &rr.texture_32bit_plg, bind_group, TextureTabTag::Misc, num_images);
+	}
+}
+
 impl LoadedLevel {
 	pub fn new(
 		window_size: PhysicalSize<u32>,
@@ -306,13 +477,21 @@ impl LoadedLevel {
 		all_room_indices.extend_copy(&level_data.static_room_indices);
 		let interact_texture = gfx::interact_texture(device, window_size);
 		write_buffers(window_size, queue, &rr.binding_buffers, &level_data, &camera);
+		let texture_mode = get_texture_mode(rr, &level_data.bind_groups);
+		let texture_tab = TextureTab {
+			pipeline: texture_mode.pipeline_group.flat_pl.clone(),
+			bind_group: texture_mode.bind_group.clone(),
+			num_images: level_data.num_atlases,
+			tag: texture_mode.tag.to_tab(),
+		};
 		Self {
 			depth_view: gfx::depth_view(device, window_size),
 			interact_view: interact_texture.create_view(&TextureViewDescriptor::default()),
 			interact_texture,
-			texture_mode: get_texture_mode(rr, &level_data.bind_groups),
+			texture_mode,
 			solid_mode: get_solid_mode(rr, &level_data.bind_groups),
-			render_room_index: None,
+			texture_tab,
+			room_index: None,
 			all_room_indices: all_room_indices.into_boxed_slice(),
 			camera,
 			mouse_control: false,
@@ -321,6 +500,8 @@ impl LoadedLevel {
 			show_entity_meshes: true,
 			show_room_sprites: true,
 			show_entity_sprites: true,
+			show_render_options: true,
+			show_textures_window: true,
 			key_states: KeyStates::new(),
 			mouse_pos: PhysicalPosition::default(),
 			level_data,
@@ -341,12 +522,8 @@ impl LoadedLevel {
 		queue.write_buffer(perspective_transform_buffer, 0, perspective_transform.as_bytes());
 	}
 	
-	pub fn egui(&mut self, ctx: &egui::Context) {
-		
-	}
-	
-	fn toggle(&self, key_group: &KeyGroup) -> f32 {
-		self.key_states.any(key_group) as u8 as f32
+	fn toggle(&self, key_codes: &[KeyCode]) -> f32 {
+		self.key_states.any(key_codes) as u8 as f32
 	}
 	
 	fn frame_update(&mut self, queue: &Queue, camera_transform_buffer: &Buffer, delta_time: Duration) {
@@ -363,8 +540,136 @@ impl LoadedLevel {
 			delta_time.as_secs_f32();
 		self.camera.pos += factor * Mat4::from_rotation_y(self.camera.yaw).transform_point3(delta);
 		let camera_transform = make_camera_transform(&self.camera);
-		//TODO: track input to only update camera transform when needed
 		queue.write_buffer(camera_transform_buffer, 0, camera_transform.as_bytes());
+	}
+	
+	fn flip_groups_ui(&mut self, ui: Ui) {
+		if !self.level_data.flip_groups.is_empty() {
+			let flip_group_toggles = |ui: Ui| {
+				ui.label("Flip Groups");
+				for flip_group in &mut self.level_data.flip_groups {
+					if ui.toggle_value(&mut flip_group.flipped, flip_group.number.to_string()).changed() {
+						let active_indices = flip_group.active_indices();
+						let dest = &mut self.all_room_indices[flip_group.offset..][..active_indices.len()];
+						dest.copy_from_slice(active_indices);
+					}
+				}
+			};
+			ui.horizontal(flip_group_toggles);
+		}
+	}
+	
+	fn rooms_ui(&mut self, ui: Ui) {
+		let room_combo = egui::ComboBox::from_label("Room");
+		let room_combo = match self.room_index {
+			Some(index) => room_combo.selected_text(room_str(index)),
+			None => room_combo.selected_text(ALL),
+		};
+		let mut changed = false;
+		let room_values = |ui: Ui| {
+			changed |= ui.selectable_value(&mut self.room_index, None, ALL).changed();
+			for index in 0..self.level_data.room_render_data.len() {
+				changed |= ui.selectable_value(&mut self.room_index, Some(index), room_str(index)).changed();
+			}
+		};
+		room_combo.show_ui(ui, room_values);
+		if changed {
+			if let Some(index) = self.room_index {
+				let RoomRenderData { center, radius, .. } = self.level_data.room_render_data[index];
+				self.camera.pos = center - direction(self.camera.yaw, self.camera.pitch) * radius;
+			}
+		}
+	}
+	
+	fn egui_render_modes(&mut self, ui: Ui, rr: &RenderResources) {
+		let bgs = &self.level_data.bind_groups;
+		let available_texture_modes =
+			bgs.texture_32bit_bg.is_some() as u8 +
+			bgs.texture_16bit_bg.is_some() as u8 +
+			bgs.palette_bg.is_some() as u8;
+		if available_texture_modes > 1 {
+			let texture_mode_combo = egui::ComboBox::from_label("Texture Mode");
+			let texture_mode_combo = texture_mode_combo.selected_text(self.texture_mode.tag.label());
+			let texture_modes = |ui: Ui| texture_modes_ui(ui, rr, &mut self.texture_mode, bgs);
+			texture_mode_combo.show_ui(ui, texture_modes);
+		}
+		let solid_condition = (&mut self.solid_mode, &bgs.solid_32bit_bg, &bgs.palette_bg);
+		if let (Some(solid_mode), Some(solid_32bit_bg), Some(palette_bg)) = solid_condition {
+			let solid_mode_combo = egui::ComboBox::from_label("Solid Color Mode");
+			let solid_mode_combo = solid_mode_combo.selected_text(solid_mode.tag.label());
+			let solid_modes = |ui: Ui| {
+				solid_mode_ui(ui, solid_mode, &rr.solid_24bit_pl, palette_bg, SolidModeTag::Bit24);
+				solid_mode_ui(ui, solid_mode, &rr.solid_32bit_pl, solid_32bit_bg, SolidModeTag::Bit32);
+			};
+			solid_mode_combo.show_ui(ui, solid_modes);
+		}
+	}
+	
+	fn render_options_ui(&mut self, ui: Ui, rr: &RenderResources) {
+		self.egui_render_modes(ui, rr);
+		self.rooms_ui(ui);
+		match self.room_index {
+			None => self.flip_groups_ui(ui),
+			Some(index) => {
+				if let Some(flip_state) = &self.level_data.room_render_data[index].flip_state {
+					let word = if flip_state.original { "Original" } else { "Flipped" };
+					let text = format!("{} of {}", word, flip_state.other_index);
+					if ui.button(text).clicked() {
+						self.room_index = Some(flip_state.other_index);
+					}
+				}
+			},
+		}
+	}
+	
+	fn textures_ui(&mut self, ui: Ui, queue: &Queue, rr: &RenderResources) {
+		let bgs = &self.level_data.bind_groups;
+		let available_textures =
+			bgs.texture_32bit_bg.is_some() as u8 +
+			bgs.texture_16bit_bg.is_some() as u8 +
+			bgs.palette_bg.is_some() as u8 +
+			bgs.misc_images_bg.is_some() as u8;
+		if available_textures == 1 {
+			ui.label(self.texture_tab.tag.label());
+		} else {
+			let tabs = |ui: Ui| {
+				texture_tabs_ui(ui, &mut self.texture_tab, bgs, rr, self.level_data.num_atlases);
+			};
+			ui.horizontal(tabs);
+		}
+		if ui.button("Save").clicked() {
+			println!("Save texture");//TODO: save texture
+		}
+		ui.add_space(2.0);
+		let texture = |ui: Ui| {
+			const WIDTH: f32 = tr1::ATLAS_SIDE_LEN as f32;
+			let height = (self.texture_tab.num_images * 256) as f32;
+			let (_, rect) = ui.allocate_space(egui::vec2(WIDTH, height));
+			let texture_cb = TextureCallback {
+				queue: queue.clone(),
+				viewport_buffer: rr.binding_buffers.viewport_buffer.clone(),
+				face_vertex_index_buffer: rr.face_vertex_indices_buffer.clone(),
+				pipeline: self.texture_tab.pipeline.clone(),
+				bind_group: self.texture_tab.bind_group.clone(),
+			};
+			let paint_cb = egui_wgpu::Callback::new_paint_callback(rect, texture_cb);
+			ui.painter().add(paint_cb);
+		};
+		let scroll_id = self.texture_tab.tag.scroll_id();
+		let scroll_output = egui::ScrollArea::vertical().id_salt(scroll_id).show(ui, texture);
+		let scroll_offset = scroll_output.state.offset;
+		queue.write_buffer(&rr.binding_buffers.scroll_offset_buffer, 0, scroll_offset.as_bytes());
+	}
+	
+	pub fn egui(&mut self, queue: &Queue, rr: &RenderResources, ctx: &egui::Context) {
+		if self.show_render_options {
+			let render_options = |ui: Ui| self.render_options_ui(ui, rr);
+			self.show_render_options = draw_window(ctx, "Render Options", false, render_options);
+		}
+		if self.show_textures_window {
+			let textures_window = |ui: Ui| self.textures_ui(ui, queue, rr);
+			self.show_textures_window = draw_window(ctx, "Textures", true, textures_window);
+		}
 	}
 	
 	pub fn render(
@@ -376,7 +681,7 @@ impl LoadedLevel {
 		delta_time: Duration,
 	) {
 		self.frame_update(queue, &rr.binding_buffers.camera_transform_buffer, delta_time);
-		let room_indices: &[_] = match self.render_room_index {
+		let room_indices: &[_] = match self.room_index {
 			Some(room_index) => &[room_index],
 			None => &self.all_room_indices,
 		};
@@ -456,6 +761,11 @@ impl LoadedLevel {
 	
 	pub fn key(&mut self, key_code: KeyCode, state: ElementState) {
 		self.key_states.set(key_code, matches!(state, ElementState::Pressed));
+		match (state, key_code) {
+			(ElementState::Pressed, KeyCode::KeyR) => self.show_render_options ^= true,
+			(ElementState::Pressed, KeyCode::KeyT) => self.show_textures_window ^= true,
+			_ => {},
+		}
 	}
 	
 	pub fn set_mouse_control(&mut self, window: &Window, on: bool) {

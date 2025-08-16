@@ -2,23 +2,40 @@ mod file_dialog;
 mod keys;
 mod loaded_level;
 
-use std::{any::{type_name_of_val, Any}, fmt::Display, iter, num::NonZero, path::Path, sync::{mpsc, Arc}, thread, time::Instant};
+use std::{
+	iter, num::NonZero, path::Path, sync::{mpsc::{self, Receiver, TryRecvError}, Arc}, thread,
+	time::{Duration, Instant},
+};
 use wgpu::{
 	CommandEncoderDescriptor, Device, DeviceDescriptor, Features, Instance, Limits, MemoryHints,
 	PowerPreference, Queue, RequestAdapterOptions, Surface, SurfaceConfiguration, TextureViewDescriptor,
 	Trace,
 };
 use winit::{
-	dpi::{PhysicalPosition, PhysicalSize}, event::{ElementState, Modifiers, MouseButton, WindowEvent},
-	event_loop::ActiveEventLoop, keyboard::{KeyCode, ModifiersState},
-	window::{Icon, Window, WindowAttributes},
+	dpi::{PhysicalPosition, PhysicalSize},
+	event::{DeviceEvent, ElementState, KeyEvent, MouseButton, WindowEvent}, event_loop::ActiveEventLoop,
+	keyboard::{KeyCode, ModifiersState, PhysicalKey}, window::{Icon, Window, WindowAttributes},
 };
 use crate::{
-	gfx, level::LevelData, render_resources::RenderResources, wait::Wait, GEOM_BUFFER_SIZE,
-	WINDOW_ICON_BYTES,
+	gfx, level_parse::LevelData, print_error::{PrintDebug, PrintError}, render_resources::RenderResources,
+	wait::Wait, GEOM_BUFFER_SIZE, WINDOW_ICON_BYTES,
 };
 use file_dialog::FileDialog;
 use loaded_level::LoadedLevel;
+
+macro_rules! key {
+	($key_code:pat, $state:pat, $repeat:pat) => {
+		WindowEvent::KeyboardInput {
+			event: KeyEvent {
+				physical_key: PhysicalKey::Code($key_code),
+				state: $state,
+				repeat: $repeat,
+				..
+			},
+			..
+		}
+	};
+}
 
 pub struct Core {
 	window: Arc<Window>,
@@ -42,20 +59,6 @@ type Ui<'a> = &'a mut egui::Ui;
 
 const WINDOW_TITLE: &str = "TR Tool";
 
-fn draw_window<R, F: FnOnce(&mut egui::Ui) -> R>(
-	ctx: &egui::Context,
-	title: &str,
-	resizable: bool,
-	open: &mut bool,
-	contents: F,
-) -> Option<R> {
-	egui::Window::new(title).resizable(resizable).open(open).show(ctx, contents)?.inner
-}
-
-fn file_name(path: &Path) -> Option<&str> {
-	path.file_name()?.to_str()
-}
-
 #[cfg(target_os = "windows")]
 mod ww {
 	use wgpu::rwh::{DisplayHandle, HandleError, HasDisplayHandle, HasWindowHandle, WindowHandle};
@@ -64,6 +67,7 @@ mod ww {
 	pub struct WindowWrapper<'a>(pub &'a Window);
 	impl<'a> HasWindowHandle for WindowWrapper<'a> {
 		fn window_handle(&self) -> Result<WindowHandle<'a>, HandleError> {
+			//Safety: Safe to draw to window from another thread on Windows.
 			unsafe {
 				self.0.window_handle_any_thread()
 			}
@@ -76,17 +80,16 @@ mod ww {
 	}
 }
 
-fn paint_setup(window: Arc<Window>, window_size: PhysicalSize<u32>, rx: mpsc::Receiver<()>) {
-	#[cfg(target_os = "windows")]
-	let window = ww::WindowWrapper(&window);
-	#[cfg(not(target_os = "windows"))]
-	let window = &*window;
-	let sb_ctx = softbuffer::Context::new(window).expect("sb surface");
-	let mut sb_surface = softbuffer::Surface::new(&sb_ctx, window).expect("sb surface");
+fn paint_setup(window: Arc<Window>, window_size: PhysicalSize<u32>, rx: Receiver<()>) {
 	if let (Some(w), Some(h)) = (NonZero::new(window_size.width), NonZero::new(window_size.height)) {
+		let window = &*window;
+		#[cfg(target_os = "windows")]
+		let window = ww::WindowWrapper(window);
+		let sb_ctx = softbuffer::Context::new(window).expect("sb surface");
+		let mut sb_surface = softbuffer::Surface::new(&sb_ctx, window).expect("sb surface");
 		sb_surface.resize(w, h).expect("sb resize");
 		let mut t = 0;
-		while let Err(mpsc::TryRecvError::Empty) = rx.try_recv() {
+		while let Err(TryRecvError::Empty) = rx.try_recv() {
 			let mut buffer = sb_surface.buffer_mut().expect("sb buffer_mut");
 			for i in 0..buffer.len() as u32 {
 				let pixel = (((i % w) + (i / w) + 100000000 - t) % 46 / 23) * 0x111111 + 0x222222;
@@ -94,15 +97,25 @@ fn paint_setup(window: Arc<Window>, window_size: PhysicalSize<u32>, rx: mpsc::Re
 			}
 			buffer.present().expect("sb present");
 			t += 1;
+			thread::sleep(Duration::from_millis(10));
 		}
 	} else {
 		rx.recv().expect("setup painter block recv");
 	}
 }
 
+fn draw_window<F: FnOnce(Ui)>(ctx: &egui::Context, title: &str, resizable: bool, contents: F) -> bool {
+	let mut open = true;
+	egui::Window::new(title).resizable(resizable).open(&mut open).show(ctx, contents);
+	open
+}
+
+fn file_name(path: &Path) -> Option<&str> {
+	path.file_name()?.to_str()
+}
+
 impl Core {
-	pub fn new(event_loop: &ActiveEventLoop, egui_ctx: egui::Context) -> Self {
-		//TODO: animated stripes while waiting for everything (softbuffer)
+	pub fn new(event_loop: &ActiveEventLoop) -> Self {
 		let window_icon = Icon::from_rgba(WINDOW_ICON_BYTES.to_vec(), 16, 16).expect("window icon");
 		let window_attributes = WindowAttributes::default()
 			.with_title(WINDOW_TITLE)
@@ -117,10 +130,10 @@ impl Core {
 		};
 		let window = event_loop.create_window(window_attributes).expect("create window");
 		let window = Arc::new(window);
-		let painter_window = window.clone();
 		let window_size = window.inner_size();
-		let (tx, rx) = mpsc::channel::<()>();
-		let setup_painter = thread::spawn(move || paint_setup(painter_window, window_size, rx));
+		let (setup_painter_tx, rx) = mpsc::channel();
+		let painter_window = window.clone();
+		let setup_painter = thread::spawn(move || paint_setup(painter_window, window_size, rx));//something to look at while wgpu gets setup
 		let instance = Instance::default();
 		let surface = instance.create_surface(window.clone()).expect("create surface");//2000ms
 		let req_adapter_options = RequestAdapterOptions {
@@ -145,19 +158,15 @@ impl Core {
 		let mut config = config_result.expect("get default config");
 		config.format = gfx::TEXTURE_FORMAT;
 		surface.configure(&device, &config);//250ms
+		let egui_ctx = egui::Context::default();
 		let viewport_id = egui_ctx.viewport_id();
 		let egui_input_state = egui_winit::State::new(egui_ctx, viewport_id, &window, None, None, None);
 		let egui_renderer = egui_wgpu::Renderer::new(&device, gfx::TEXTURE_FORMAT, None, 1, false);//don't know what `dithering` does here
 		let rr = RenderResources::new(&device);
 		let file_dialog = FileDialog::new();
 		let last_frame = Instant::now();
-		if let Err(e) = tx.send(()) {
-			eprintln!("Error notifying setup painter: {}", e);
-		}
-		if let Err(e) = setup_painter.join() {
-			//TODO: try to extract `Display` from e.
-			eprintln!("Error joining setup painter: {:?}", e);
-		}
+		setup_painter_tx.send(()).print_err("stop setup painter");
+		setup_painter.join().print_err_dbg("join setup painter");
 		window.request_redraw();
 		Self {
 			window,
@@ -178,15 +187,28 @@ impl Core {
 		}
 	}
 	
-	pub fn feed_egui(&mut self, event: &WindowEvent) -> bool {
-		self.egui_input_state.on_window_event(&self.window, event).consumed
+	pub fn try_load(&mut self, path: &Path) {
+		match LevelData::new(&self.device, &self.queue, &self.rr, path) {
+			Ok(level_data) => {
+				let loaded_level = LoadedLevel::new(
+					self.window_size,
+					&self.device,
+					&self.queue,
+					&self.rr,
+					level_data,
+				);
+				self.loaded_level = Some(loaded_level);
+				let title = match file_name(path) {
+					Some(name) => &format!("{} - {}", WINDOW_TITLE, name),
+					None => WINDOW_TITLE,
+				};
+				self.window.set_title(title);
+			},
+			Err(e) => self.error = Some(e.to_string()),
+		}
 	}
 	
-	pub fn modifiers(&mut self, modifiers: &Modifiers) {
-		self.modifiers = modifiers.state();
-	}
-	
-	pub fn resize(&mut self, window_size: PhysicalSize<u32>) {
+	fn resize(&mut self, window_size: PhysicalSize<u32>) {
 		self.draw = window_size.width > 0 && window_size.height > 0;
 		if self.draw {
 			self.window_size = window_size;
@@ -194,8 +216,12 @@ impl Core {
 			self.config.height = window_size.height;
 			self.surface.configure(&self.device, &self.config);
 			if let Some(loaded_level) = &mut self.loaded_level {
-				let perspective_transform_buffer = &self.rr.binding_buffers.perspective_transform_buffer;
-				loaded_level.resize(&self.device, &self.queue, perspective_transform_buffer, window_size);
+				loaded_level.resize(
+					&self.device,
+					&self.queue,
+					&self.rr.binding_buffers.perspective_transform_buffer,
+					window_size,
+				);
 			}
 		}
 	}
@@ -203,49 +229,30 @@ impl Core {
 	fn egui(&mut self, ctx: &egui::Context) {
 		self.file_dialog.update(ctx);
 		if let Some(path) = self.file_dialog.get_level_path() {
-			match LevelData::new(&self.device, &self.queue, &self.rr, &path) {
-				Ok(level_data) => {
-					let level = LoadedLevel::new(
-						self.window_size,
-						&self.device,
-						&self.queue,
-						&self.rr,
-						level_data,
-					);
-					let title = match file_name(&path) {
-						Some(name) => &format!("{} - {}", WINDOW_TITLE, name),
-						None => WINDOW_TITLE,
-					};
-					self.window.set_title(title);
-					self.loaded_level = Some(level);
-				},
-				Err(e) => self.error = Some(e.to_string()),
-			}
+			self.try_load(&path);
 		}
 		if let Some(error) = &self.error {
-			let mut show = true;
-			draw_window(ctx, "Error", false, &mut show, |ui| ui.label(error));
-			if !show {
+			if !draw_window(ctx, "Error", false, |ui| _ = ui.label(error)) {
 				self.error = None;
 			}
 		}
 		match &mut self.loaded_level {
- 			Some(loaded_level) => loaded_level.egui(ctx),
+ 			Some(loaded_level) => loaded_level.egui(&self.queue, &self.rr, ctx),
 			None => {
-				let cb = |ui: Ui| {
-					let cb = |ui: Ui| {
-						if ui.label("Ctrl+O or click to open file").clicked() {
-							self.file_dialog.pick_level_file();
-						}
-					};
-					ui.centered_and_justified(cb);
+				let open_button = |ui: Ui| {
+					if ui.label("Ctrl+O or click to open file").clicked() {
+						self.file_dialog.pick_level_file();
+					}
 				};
-				egui::panel::CentralPanel::default().show(ctx, cb);
+				let centered_open_button = |ui: Ui| {
+					ui.centered_and_justified(open_button);
+				};
+				egui::panel::CentralPanel::default().show(ctx, centered_open_button);
 			},
 		}
 	}
 	
-	fn draw(&mut self, egui_ctx: &egui::Context) {
+	fn draw(&mut self) {
 		let now = Instant::now();
 		let delta_time = now - self.last_frame;
 		self.last_frame = now;
@@ -256,6 +263,7 @@ impl Core {
 			loaded_level.render(&self.queue, &self.rr, &mut encoder, &view, delta_time);
 		}
 		let egui_input = self.egui_input_state.take_egui_input(&self.window);
+		let egui_ctx = self.egui_input_state.egui_ctx().clone();
 		let egui_output = egui_ctx.run(egui_input, |ctx| self.egui(ctx));
 		self.egui_input_state.handle_platform_output(&self.window, egui_output.platform_output);
 		for (id, delta) in &egui_output.textures_delta.set {
@@ -284,13 +292,17 @@ impl Core {
 		self.window.request_redraw();
 	}
 	
-	pub fn try_draw(&mut self, egui_ctx: &egui::Context) {
+	fn try_draw(&mut self) {
 		if self.draw {
-			self.draw(egui_ctx);
+			self.draw();
 		}
 	}
 	
-	pub fn key(
+	fn close(&mut self, event_loop: &ActiveEventLoop) {
+		event_loop.exit();
+	}
+	
+	fn key(
 		&mut self,
 		event_loop: &ActiveEventLoop,
 		key_code: KeyCode,
@@ -300,7 +312,7 @@ impl Core {
 		match (self.modifiers, state, key_code, repeat) {
 			(_, ElementState::Pressed, KeyCode::Escape, _) => {
 				if self.file_dialog.is_closed() {
-					event_loop.exit();
+					self.close(event_loop);
 				}
 			},
 			(ModifiersState::CONTROL, ElementState::Pressed, KeyCode::KeyO, false) => {
@@ -308,7 +320,7 @@ impl Core {
 				if let Some(loaded_level) = &mut self.loaded_level {
 					loaded_level.set_mouse_control(&self.window, false);
 				}
-			}
+			},
 			_ => {},
 		}
 		if let Some(loaded_level) = &mut self.loaded_level {
@@ -316,21 +328,47 @@ impl Core {
 		}
 	}
 	
-	pub fn mouse_button(&mut self, state: ElementState, button: MouseButton) {
+	fn mouse_button(&mut self, state: ElementState, button: MouseButton) {
 		if let Some(loaded_level) = &mut self.loaded_level {
 			loaded_level.mouse_button(&self.window, &self.file_dialog, state, button);
 		}
 	}
 	
-	pub fn cursor_moved(&mut self, pos: PhysicalPosition<f64>) {
+	fn cursor_moved(&mut self, pos: PhysicalPosition<f64>) {
 		if let Some(loaded_level) = &mut self.loaded_level {
 			loaded_level.cursor_moved(&self.window, pos);
 		}
 	}
 	
-	pub fn mouse_motion(&mut self, x: f32, y: f32) {
+	fn mouse_motion(&mut self, x: f32, y: f32) {
 		if let Some(loaded_level) = &mut self.loaded_level {
 			loaded_level.mouse_motion(x, y);
+		}
+	}
+	
+	fn window_event_not_egui(&mut self, event_loop: &ActiveEventLoop, event: &WindowEvent) {
+		match event {
+			WindowEvent::ModifiersChanged(modifiers) => self.modifiers = modifiers.state(),
+			&WindowEvent::Resized(window_size) => self.resize(window_size),
+			WindowEvent::RedrawRequested => self.try_draw(),
+			&key!(key_code, state, repeat) => self.key(event_loop, key_code, state, repeat),
+			&WindowEvent::MouseInput { state, button, .. } => self.mouse_button(state, button),
+			&WindowEvent::CursorMoved { position, .. } => self.cursor_moved(position),
+			WindowEvent::CloseRequested => self.close(event_loop),
+			_ => {},
+		}
+	}
+	
+	pub fn window_event(&mut self, event_loop: &ActiveEventLoop, event: &WindowEvent) {
+		if !self.egui_input_state.on_window_event(&self.window, event).consumed {
+			self.window_event_not_egui(event_loop, event);
+		}
+	}
+	
+	pub fn device_event(&mut self, event: &DeviceEvent) {
+		match event {
+			&DeviceEvent::MouseMotion { delta: (x, y) } => self.mouse_motion(x as f32, y as f32),
+			_ => {},
 		}
 	}
 }

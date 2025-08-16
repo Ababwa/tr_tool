@@ -25,7 +25,7 @@ fn read_last_path() -> Option<PathBuf> {
 		Ok(state_str) => state_str,
 		Err(e) => {
 			if e.kind() != io::ErrorKind::NotFound {
-				eprintln!("Failed to read file dialog state: {}", e);
+				eprintln!("failed to read file dialog state: {}", e);
 			}
 			return None;
 		},
@@ -33,7 +33,7 @@ fn read_last_path() -> Option<PathBuf> {
 	let path = match PathBuf::from_str(&state_str) {
 		Ok(path) => path,
 		Err(e) => {
-			eprintln!("File dialog state not a path: {}", e);
+			eprintln!("file dialog state not a path: {}", e);
 			return None;
 		},
 	};
@@ -52,16 +52,17 @@ impl FileDialog {
 	}
 	
 	pub fn pick_level_file(&mut self) {
-		assert!(self.is_closed());
-		ensure_exists(&mut self.file_dialog.config_mut().initial_directory);
-		self.file_dialog.pick_file();
+		if self.is_closed() {
+			ensure_exists(&mut self.file_dialog.config_mut().initial_directory);
+			self.file_dialog.pick_file();
+		}
 	}
 	
 	pub fn get_level_path(&mut self) -> Option<PathBuf> {
 		let path = self.file_dialog.take_picked();
 		if let Some(path) = &path {
 			if let Err(e) = fs::write(STATE_PATH, path.as_os_str().as_encoded_bytes()) {
-				eprintln!("Failed to write file dialog state: {}", e);
+				eprintln!("failed to write file dialog state: {}", e);
 			}
 		}
 		path

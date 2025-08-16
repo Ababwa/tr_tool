@@ -36,6 +36,11 @@ pub struct MeshOffsets {
 	pub solid_tris: Range<u32>,
 }
 
+pub struct FlipState {
+	pub original: bool,
+	pub other_index: usize,
+}
+
 //TODO: Collapse layers, static meshes, and entity meshes.
 pub struct RoomRenderData {
 	pub layers: Box<[LayerOffsets]>,
@@ -45,7 +50,7 @@ pub struct RoomRenderData {
 	pub entity_sprites: Range<u32>,
 	pub center: Vec3,
 	pub radius: f32,
-	pub flip_room_index: u16,
+	pub flip_state: Option<FlipState>,
 }
 
 pub struct BindGroups {
@@ -53,7 +58,7 @@ pub struct BindGroups {
 	pub texture_16bit_bg: Option<BindGroup>,
 	pub texture_32bit_bg: Option<BindGroup>,
 	pub solid_32bit_bg: Option<BindGroup>,
-	pub misc_images_bg: Option<(BindGroup, usize)>,
+	pub misc_images_bg: Option<(BindGroup, u32)>,
 }
 
 /// All that must be extracted from the level file via the `tr_traits::Level` interface.
@@ -126,11 +131,11 @@ fn get_model_transforms<L: Level>(level: &L, model: &L::Model) -> Vec<Mat4> {
 	let mesh_nodes = level.get_mesh_nodes(model);
 	let mut parent_stack = Vec::with_capacity(mesh_nodes.len());
 	for mesh_node in mesh_nodes {
-		let rotation = rotations.next().unwrap();
+		let rotation = rotations.next().expect("model has insufficient rotations");
 		let delta = Mat4::from_translation(mesh_node.offset.as_vec3()) * rotation;
 		let parent = match (mesh_node.flags.pop(), mesh_node.flags.push()) {
-			(true, true) => *parent_stack.last().unwrap(),
-			(true, false) => parent_stack.pop().unwrap(),
+			(true, true) => *parent_stack.last().expect("transform stack empty on peek"),
+			(true, false) => parent_stack.pop().expect("transform stack empty on pop"),
 			(false, true) => {
 				parent_stack.push(last_transform);
 				last_transform
@@ -448,7 +453,7 @@ fn write_room<L: Level>(
 		entity_sprites,
 		center,
 		radius,
-		flip_room_index: room.flip_room_index(),
+		flip_state: None,
 	}
 }
 
@@ -466,36 +471,36 @@ fn bind_groups<L: Level>(device: &Device, queue: &Queue, rr: &RenderResources, l
 		let palette_entry = entry(PALETTE_ENTRY, BindingResource::TextureView(&palette_view));
 		let atlases_entry = entry(ATLASES_ENTRY, BindingResource::TextureView(&atlases_view));
 		let entries = common_entries.with_both(palette_entry, atlases_entry);
-		let bind_group = gfx::bind_group("palette bg", device, &bgls.palette_bgl, entries);
+		let bind_group = gfx::bind_group(device, &bgls.palette_bgl, entries);
 		palette_bg = Some(bind_group);
 	}
 	if let Some(palette) = level.palette_32bit() {
 		let palette_view = gfx::palette_view(device, queue, palette);
 		let palette_entry = entry(PALETTE_ENTRY, BindingResource::TextureView(&palette_view));
 		let entries = common_entries.with(palette_entry);
-		let bind_group = gfx::bind_group("32 bit solid bg", device, &bgls.solid_bgl, entries);
+		let bind_group = gfx::bind_group(device, &bgls.solid_32bit_bgl, entries);
 		solid_32bit_bg = Some(bind_group);
 	}
 	if let Some(atlases) = level.atlases_16bit() {
 		let atlases_view = gfx::atlases_view(device, queue, atlases, TextureFormat::R16Uint);
 		let atlases_entry = entry(ATLASES_ENTRY, BindingResource::TextureView(&atlases_view));
 		let entries = common_entries.with(atlases_entry);
-		let bind_group = gfx::bind_group("16 bit texture bg", device, &bgls.texture_bgl, entries);
+		let bind_group = gfx::bind_group(device, &bgls.texture_bgl, entries);
 		texture_16bit_bg = Some(bind_group);
 	}
 	if let Some(atlases) = level.atlases_32bit() {
 		let atlases_view = gfx::atlases_view(device, queue, atlases, TextureFormat::R32Uint);
 		let atlases_entry = entry(ATLASES_ENTRY, BindingResource::TextureView(&atlases_view));
 		let entries = common_entries.with(atlases_entry);
-		let bind_group = gfx::bind_group("32 bit texture bg", device, &bgls.texture_bgl, entries);
+		let bind_group = gfx::bind_group(device, &bgls.texture_bgl, entries);
 		texture_32bit_bg = Some(bind_group);
 	}
 	if let Some(misc_images) = level.misc_images() {
 		let atlases_view = gfx::atlases_view(device, queue, misc_images, TextureFormat::R32Uint);
 		let atlases_entry = entry(ATLASES_ENTRY, BindingResource::TextureView(&atlases_view));
 		let entries = common_entries.with(atlases_entry);
-		let bind_group = gfx::bind_group("misc images bg", device, &bgls.texture_bgl, entries);
-		misc_images_bg = Some((bind_group, misc_images.len()));
+		let bind_group = gfx::bind_group(device, &bgls.texture_bgl, entries);
+		misc_images_bg = Some((bind_group, misc_images.len() as u32));
 	}
 	BindGroups {
 		palette_bg,
@@ -510,7 +515,6 @@ fn parse_level<L: Level>(device: &Device, queue: &Queue, rr: &RenderResources, l
 	let bind_groups = bind_groups(device, queue, rr, &level);
 	let static_mesh_map = maps::get_static_mesh_map(level.static_meshes());
 	let entities_by_room = maps::get_entities_by_room(&level);
-	let (static_room_indices, flip_groups) = maps::get_flip_groups(level.rooms());
 	let counts = Counts::new(&level, &static_mesh_map, &entities_by_room);
 	let mut geom_writer = GeomWriter::new(level.object_textures(), level.sprite_textures(), &counts);
 	let mut instance_writer = InstanceWriter::new(&counts);
@@ -533,6 +537,8 @@ fn parse_level<L: Level>(device: &Device, queue: &Queue, rr: &RenderResources, l
 		);
 		room_render_data.push(rrd);
 	}
+	let mut room_render_data = room_render_data.into_boxed_slice();
+	let (static_room_indices, flip_groups) = maps::get_flip_groups(level.rooms(), &mut room_render_data);
 	let Instances { face_instances, sprite_instances, object_data } = instance_writer.done();
 	let face_instance_buffer = gfx::buffer_init(
 		device,
@@ -549,7 +555,7 @@ fn parse_level<L: Level>(device: &Device, queue: &Queue, rr: &RenderResources, l
 		face_instance_buffer,
 		sprite_instance_buffer,
 		object_data,
-		room_render_data: room_render_data.into_boxed_slice(),
+		room_render_data,
 		static_room_indices,
 		flip_groups,
 		bind_groups,

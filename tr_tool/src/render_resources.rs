@@ -29,7 +29,7 @@ pub struct BufferEntries<'a>([BindGroupEntry<'a>; 8]);
 pub struct BindGroupLayouts {
 	pub palette_bgl: BindGroupLayout,
 	pub texture_bgl: BindGroupLayout,
-	pub solid_bgl: BindGroupLayout,
+	pub solid_32bit_bgl: BindGroupLayout,
 }
 
 pub struct RenderResources {
@@ -55,9 +55,9 @@ pub struct GeomOffsets {
 }
 
 #[repr(C)]
-struct Viewport {
-	clip: [i32; 4],
-	view: [i32; 4],
+pub struct Viewport {
+	pub clip: [i32; 4],
+	pub view: [i32; 4],
 }
 
 struct PipelineArgs {
@@ -238,9 +238,9 @@ impl<'a> PipelineMaker<'a> {
 impl RenderResources {
 	pub fn new(device: &Device) -> Self {
 		let shader = gfx::shader(device, include_str!("shader/mesh.wgsl"));
-		let palette_bgl = gfx::bind_group_layout("palette bgl", device, &ENTRIES);
-		let texture_bgl = gfx::bind_group_layout("texture bgl", device, &ENTRIES[1..]);
-		let solid_bgl = gfx::bind_group_layout("solid bgl", device, &ENTRIES[..7]);
+		let palette_bgl = gfx::bind_group_layout(device, &ENTRIES);
+		let texture_bgl = gfx::bind_group_layout(device, &ENTRIES[1..]);
+		let solid_32bit_bgl = gfx::bind_group_layout(device, &ENTRIES[..7]);
 		let pm = PipelineMaker {
 			device,
 			shader: &shader,
@@ -249,7 +249,7 @@ impl RenderResources {
 		let texture_16bit_plg = pm.group("texture_16bit_fs_main", "flat_16bit_fs_main", &texture_bgl);
 		let texture_32bit_plg = pm.group("texture_32bit_fs_main", "flat_32bit_fs_main", &texture_bgl);
 		let solid_24bit_pl = pm.make("solid_24bit_vs_main", "solid_24bit_fs_main", &palette_bgl, OPAQUE_ARGS);
-		let solid_32bit_pl = pm.make("solid_32bit_vs_main", "solid_32bit_fs_main", &solid_bgl, OPAQUE_ARGS);
+		let solid_32bit_pl = pm.make("solid_32bit_vs_main", "solid_32bit_fs_main", &solid_32bit_bgl, OPAQUE_ARGS);
 		let face_vertex_indices_buffer = gfx::buffer_init(device, FACE_VERTEX_INDICES.as_bytes(), VERTEX);
 		let reverse_indices_buffer = gfx::buffer_init(device, REVERSE_INDICES.as_bytes(), INDEX);
 		let geom_buffer = gfx::buffer(device, GEOM_BUFFER_SIZE, STORAGE);
@@ -261,7 +261,7 @@ impl RenderResources {
 		let bind_group_layouts = BindGroupLayouts {
 			palette_bgl,
 			texture_bgl,
-			solid_bgl,
+			solid_32bit_bgl,
 		};
 		let binding_buffers = BindingBuffers {
 			geom_buffer,

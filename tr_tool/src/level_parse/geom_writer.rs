@@ -1,7 +1,7 @@
 use std::ptr;
 use glam::Mat4;
 use tr_model::tr1;
-use crate::{level::counts::Counts, round_up, tr_traits::Face, GEOM_BUFFER_SIZE};
+use crate::{level_parse::counts::Counts, round_up, tr_traits::Face, GEOM_BUFFER_SIZE};
 
 pub const VERTEX_ARRAY_HEADER_SIZE: usize = 4;
 pub const FACE_ARRAY_HEADER_SIZE: usize = 8;

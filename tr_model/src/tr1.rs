@@ -432,7 +432,7 @@ pub struct MeshNode {
 }
 
 impl MeshNode {
-	pub(crate) fn get(mesh_node_data: &[u32], mesh_node_offset: u32, num_meshes: u16) -> &[MeshNode] {
+	pub(crate) fn get(mesh_node_data: &[u32], mesh_node_offset: u32, num_meshes: u16) -> &[Self] {
 		let offset = mesh_node_offset as usize;
 		let len = num_meshes as usize - 1;
 		let size = len * (size_of::<Self>() / size_of::<u32>());

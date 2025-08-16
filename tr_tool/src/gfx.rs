@@ -106,9 +106,9 @@ pub const fn bind_group_layout_entry(
 	}
 }
 
-pub fn bind_group_layout(name: &str, device: &Device, entries: &[BindGroupLayoutEntry]) -> BindGroupLayout {
+pub fn bind_group_layout(device: &Device, entries: &[BindGroupLayoutEntry]) -> BindGroupLayout {
 	let desc = BindGroupLayoutDescriptor {
-		label: Some(name),
+		label: None,
 		entries,
 	};
 	device.create_bind_group_layout(&desc)
@@ -343,9 +343,9 @@ pub fn bind_group_entry(binding: u32, resource: BindingResource) -> BindGroupEnt
 	}
 }
 
-pub fn bind_group(name: &str, device: &Device, layout: &BindGroupLayout, entries: &[BindGroupEntry]) -> BindGroup {
+pub fn bind_group(device: &Device, layout: &BindGroupLayout, entries: &[BindGroupEntry]) -> BindGroup {
 	let desc = BindGroupDescriptor {
-		label: Some(name),
+		label: None,
 		layout,
 		entries,
 	};
