@@ -3,10 +3,7 @@ mod geom_writer;
 mod instance_writer;
 mod maps;
 
-use std::{
-	collections::{hash_map::Entry, HashMap}, f32::consts::TAU, fs::File, io::{self, BufReader, Read, Seek},
-	ops::Range, path::Path,
-};
+use std::{collections::{hash_map::Entry, HashMap}, f32::consts::TAU, io::{self, Read, Seek}, ops::Range};
 use glam::{IVec3, Mat4, Vec3};
 use tr_model::{tr1, tr2, tr3, tr4, tr5};
 use wgpu::{BindGroup, BindingResource, Buffer, BufferUsages, Device, Queue, TextureFormat};
@@ -16,7 +13,7 @@ use crate::{
 	render_resources::{RenderResources, ATLASES_ENTRY, PALETTE_ENTRY},
 	tr_traits::{
 		Entity, Frame, Layer, Level, LevelStore, Mesh, Model, ObjectTexture, Room, RoomStaticMesh,
-		RoomVertex, RoomVertexPos,
+		RoomVertex, RoomVertexPos, Version,
 	},
 };
 use counts::Counts;
@@ -83,38 +80,6 @@ struct WrittenMesh {
 	textured_tris: FaceArrayIndex,
 	solid_quads: FaceArrayIndex,
 	solid_tris: FaceArrayIndex,
-}
-
-enum Version {
-	Tr1,
-	Tr2,
-	Tr3,
-	Tr4,
-	Tr5,
-}
-
-const EXT_LEN: usize = 3;
-
-fn get_version(path: &Path, version_bytes: [u8; 4]) -> Option<Version> {
-	let extension = path.extension()?;
-	let extension = extension.as_encoded_bytes();
-	if extension.len() != EXT_LEN {
-		return None;
-	}
-	let mut ext_lower = [0u8; EXT_LEN];
-	ext_lower.copy_from_slice(extension);
-	ext_lower.make_ascii_lowercase();
-	let version_num = u32::from_le_bytes(version_bytes);
-	println!("version: {}", version_num);
-	let version = match (version_num, &ext_lower) {
-		(0x00000020, b"phd") => Version::Tr1,
-		(0x0000002D, b"tr2") => Version::Tr2,
-		(0xFF180038 | 0xFF080038 | 0xFF180034, b"tr2") => Version::Tr3,//most, title.tr2, vict.tr2
-		(0x00345254, b"tr4") => Version::Tr4,
-		(0x00345254, b"trc") => Version::Tr5,
-		_ => return None,
-	};
-	Some(version)
 }
 
 fn make_transform(angle: u16, pos: IVec3) -> Mat4 {
@@ -565,11 +530,11 @@ fn parse_level<L: Level>(device: &Device, queue: &Queue, rr: &RenderResources, l
 	}
 }
 
-fn read_level<L: Level>(
+fn read_level<R: Read + Seek, L: Level>(
 	device: &Device,
 	queue: &Queue,
 	rr: &RenderResources,
-	reader: &mut BufReader<File>,
+	reader: &mut R,
 ) -> io::Result<LevelData> {
 	let level = L::read(reader)?;
 	let level_data = parse_level(device, queue, rr, level);
@@ -577,22 +542,19 @@ fn read_level<L: Level>(
 }
 
 impl LevelData {
-	pub fn new(device: &Device, queue: &Queue, rr: &RenderResources, path: &Path) -> io::Result<Self> {
-		let file = File::open(path)?;
-		let mut reader = BufReader::new(file);
-		let mut version_bytes = [0; 4];
-		reader.read_exact(&mut version_bytes)?;
-		reader.rewind()?;
-		let version = match get_version(path, version_bytes) {
-			Some(version) => version,
-			None => return Err(io::Error::other("Could not determine TR version.")),//TODO: prompt user
-		};
+	pub fn load<R: Read + Seek>(
+		device: &Device,
+		queue: &Queue,
+		rr: &RenderResources,
+		reader: &mut R,
+		version: Version,
+	) -> io::Result<Self> {
 		match version {
-			Version::Tr1 => read_level::<tr1::Level>(device, queue, rr, &mut reader),
-			Version::Tr2 => read_level::<tr2::Level>(device, queue, rr, &mut reader),
-			Version::Tr3 => read_level::<tr3::Level>(device, queue, rr, &mut reader),
-			Version::Tr4 => read_level::<tr4::Level>(device, queue, rr, &mut reader),
-			Version::Tr5 => read_level::<tr5::Level>(device, queue, rr, &mut reader),
+			Version::Tr1 => read_level::<R, tr1::Level>(device, queue, rr, reader),
+			Version::Tr2 => read_level::<R, tr2::Level>(device, queue, rr, reader),
+			Version::Tr3 => read_level::<R, tr3::Level>(device, queue, rr, reader),
+			Version::Tr4 => read_level::<R, tr4::Level>(device, queue, rr, reader),
+			Version::Tr5 => read_level::<R, tr5::Level>(device, queue, rr, reader),
 		}
 	}
 }

@@ -9,6 +9,14 @@ const MULTI_ANGLE_DIVISOR: f32 = 1024.0;
 type Atlas16Bit = [tr2::Color16BitArgb; tr1::ATLAS_PIXELS];
 type Atlas32Bit = [tr4::Color32BitBgra; tr1::ATLAS_PIXELS];
 
+pub enum Version {
+	Tr1,
+	Tr2,
+	Tr3,
+	Tr4,
+	Tr5,
+}
+
 pub enum LevelStore {
 	Tr1(tr1::Level),
 	Tr2(tr2::Level),

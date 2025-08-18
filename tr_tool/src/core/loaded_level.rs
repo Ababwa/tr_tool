@@ -1,6 +1,6 @@
-use std::{f32::consts::{FRAC_PI_2, FRAC_PI_4, PI}, ops::Range, time::Duration};
+use std::{f32::consts::{FRAC_PI_2, FRAC_PI_4, PI}, ops::Range};
 use glam::{EulerRot, Mat4, Vec3};
-use tr_model::tr1;
+use tr_model::{tr1, tr2, tr4};
 use wgpu::{
 	BindGroup, Buffer, CommandEncoder, Device, IndexFormat, Queue, RenderPass, RenderPipeline, Texture,
 	TextureView, TextureViewDescriptor,
@@ -13,8 +13,9 @@ use crate::{
 	as_bytes::AsBytes, boxed_slice::Bsf, gfx,
 	level_parse::{BindGroups, LayerOffsets, LevelData, MeshOffsets, RoomRenderData},
 	render_resources::{BindingBuffers, GeomOffsets, PipelineGroup, RenderResources, Viewport},
+	tr_traits::{Level, LevelStore},
 };
-use super::{draw_window, file_dialog::FileDialog, keys::KeyStates, Ui};
+use super::{draw_window, FileDialog, keys::KeyStates, Ui};
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum TextureModeTag {
@@ -87,9 +88,25 @@ pub struct LoadedLevel {
 	show_entity_sprites: bool,
 	show_render_options: bool,
 	show_textures_window: bool,
-	key_states: KeyStates,
 	mouse_pos: PhysicalPosition<f64>,
 	level_data: LevelData,
+}
+
+trait RangeGetter<T> {
+	fn quads(offsets: &T) -> Range<u32>;
+	fn tris(offsets: &T) -> Range<u32>;
+}
+
+struct Solid;
+struct Opaque;
+struct Additive;
+
+#[repr(C)]
+struct Rgba {
+	r: u8,
+	g: u8,
+	b: u8,
+	a: u8,
 }
 
 struct TextureCallback {
@@ -152,6 +169,23 @@ const DOWN_VEC: Vec3 = Vec3::Y;
 const UP_VEC: Vec3 = Vec3::NEG_Y;
 
 const ALL: &'static str = "All";
+
+macro_rules! range_getter {
+	($type:ty, $name:ty, $quads:ident, $tris:ident, $get:ident) => {
+		impl RangeGetter<$type> for $name {
+			fn quads(offsets: &$type) -> Range<u32> { offsets.$quads.$get() }
+			fn tris(offsets: &$type) -> Range<u32> { offsets.$tris.$get() }
+		}
+	};
+}
+
+range_getter!(MeshOffsets, Solid, solid_quads, solid_tris, clone);
+range_getter!(MeshOffsets, Opaque, textured_quads, textured_tris, opaque);
+range_getter!(MeshOffsets, Additive, textured_quads, textured_tris, additive);
+range_getter!(LayerOffsets, Opaque, quads, tris, opaque_obverse);
+range_getter!(LayerOffsets, [Opaque], quads, tris, opaque_reverse);
+range_getter!(LayerOffsets, Additive, quads, tris, additive_obverse);
+range_getter!(LayerOffsets, [Additive], quads, tris, additive_reverse);
 
 impl TextureModeTag {
 	fn label(self) -> &'static str {
@@ -263,32 +297,6 @@ fn lock_cursor(window: &Window) {
 	let Err(e2) = window.set_cursor_grab(CursorGrabMode::Locked) else { return; };
 	panic!("cursor grab: ({}, {})", e1, e2);
 }
-
-trait RangeGetter<T> {
-	fn quads(offsets: &T) -> Range<u32>;
-	fn tris(offsets: &T) -> Range<u32>;
-}
-
-macro_rules! range_getter {
-	($type:ty, $name:ty, $quads:ident, $tris:ident, $get:ident) => {
-		impl RangeGetter<$type> for $name {
-			fn quads(offsets: &$type) -> Range<u32> { offsets.$quads.$get() }
-			fn tris(offsets: &$type) -> Range<u32> { offsets.$tris.$get() }
-		}
-	};
-}
-
-struct Solid;
-struct Opaque;
-struct Additive;
-
-range_getter!(MeshOffsets, Solid, solid_quads, solid_tris, clone);
-range_getter!(MeshOffsets, Opaque, textured_quads, textured_tris, opaque);
-range_getter!(MeshOffsets, Additive, textured_quads, textured_tris, additive);
-range_getter!(LayerOffsets, Opaque, quads, tris, opaque_obverse);
-range_getter!(LayerOffsets, [Opaque], quads, tris, opaque_reverse);
-range_getter!(LayerOffsets, Additive, quads, tris, additive_obverse);
-range_getter!(LayerOffsets, [Additive], quads, tris, additive_reverse);
 
 fn draw_mesh<R: RangeGetter<MeshOffsets>>(pass: &mut RenderPass, mesh: &MeshOffsets) {
 	pass.draw(0..NUM_QUAD_VERTICES, R::quads(mesh));
@@ -448,6 +456,86 @@ fn texture_tabs_ui(ui: Ui, texture_tab: &mut TextureTab, bgs: &BindGroups, rr: &
 	}
 }
 
+fn palette_to_rgba(
+	palette: &[tr1::Color24Bit; tr1::PALETTE_LEN],
+	atlases: &[[u8; tr1::ATLAS_PIXELS]],
+) -> Box<[Rgba]> {
+	let mut pixels = Bsf::new(atlases.len() * tr1::ATLAS_PIXELS);
+	for atlas in atlases {
+		for &color_index in atlas {
+			let tr1::Color24Bit { r, g, b } = palette[color_index as usize];
+			let pixel = Rgba {
+				r: r << 2,
+				g: g << 2,
+				b: b << 2,
+				a: (color_index > 0) as u8 * 255,
+			};
+			pixels.push(pixel);
+		}
+	}
+	pixels.into_boxed_slice()
+}
+
+fn bit16_to_rgba(atlases: &[[tr2::Color16BitArgb; tr1::ATLAS_PIXELS]]) -> Box<[Rgba]> {
+	let mut pixels = Bsf::new(atlases.len() * tr1::ATLAS_PIXELS);
+	for atlas in atlases {
+		for &color in atlas {
+			let pixel = Rgba {
+				r: color.r() << 3,
+				g: color.g() << 3,
+				b: color.b() << 3,
+				a: color.a() as u8 * 255,
+			};
+			pixels.push(pixel);
+		}
+	}
+	pixels.into_boxed_slice()
+}
+
+fn bit32_to_rgba(atlases: &[[tr4::Color32BitBgra; tr1::ATLAS_PIXELS]]) -> Box<[Rgba]> {
+	let mut pixels = Bsf::new(atlases.len() * tr1::ATLAS_PIXELS);
+	for atlas in atlases {
+		for &color in atlas {
+			let tr4::Color32BitBgra { b, g, r, a } = color;
+			let pixel = Rgba { r, g, b, a };
+			pixels.push(pixel);
+		}
+	}
+	pixels.into_boxed_slice()
+}
+
+fn get_rgba<L: Level>(level: &L, texture: TextureTabTag) -> Box<[Rgba]> {
+	match texture {
+		TextureTabTag::Palette => {
+			let palette = level.palette_24bit().unwrap();
+			let atlases = level.atlases_palette().unwrap();
+			palette_to_rgba(palette, atlases)
+		},
+		TextureTabTag::Bit16 => {
+			let atlases = level.atlases_16bit().unwrap();
+			bit16_to_rgba(atlases)
+		},
+		TextureTabTag::Bit32 => {
+			let atlases = level.atlases_32bit().unwrap();
+			bit32_to_rgba(atlases)
+		},
+		TextureTabTag::Misc => {
+			let images = level.misc_images().unwrap();
+			bit32_to_rgba(images)
+		},
+	}
+}
+
+fn get_rgba_dispatch(level: &LevelStore, texture: TextureTabTag) -> Box<[Rgba]> {
+	match level {
+		LevelStore::Tr1(level) => get_rgba(level, texture),
+		LevelStore::Tr2(level) => get_rgba(level, texture),
+		LevelStore::Tr3(level) => get_rgba(level, texture),
+		LevelStore::Tr4(level) => get_rgba(level, texture),
+		LevelStore::Tr5(level) => get_rgba(level, texture),
+	}
+}
+
 impl LoadedLevel {
 	pub fn new(
 		window_size: PhysicalSize<u32>,
@@ -502,7 +590,6 @@ impl LoadedLevel {
 			show_entity_sprites: true,
 			show_render_options: true,
 			show_textures_window: true,
-			key_states: KeyStates::new(),
 			mouse_pos: PhysicalPosition::default(),
 			level_data,
 		}
@@ -522,22 +609,24 @@ impl LoadedLevel {
 		queue.write_buffer(perspective_transform_buffer, 0, perspective_transform.as_bytes());
 	}
 	
-	fn toggle(&self, key_codes: &[KeyCode]) -> f32 {
-		self.key_states.any(key_codes) as u8 as f32
-	}
-	
-	fn frame_update(&mut self, queue: &Queue, camera_transform_buffer: &Buffer, delta_time: Duration) {
+	fn frame_update(
+		&mut self,
+		queue: &Queue,
+		camera_transform_buffer: &Buffer,
+		key_states: &KeyStates,
+		delta_time: f32,
+	) {
 		let delta =
-			self.toggle(&FORWARD_KEYS) * FORWARD_VEC +
-			self.toggle(&BACKWARD_KEYS) * BACKWARD_VEC +
-			self.toggle(&LEFT_KEYS) * LEFT_VEC +
-			self.toggle(&RIGHT_KEYS) * RIGHT_VEC +
-			self.toggle(&DOWN_KEYS) * DOWN_VEC +
-			self.toggle(&UP_KEYS) * UP_VEC;
+			key_states.any(&FORWARD_KEYS) as u8 as f32 * FORWARD_VEC +
+			key_states.any(&BACKWARD_KEYS) as u8 as f32 * BACKWARD_VEC +
+			key_states.any(&LEFT_KEYS) as u8 as f32 * LEFT_VEC +
+			key_states.any(&RIGHT_KEYS) as u8 as f32 * RIGHT_VEC +
+			key_states.any(&DOWN_KEYS) as u8 as f32 * DOWN_VEC +
+			key_states.any(&UP_KEYS) as u8 as f32 * UP_VEC;
 		let factor =
 			5000.0 *
-			5f32.powf(self.toggle(&FAST_KEYS) - self.toggle(&SLOW_KEYS)) *
-			delta_time.as_secs_f32();
+			5f32.powi(key_states.any(&FAST_KEYS) as i32 - key_states.any(&SLOW_KEYS) as i32) *
+			delta_time;
 		self.camera.pos += factor * Mat4::from_rotation_y(self.camera.yaw).transform_point3(delta);
 		let camera_transform = make_camera_transform(&self.camera);
 		queue.write_buffer(camera_transform_buffer, 0, camera_transform.as_bytes());
@@ -581,7 +670,7 @@ impl LoadedLevel {
 		}
 	}
 	
-	fn egui_render_modes(&mut self, ui: Ui, rr: &RenderResources) {
+	fn egui_render_modes(&mut self, rr: &RenderResources, ui: Ui) {
 		let bgs = &self.level_data.bind_groups;
 		let available_texture_modes =
 			bgs.texture_32bit_bg.is_some() as u8 +
@@ -605,8 +694,8 @@ impl LoadedLevel {
 		}
 	}
 	
-	fn render_options_ui(&mut self, ui: Ui, rr: &RenderResources) {
-		self.egui_render_modes(ui, rr);
+	fn render_options_ui(&mut self, rr: &RenderResources, ui: Ui) {
+		self.egui_render_modes(rr, ui);
 		self.rooms_ui(ui);
 		match self.room_index {
 			None => self.flip_groups_ui(ui),
@@ -622,23 +711,12 @@ impl LoadedLevel {
 		}
 	}
 	
-	fn textures_ui(&mut self, ui: Ui, queue: &Queue, rr: &RenderResources) {
-		let bgs = &self.level_data.bind_groups;
-		let available_textures =
-			bgs.texture_32bit_bg.is_some() as u8 +
-			bgs.texture_16bit_bg.is_some() as u8 +
-			bgs.palette_bg.is_some() as u8 +
-			bgs.misc_images_bg.is_some() as u8;
-		if available_textures == 1 {
-			ui.label(self.texture_tab.tag.label());
-		} else {
-			let tabs = |ui: Ui| {
-				texture_tabs_ui(ui, &mut self.texture_tab, bgs, rr, self.level_data.num_atlases);
-			};
-			ui.horizontal(tabs);
-		}
+	fn textures_ui(&mut self, queue: &Queue, rr: &RenderResources, file_dialog: &mut FileDialog, ui: Ui) {
+		let b = &self.level_data.bind_groups;
+		let tabs = |ui: Ui| texture_tabs_ui(ui, &mut self.texture_tab, b, rr, self.level_data.num_atlases);
+		ui.horizontal(tabs);
 		if ui.button("Save").clicked() {
-			println!("Save texture");//TODO: save texture
+			file_dialog.save_texture();
 		}
 		ui.add_space(2.0);
 		let texture = |ui: Ui| {
@@ -661,13 +739,35 @@ impl LoadedLevel {
 		queue.write_buffer(&rr.binding_buffers.scroll_offset_buffer, 0, scroll_offset.as_bytes());
 	}
 	
-	pub fn egui(&mut self, queue: &Queue, rr: &RenderResources, ctx: &egui::Context) {
+	pub fn egui(
+		&mut self,
+		queue: &Queue,
+		rr: &RenderResources,
+		ctx: &egui::Context,
+		file_dialog: &mut FileDialog,
+		error: &mut Option<String>,
+	) {
+		if let Some(path) = file_dialog.get_texture_path() {
+			let rgba = get_rgba_dispatch(&self.level_data.level, self.texture_tab.tag);
+			let height = (rgba.len() / tr1::ATLAS_SIDE_LEN) as u32;
+			let img_result = image::save_buffer_with_format(
+				path,
+				rgba[..].as_bytes(),
+				tr1::ATLAS_SIDE_LEN as u32,
+				height,
+				image::ColorType::Rgba8,
+				image::ImageFormat::Png,
+			);
+			if let Err(e) = img_result {
+				*error = Some(e.to_string());
+			}
+		}
 		if self.show_render_options {
-			let render_options = |ui: Ui| self.render_options_ui(ui, rr);
+			let render_options = |ui: Ui| self.render_options_ui(rr, ui);
 			self.show_render_options = draw_window(ctx, "Render Options", false, render_options);
 		}
 		if self.show_textures_window {
-			let textures_window = |ui: Ui| self.textures_ui(ui, queue, rr);
+			let textures_window = |ui: Ui| self.textures_ui(queue, rr, file_dialog, ui);
 			self.show_textures_window = draw_window(ctx, "Textures", true, textures_window);
 		}
 	}
@@ -676,11 +776,15 @@ impl LoadedLevel {
 		&mut self,
 		queue: &Queue,
 		rr: &RenderResources,
+		key_states: &KeyStates,
 		encoder: &mut CommandEncoder,
 		view: &TextureView,
-		delta_time: Duration,
+		delta_time: f32,
+		tick: bool,
 	) {
-		self.frame_update(queue, &rr.binding_buffers.camera_transform_buffer, delta_time);
+		if tick {
+			self.frame_update(queue, &rr.binding_buffers.camera_transform_buffer, key_states, delta_time);
+		}
 		let room_indices: &[_] = match self.room_index {
 			Some(room_index) => &[room_index],
 			None => &self.all_room_indices,
@@ -759,13 +863,14 @@ impl LoadedLevel {
 		}
 	}
 	
-	pub fn key(&mut self, key_code: KeyCode, state: ElementState) {
-		self.key_states.set(key_code, matches!(state, ElementState::Pressed));
+	pub fn key(&mut self, key_code: KeyCode, state: ElementState) -> bool {
+		let mut consumed = true;
 		match (state, key_code) {
 			(ElementState::Pressed, KeyCode::KeyR) => self.show_render_options ^= true,
 			(ElementState::Pressed, KeyCode::KeyT) => self.show_textures_window ^= true,
-			_ => {},
+			_ => consumed = false,
 		}
+		consumed
 	}
 	
 	pub fn set_mouse_control(&mut self, window: &Window, on: bool) {
@@ -783,29 +888,24 @@ impl LoadedLevel {
 		self.mouse_control = on;
 	}
 	
-	pub fn mouse_button(
-		&mut self,
-		window: &Window,
-		file_dialog: &FileDialog,
-		state: ElementState,
-		button: MouseButton,
-	) {
+	pub fn mouse_button(&mut self, window: &Window, state: ElementState, button: MouseButton) -> bool {
+		let mut consumed = true;
 		match (state, button) {
 			(ElementState::Pressed, MouseButton::Right) => {
-				if file_dialog.is_closed() {
-					self.set_mouse_control(window, !self.mouse_control);
-				}
+				self.set_mouse_control(window, !self.mouse_control);
 			},
-			_ => {},
+			_ => consumed = false,
 		}
+		consumed
 	}
 	
-	pub fn cursor_moved(&mut self, window: &Window, pos: PhysicalPosition<f64>) {
+	pub fn cursor_moved(&mut self, window: &Window, pos: PhysicalPosition<f64>) -> bool {
 		if self.mouse_control {
 			window.set_cursor_position(self.mouse_pos).expect("set cursor pos");
 		} else {
 			self.mouse_pos = pos;
 		}
+		self.mouse_control
 	}
 	
 	pub fn mouse_motion(&mut self, x: f32, y: f32) {

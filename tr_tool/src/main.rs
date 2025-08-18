@@ -14,7 +14,7 @@ use winit::{
 	application::ApplicationHandler, error::EventLoopError, event::{DeviceEvent, DeviceId, WindowEvent},
 	event_loop::{ActiveEventLoop, EventLoop}, window::WindowId,
 };
-use std::{env, path::Path};
+use std::{env, path::PathBuf};
 use core::Core;
 use print_error::PrintError;
 
@@ -42,7 +42,7 @@ impl ApplicationHandler<UserEvent> for Handler {
 			let mut core = Core::new(event_loop);
 			let mut args = env::args_os();
 			if let Some(path) = args.nth(1) {
-				let path = Path::new(&path);
+				let path = PathBuf::from(path);
 				core.try_load(path);
 			}
 			self.core = Some(core);
