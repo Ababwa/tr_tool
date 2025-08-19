@@ -6,7 +6,7 @@ use wgpu::{
 	TextureView, TextureViewDescriptor,
 };
 use winit::{
-	dpi::{PhysicalPosition, PhysicalSize}, event::{ElementState, MouseButton}, keyboard::KeyCode,
+	dpi::PhysicalSize, event::{ElementState, MouseButton}, keyboard::KeyCode,
 	window::{CursorGrabMode, Window},
 };
 use crate::{
@@ -15,7 +15,7 @@ use crate::{
 	render_resources::{BindingBuffers, GeomOffsets, PipelineGroup, RenderResources, Viewport},
 	tr_traits::{Level, LevelStore},
 };
-use super::{draw_window, FileDialog, keys::KeyStates, Ui};
+use super::{FileDialog, keys::KeyStates, Ui, WindowMaker};
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum TextureModeTag {
@@ -64,7 +64,6 @@ struct Camera {
 	pitch: f32,
 }
 
-//TODO: References into `level_data.room_render_data` instead of indices. (need some self-reference hack)
 pub struct LoadedLevel {
 	depth_view: TextureView,
 	interact_view: TextureView,
@@ -88,7 +87,6 @@ pub struct LoadedLevel {
 	show_entity_sprites: bool,
 	show_render_options: bool,
 	show_textures_window: bool,
-	mouse_pos: PhysicalPosition<f64>,
 	level_data: LevelData,
 }
 
@@ -293,8 +291,8 @@ fn get_solid_mode(rr: &RenderResources, bind_groups: &BindGroups) -> Option<Soli
 }
 
 fn lock_cursor(window: &Window) {
-	let Err(e1) = window.set_cursor_grab(CursorGrabMode::Confined) else { return; };
-	let Err(e2) = window.set_cursor_grab(CursorGrabMode::Locked) else { return; };
+	let Err(e1) = window.set_cursor_grab(CursorGrabMode::Locked) else { return; };
+	let Err(e2) = window.set_cursor_grab(CursorGrabMode::Confined) else { return; };
 	panic!("cursor grab: ({}, {})", e1, e2);
 }
 
@@ -590,7 +588,6 @@ impl LoadedLevel {
 			show_entity_sprites: true,
 			show_render_options: true,
 			show_textures_window: true,
-			mouse_pos: PhysicalPosition::default(),
 			level_data,
 		}
 	}
@@ -743,9 +740,9 @@ impl LoadedLevel {
 		&mut self,
 		queue: &Queue,
 		rr: &RenderResources,
-		ctx: &egui::Context,
 		file_dialog: &mut FileDialog,
 		error: &mut Option<String>,
+		win_maker: &mut WindowMaker,
 	) {
 		if let Some(path) = file_dialog.get_texture_path() {
 			let rgba = get_rgba_dispatch(&self.level_data.level, self.texture_tab.tag);
@@ -764,11 +761,11 @@ impl LoadedLevel {
 		}
 		if self.show_render_options {
 			let render_options = |ui: Ui| self.render_options_ui(rr, ui);
-			self.show_render_options = draw_window(ctx, "Render Options", false, render_options);
+			self.show_render_options = win_maker.draw("Render Options", false, render_options);
 		}
 		if self.show_textures_window {
 			let textures_window = |ui: Ui| self.textures_ui(queue, rr, file_dialog, ui);
-			self.show_textures_window = draw_window(ctx, "Textures", true, textures_window);
+			self.show_textures_window = win_maker.draw("Textures", true, textures_window);
 		}
 	}
 	
@@ -789,7 +786,6 @@ impl LoadedLevel {
 			Some(room_index) => &[room_index],
 			None => &self.all_room_indices,
 		};
-		//TODO: Compare with allocating a vec of refs.
 		let rooms = Rooms {
 			rooms: &self.level_data.room_render_data,
 			indices: room_indices,
@@ -864,13 +860,12 @@ impl LoadedLevel {
 	}
 	
 	pub fn key(&mut self, key_code: KeyCode, state: ElementState) -> bool {
-		let mut consumed = true;
 		match (state, key_code) {
 			(ElementState::Pressed, KeyCode::KeyR) => self.show_render_options ^= true,
 			(ElementState::Pressed, KeyCode::KeyT) => self.show_textures_window ^= true,
-			_ => consumed = false,
+			_ => return false,
 		}
-		consumed
+		true
 	}
 	
 	pub fn set_mouse_control(&mut self, window: &Window, on: bool) {
@@ -888,24 +883,19 @@ impl LoadedLevel {
 		self.mouse_control = on;
 	}
 	
-	pub fn mouse_button(&mut self, window: &Window, state: ElementState, button: MouseButton) -> bool {
-		let mut consumed = true;
-		match (state, button) {
-			(ElementState::Pressed, MouseButton::Right) => {
-				self.set_mouse_control(window, !self.mouse_control);
-			},
-			_ => consumed = false,
+	pub fn mouse_button_priority(&mut self, window: &Window, state: ElementState, button: MouseButton) -> bool {
+		if let (ElementState::Pressed, MouseButton::Right) = (state, button) {
+			self.set_mouse_control(window, !self.mouse_control);
+			return true;
 		}
-		consumed
+		false
 	}
 	
-	pub fn cursor_moved(&mut self, window: &Window, pos: PhysicalPosition<f64>) -> bool {
-		if self.mouse_control {
-			window.set_cursor_position(self.mouse_pos).expect("set cursor pos");
-		} else {
-			self.mouse_pos = pos;
+	pub fn mouse_button(&mut self, state: ElementState, button: MouseButton) -> bool {
+		if let (ElementState::Pressed, MouseButton::Left) = (state, button) {
+			// objdata
 		}
-		self.mouse_control
+		false
 	}
 	
 	pub fn mouse_motion(&mut self, x: f32, y: f32) {

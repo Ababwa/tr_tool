@@ -3,7 +3,8 @@ mod keys;
 mod loaded_level;
 
 use std::{
-	fs::File, io::{self, BufReader, Read, Seek}, iter, num::NonZero, path::{Path, PathBuf}, sync::{mpsc::{self, Receiver, TryRecvError}, Arc}, thread, time::{Duration, Instant}
+	fs::File, io::{self, BufReader, Read, Seek}, iter, num::NonZero, path::{Path, PathBuf},
+	sync::{mpsc::{self, Receiver, TryRecvError}, Arc}, thread, time::{Duration, Instant},
 };
 use wgpu::{
 	CommandEncoderDescriptor, Device, DeviceDescriptor, Features, Instance, Limits, MemoryHints,
@@ -11,11 +12,13 @@ use wgpu::{
 	Trace,
 };
 use winit::{
-	dpi::{PhysicalPosition, PhysicalSize}, event::{DeviceEvent, ElementState, KeyEvent, MouseButton, WindowEvent},
-	event_loop::ActiveEventLoop, keyboard::{KeyCode, PhysicalKey}, window::{Icon, Window, WindowAttributes},
+	dpi::PhysicalSize,
+	event::{DeviceEvent, ElementState, KeyEvent, MouseButton, WindowEvent}, event_loop::ActiveEventLoop,
+	keyboard::{KeyCode, PhysicalKey}, window::{Icon, Window, WindowAttributes},
 };
 use crate::{
-	gfx, level_parse::LevelData, print_error::{PrintDebug, PrintError}, render_resources::RenderResources, tr_traits::Version, wait::Wait, GEOM_BUFFER_SIZE, WINDOW_ICON_BYTES
+	gfx, level_parse::LevelData, print_error::{PrintDebug, PrintError}, render_resources::RenderResources,
+	tr_traits::Version, wait::Wait, GEOM_BUFFER_SIZE, WINDOW_ICON_BYTES,
 };
 use file_dialog::FileDialog;
 use keys::KeyStates;
@@ -51,6 +54,7 @@ pub struct Core {
 	version_prompt: Option<PathBuf>,
 	error: Option<String>,
 	key_states: KeyStates,
+	egui_has_cursor: bool,
 	loaded_level: Option<LoadedLevel>,
 }
 
@@ -109,15 +113,23 @@ fn paint_setup(window: Arc<Window>, window_size: PhysicalSize<u32>, rx: Receiver
 	}
 }
 
-fn draw_window<F: FnOnce(Ui)>(
-	ctx: &egui::Context,
-	title: &str,
-	resizable: bool,
-	contents: F,
-) -> bool {
-	let mut open = true;
-	egui::Window::new(title).resizable(resizable).open(&mut open).show(ctx, contents);
-	open
+struct WindowMaker<'a> {
+	ctx: &'a egui::Context,
+	has_cursor: bool,
+}
+
+impl<'a> WindowMaker<'a> {
+	fn draw<F: FnOnce(Ui)>(
+		&mut self,
+		title: &str,
+		resizable: bool,
+		contents: F,
+	) -> bool {
+		let mut open = true;
+		let r = egui::Window::new(title).resizable(resizable).open(&mut open).show(self.ctx, contents);
+		self.has_cursor |= r.unwrap().response.contains_pointer();
+		open
+	}
 }
 
 fn file_name(path: &Path) -> Option<&str> {
@@ -144,20 +156,6 @@ fn get_version(path: &Path, version_num: u32) -> Option<Version> {
 	};
 	Some(version)
 }
-
-// {
-	// let file = File::open(path)?;
-	// let mut reader = BufReader::new(file);
-	// let mut version_bytes = [0; 4];
-	// reader.read_exact(&mut version_bytes)?;
-	// let version_num = u32::from_le_bytes(version_bytes);
-	// let Some(version) = get_version(path, version_num) else {
-	// 	return Ok(None);
-	// };
-	// reader.rewind()?;
-	// let level_data = read_level_as(device, queue, rr, &mut reader, version)?;
-	// Ok(Some(level_data))
-// }
 
 fn version_button(ui: Ui, version_dest: &mut Option<Version>, text: &str, version: Version) {
 	if ui.button(text).clicked() {
@@ -235,40 +233,10 @@ impl Core {
 			version_prompt: None,
 			error: None,
 			key_states: KeyStates::new(),
+			egui_has_cursor: false,
 			loaded_level: None,
 		}
 	}
-	
-	// fn load_level(&mut self, path: &Path, version: Version) -> () {
-	// 	let file = File::open(path)?;
-	// 	let mut reader = BufReader::new(file);
-	// 	let mut version_bytes = [0; 4];
-	// 	reader.read_exact(&mut version_bytes)?;
-	// 	let version_num = u32::from_le_bytes(version_bytes);
-	// 	let Some(version) = get_version(path, version_num) else {
-	// 		return Ok(None);
-	// 	};
-	// 	reader.rewind()?;
-	// 	match LevelData::load(&self.device, &self.queue, &self.rr, &path) {
-	// 		Ok(Some(level_data)) => {
-	// 			let loaded_level = LoadedLevel::new(
-	// 				self.window_size,
-	// 				&self.device,
-	// 				&self.queue,
-	// 				&self.rr,
-	// 				level_data,
-	// 			);
-	// 			self.loaded_level = Some(loaded_level);
-				// let title = match file_name(&path) {
-				// 	Some(name) => &format!("{} - {}", WINDOW_TITLE, name),
-				// 	None => WINDOW_TITLE,
-				// };
-				// self.window.set_title(title);
-	// 		},
-	// 		Ok(None) => self.version_prompt = Some(path),
-	// 		Err(e) => self.error = Some(e.to_string()),
-	// 	}
-	// }
 	
 	fn read_level(&mut self, path: &Path, reader: &mut BufReader<File>, v: Version) -> io::Result<()> {
 		let level_data = LevelData::load(&self.device, &self.queue, &self.rr, reader, v)?;
@@ -325,11 +293,15 @@ impl Core {
 	
 	fn egui(&mut self, ctx: &egui::Context) {
 		self.file_dialog.update(ctx);
+		let mut win_maker = WindowMaker {
+			ctx,
+			has_cursor: false,
+		};
 		if let Some(path) = self.file_dialog.get_level_path() {
 			self.try_load(path);
 		}
 		if let Some(error) = &self.error {
-			if !draw_window(ctx, "Error", false, |ui| _ = ui.label(error)) {
+			if !win_maker.draw("Error", false, |ui| _ = ui.label(error)) {
 				self.error = None;
 			}
 		}
@@ -347,7 +319,7 @@ impl Core {
 				};
 				ui.horizontal(buttons);
 			};
-			let open = draw_window(ctx, "Select TR Version", false, version_prompt);
+			let open = win_maker.draw("Select TR Version", false, version_prompt);
 			if let Some(version) = version {
 				let path = self.version_prompt.take().unwrap();//annoying
 				if let Err(e) = self.load_level_as(&path, version) {
@@ -359,7 +331,13 @@ impl Core {
 		}
 		match &mut self.loaded_level {
  			Some(loaded_level) => {
-				loaded_level.egui(&self.queue, &self.rr, ctx, &mut self.file_dialog, &mut self.error);
+				loaded_level.egui(
+					&self.queue,
+					&self.rr,
+					&mut self.file_dialog,
+					&mut self.error,
+					&mut win_maker,
+				);
 			},
 			None => {
 				let open_button = |ui: Ui| {
@@ -373,6 +351,7 @@ impl Core {
 				egui::panel::CentralPanel::default().show(ctx, centered_open_button);
 			},
 		}
+		self.egui_has_cursor = win_maker.has_cursor;
 	}
 	
 	fn draw(&mut self) {
@@ -423,82 +402,74 @@ impl Core {
 		self.window.request_redraw();
 	}
 	
-	fn try_draw(&mut self) {
-		if self.draw {
-			self.draw();
-		}
-	}
-	
 	fn close(&mut self, event_loop: &ActiveEventLoop) {
 		event_loop.exit();
 	}
 	
-	fn key(&mut self, el: &ActiveEventLoop, state: ElementState, key: KeyCode, repeat: bool) -> bool {
-		if repeat {
-			return false;
-		}
-		if let Some(loaded_level) = &mut self.loaded_level {
-			if loaded_level.key(key, state) {
-				return true;
-			}
-		}
+	fn key(&mut self, el: &ActiveEventLoop, state: ElementState, key: KeyCode) -> bool {
 		match (state, key) {
 			(ElementState::Pressed, KeyCode::KeyO) => {
-				let ctrl_o = self.key_states.any(&CONTROL_KEYS);
-				if ctrl_o {
+				if self.key_states.any(&CONTROL_KEYS) {
 					if let Some(loaded_level) = &mut self.loaded_level {
 						loaded_level.set_mouse_control(&self.window, false);
 					}
 					self.file_dialog.pick_level_file();
+					return true;
 				}
-				ctrl_o
 			},
 			(ElementState::Pressed, KeyCode::Escape) => {
 				self.close(el);
-				true
+				return true;
 			},
-			_ => false,
+			_ => {
+				if let Some(loaded_level) = &mut self.loaded_level {
+					return loaded_level.key(key, state);
+				}
+			},
 		}
+		false
 	}
 	
 	fn mouse_button(&mut self, state: ElementState, button: MouseButton) -> bool {
-		match &mut self.loaded_level {
-			Some(loaded_level) => loaded_level.mouse_button(&self.window, state, button),
-			None => false,
+		if let Some(loaded_level) = &mut self.loaded_level {
+			return loaded_level.mouse_button_priority(&self.window, state, button) ||
+				(!self.egui_has_cursor && loaded_level.mouse_button(state, button));
 		}
+		false
 	}
 	
-	fn cursor_moved(&mut self, pos: PhysicalPosition<f64>) -> bool {
-		match &mut self.loaded_level {
-			Some(loaded_level) => loaded_level.cursor_moved(&self.window, pos),
-			None => false,
-		}
+	fn feed_egui(&mut self, event: &WindowEvent) {
+		_ = self.egui_input_state.on_window_event(&self.window, event);
 	}
 	
 	pub fn window_event(&mut self, event_loop: &ActiveEventLoop, event: &WindowEvent) {
-		let mut delegated_event = false;
 		match event {
-			&WindowEvent::Resized(window_size) => self.resize(window_size),
-			WindowEvent::RedrawRequested => self.try_draw(),
-			WindowEvent::CloseRequested => self.close(event_loop),
-			&key_event!(key, state, _) => {
-				self.key_states.set(key, matches!(state, ElementState::Pressed));
-				delegated_event = true;
+			WindowEvent::CloseRequested => {
+				self.feed_egui(event);
+				self.close(event_loop);
 			},
-			_ => delegated_event = true,
-		}
-		let consumed = if delegated_event && !self.file_dialog.is_open() {
-			match event {
-				&key_event!(key, state, repeat) => self.key(event_loop, state, key, repeat),
-				&WindowEvent::MouseInput { state, button, .. } => self.mouse_button(state, button),
-				&WindowEvent::CursorMoved { position, .. } => self.cursor_moved(position),
-				_ => false,
-			}
-		} else {
-			false
-		};
-		if !consumed {
-			_ = self.egui_input_state.on_window_event(&self.window, event);
+			&WindowEvent::Resized(window_size) => {
+				self.feed_egui(event);
+				self.resize(window_size);
+			},
+			WindowEvent::RedrawRequested => {
+				if self.draw {
+					self.feed_egui(event);
+					self.draw();
+				}
+			},
+			&key_event!(key, state, repeat) => {
+				self.key_states.set(key, matches!(state, ElementState::Pressed));
+				if self.file_dialog.is_open() || repeat || !self.key(event_loop, state, key) {
+					self.feed_egui(event);
+				}
+			},
+			&WindowEvent::MouseInput { state, button, .. } => {
+				if self.file_dialog.is_open() || !self.mouse_button(state, button) {
+					self.feed_egui(event);
+				}
+			},
+			_ => self.feed_egui(event),
 		}
 	}
 	

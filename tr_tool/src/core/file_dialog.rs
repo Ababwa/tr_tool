@@ -59,8 +59,6 @@ impl FileDialog {
 		if let Err(e) = read_state(&mut level_path, &mut texture_path) {
 			eprintln!("error reading file dialog state: {}", e);
 		}
-		println!("level path: {:?}", level_path);
-		println!("texture path: {:?}", texture_path);
 		Self {
 			file_dialog,
 			level_path,
