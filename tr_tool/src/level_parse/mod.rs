@@ -3,14 +3,13 @@ mod geom_writer;
 mod instance_writer;
 mod maps;
 
-use std::{collections::{hash_map::Entry, HashMap}, f32::consts::TAU, io::{self, Read, Seek}, ops::Range};
+use std::{collections::{hash_map::Entry, HashMap}, f32::consts::TAU, io::{self, BufRead, Seek}, ops::Range};
 use glam::{IVec3, Mat4, Vec3};
 use tr_model::{tr1, tr2, tr3, tr4, tr5};
 use wgpu::{BindGroup, BindingResource, Buffer, BufferUsages, Device, Queue, TextureFormat};
 use crate::{
 	as_bytes::AsBytes, boxed_slice::Bsf, gfx::{self, bind_group_entry as entry},
-	object_data::{self, MeshFaceData}, push_get::PushGet,
-	render_resources::{RenderResources, ATLASES_ENTRY, PALETTE_ENTRY},
+	object_data::{self, MeshFaceData}, render_resources::{RenderResources, ATLASES_ENTRY, PALETTE_ENTRY},
 	tr_traits::{
 		Entity, Frame, Layer, Level, LevelStore, Mesh, Model, ObjectTexture, Room, RoomStaticMesh,
 		RoomVertex, RoomVertexPos, Version,
@@ -26,6 +25,7 @@ pub struct LayerOffsets {
 	pub tris: RoomFaceOffsets,
 }
 
+#[derive(Default)]
 pub struct MeshOffsets {
 	pub textured_quads: TexturedMeshFaceOffsets,
 	pub textured_tris: TexturedMeshFaceOffsets,
@@ -34,8 +34,9 @@ pub struct MeshOffsets {
 }
 
 pub struct FlipState {
+	pub group: u8,
 	pub original: bool,
-	pub other_index: usize,
+	pub other_index: u16,
 }
 
 //TODO: Collapse layers, static meshes, and entity meshes.
@@ -92,7 +93,8 @@ fn get_model_transforms<L: Level>(level: &L, model: &L::Model) -> Vec<Mat4> {
 	let first_rotation = rotations.next().expect("model has no rotations");
 	let first_transform = Mat4::from_translation(frame.offset().as_vec3()) * first_rotation;
 	let mut transforms = Vec::with_capacity(model.num_meshes() as usize);
-	let mut last_transform = transforms.push_get_index(first_transform);
+	let mut last_transform = 0;
+	transforms.push(first_transform);
 	let mesh_nodes = level.get_mesh_nodes(model);
 	let mut parent_stack = Vec::with_capacity(mesh_nodes.len());
 	for mesh_node in mesh_nodes {
@@ -108,7 +110,8 @@ fn get_model_transforms<L: Level>(level: &L, model: &L::Model) -> Vec<Mat4> {
 			(false, false) => last_transform
 		};
 		let transform = transforms[parent] * delta;
-		last_transform = transforms.push_get_index(transform);
+		last_transform = transforms.len();
+		transforms.push(transform);
 	}
 	transforms
 }
@@ -125,7 +128,7 @@ fn min_max<V: RoomVertex>(room_vertices: &[V]) -> Option<(Vec3, Vec3)> {
 	Some((min, max))
 }
 
-fn write_mesh<'a, M: Mesh<'a> + 'a>(geom_writer: &mut GeomWriter, mesh: &M) -> WrittenMesh {
+fn write_mesh<M: Mesh>(geom_writer: &mut GeomWriter, mesh: &M) -> WrittenMesh {
 	let vertex_array = geom_writer.vertex_array(mesh.vertices());
 	let textured_quads = geom_writer.face_array(mesh.textured_quads(), vertex_array);
 	let textured_tris = geom_writer.face_array(mesh.textured_tris(), vertex_array);
@@ -139,7 +142,7 @@ fn write_mesh<'a, M: Mesh<'a> + 'a>(geom_writer: &mut GeomWriter, mesh: &M) -> W
 	}
 }
 
-fn write_mesh_instance<'a, M: Mesh<'a> + 'a, O: ObjectTexture, D: MeshFaceData>(
+fn write_mesh_instance<M: Mesh, O: ObjectTexture, D: MeshFaceData>(
 	instance_writer: &mut InstanceWriter,
 	object_textures: &[O],
 	transform_index: TransformIndex,
@@ -236,7 +239,9 @@ fn write_static_mesh<L: Level, R: RoomStaticMesh>(
 	room_static_mesh_index: u8,
 	room_static_mesh: &R,
 ) -> MeshOffsets {
-	let static_mesh = static_mesh_map[&room_static_mesh.static_mesh_id()];//TODO: handle vacant case
+	let Some(static_mesh) = static_mesh_map.get(&room_static_mesh.static_mesh_id()) else {
+		return MeshOffsets::default();
+	};
 	let mesh_offset = level.mesh_offsets()[static_mesh.mesh_offset_index as usize];
 	let mesh = level.get_mesh(mesh_offset);
 	let written_mesh: &_ = match written_meshes.entry(mesh_offset) {
@@ -530,7 +535,7 @@ fn parse_level<L: Level>(device: &Device, queue: &Queue, rr: &RenderResources, l
 	}
 }
 
-fn read_level<R: Read + Seek, L: Level>(
+fn read_level<R: BufRead + Seek, L: Level>(
 	device: &Device,
 	queue: &Queue,
 	rr: &RenderResources,
@@ -542,7 +547,7 @@ fn read_level<R: Read + Seek, L: Level>(
 }
 
 impl LevelData {
-	pub fn load<R: Read + Seek>(
+	pub fn load<R: BufRead + Seek>(
 		device: &Device,
 		queue: &Queue,
 		rr: &RenderResources,

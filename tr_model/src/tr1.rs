@@ -109,8 +109,9 @@ pub struct RoomStaticMesh {
 
 bitfield! {
 	#[repr(C)]
-	#[derive(Clone, Copy, Debug)]
+	#[derive(Clone, Copy)]
 	pub struct RoomFlags(u16);
+	impl Debug;
 	pub water, _: 0;
 }
 
@@ -417,8 +418,9 @@ decl_mesh!(Mesh, MeshLighting, TexturedQuad, TexturedTri, SolidQuad, SolidTri);
 
 bitfield! {
 	#[repr(C)]
-	#[derive(Clone, Copy, Debug)]
+	#[derive(Clone, Copy)]
 	pub struct MeshNodeFlags(u32);
+	impl Debug;
 	pub pop, _: 0;
 	pub push, _: 1;
 }

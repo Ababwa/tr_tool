@@ -24,16 +24,16 @@ pub struct Counts {
 
 impl Counts {
 	fn vertex_array<V>(&mut self, vertices: &[V]) {
-		self.vertex_arrays_size += VERTEX_ARRAY_HEADER_SIZE + round_up::<4>(size_of_val(vertices));
+		self.vertex_arrays_size += VERTEX_ARRAY_HEADER_SIZE + round_up!(size_of_val(vertices), 4);
 		self.vertex_arrays += 1;
 	}
 	
 	fn face_array<F>(&mut self, faces: &[F]) {
-		self.face_arrays_size += FACE_ARRAY_HEADER_SIZE + round_up::<4>(size_of_val(faces));
+		self.face_arrays_size += FACE_ARRAY_HEADER_SIZE + round_up!(size_of_val(faces), 4);
 		self.face_arrays += 1;
 	}
 	
-	fn mesh<'a, M: Mesh<'a> + 'a>(&mut self, mesh: &M) {
+	fn mesh<M: Mesh>(&mut self, mesh: &M) {
 		self.vertex_array(mesh.vertices());
 		self.face_array(mesh.textured_quads());
 		self.face_array(mesh.textured_tris());
@@ -42,7 +42,7 @@ impl Counts {
 		self.meshes += 1;
 	}
 	
-	fn mesh_instance<'a, M: Mesh<'a> + 'a>(&mut self, mesh: &M) {
+	fn mesh_instance<M: Mesh>(&mut self, mesh: &M) {
 		self.transforms += 1;
 		self.face_instances +=
 			mesh.textured_quads().len() +
@@ -58,14 +58,18 @@ impl Counts {
 		counted_meshes: &mut HashMap<u32, ()>,
 		room_static_mesh: &R,
 	) {
-		let static_mesh = static_mesh_map[&room_static_mesh.static_mesh_id()];
-		let mesh_offset = level.mesh_offsets()[static_mesh.mesh_offset_index as usize];
-		let mesh = level.get_mesh(mesh_offset);
-		if let Entry::Vacant(entry) = counted_meshes.entry(mesh_offset) {
-			entry.insert(());
-			self.mesh(&mesh);
+		let static_mesh_id = room_static_mesh.static_mesh_id();
+		if let Some(static_mesh) = static_mesh_map.get(&static_mesh_id) {
+			let mesh_offset = level.mesh_offsets()[static_mesh.mesh_offset_index as usize];
+			let mesh = level.get_mesh(mesh_offset);
+			if let Entry::Vacant(entry) = counted_meshes.entry(mesh_offset) {
+				entry.insert(());
+				self.mesh(&mesh);
+			}
+			self.mesh_instance(&mesh);
+		} else {
+			println!("static mesh with id {} missing", static_mesh_id);
 		}
-		self.mesh_instance(&mesh);
 	}
 	
 	fn model_entity<L: Level>(
@@ -98,7 +102,6 @@ impl Counts {
 	) {
 		size_assert!(room.num_layers(), u8);
 		size_assert!(room.room_static_meshes().len(), u8);
-		size_assert!(room.sprites().len(), u16);
 		for layer in room.iter_layers() {
 			self.vertex_array(layer.vertices);
 			self.face_array(layer.quads);

@@ -4,11 +4,8 @@ mod core;
 mod gfx;
 mod level_parse;
 mod object_data;
-mod print_error;
-mod push_get;
 mod render_resources;
 mod tr_traits;
-mod wait;
 
 use winit::{
 	application::ApplicationHandler, error::EventLoopError, event::{DeviceEvent, DeviceId, WindowEvent},
@@ -16,9 +13,6 @@ use winit::{
 };
 use std::{env, path::PathBuf};
 use core::Core;
-use print_error::PrintError;
-
-type UserEvent = ();
 
 struct Handler {
 	core: Option<Core>,
@@ -31,12 +25,15 @@ const WINDOW_ICON_BYTES: &[u8; 1024] = include_bytes!("res/icon16.data");
 /// 4 MB
 const GEOM_BUFFER_SIZE: usize = 4194304;
 
-/// Round up to the nearest multiple of `N`.
-const fn round_up<const N: usize>(a: usize) -> usize {
-	a + (N - a % N) % N
+/// Round up to the nearest multiple.
+macro_rules! round_up {
+	($arg:expr, $base:literal) => {
+		($arg + ($base - 1)) / $base * $base
+	};
 }
+use round_up;
 
-impl ApplicationHandler<UserEvent> for Handler {
+impl ApplicationHandler for Handler {
 	fn resumed(&mut self, event_loop: &ActiveEventLoop) {
 		if let None = self.core {
 			let mut core = Core::new(event_loop);
@@ -65,7 +62,7 @@ impl ApplicationHandler<UserEvent> for Handler {
 }
 
 fn start() -> Result<(), EventLoopError> {
-	let event_loop = EventLoop::<UserEvent>::with_user_event().build()?;
+	let event_loop = EventLoop::new()?;
 	let mut handler = Handler {
 		core: None,
 	};
@@ -73,5 +70,5 @@ fn start() -> Result<(), EventLoopError> {
 }
 
 fn main() {
-	start().print_err("event loop error");
+	start().expect("event loop error");
 }

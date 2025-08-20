@@ -1,4 +1,4 @@
-use std::{f32::consts::TAU, io::{self, Read, Seek}, iter, mem::MaybeUninit};
+use std::{f32::consts::TAU, fmt::Debug, io::{self, BufRead, Seek}, iter, mem::MaybeUninit};
 use glam::{I16Vec3, IVec3, Mat4, U16Vec2, U16Vec3, Vec3};
 use tr_model::{tr1, tr2, tr3, tr4, tr5, Readable};
 
@@ -43,12 +43,12 @@ pub trait RoomVertexPos {
 	fn as_vec3(&self) -> Vec3;
 }
 
-pub trait RoomVertex {
+pub trait RoomVertex: Debug {
 	type Pos: RoomVertexPos;
 	fn pos(&self) -> Self::Pos;
 }
 
-pub trait Face<const N: usize> {
+pub trait Face<const N: usize>: Debug {
 	fn vertex_indices(&self) -> [u16; N];
 }
 
@@ -91,30 +91,30 @@ pub trait Room: Sized {
 	fn flip_group(&self) -> u8;
 }
 
-pub trait Entity {
+pub trait Entity: Debug {
 	fn room_index(&self) -> u16;
 	fn model_id(&self) -> u16;
 	fn pos(&self) -> IVec3;
 	fn angle(&self) -> u16;
 }
 
-pub trait ObjectTexture: Copy {
+pub trait ObjectTexture: Debug {
 	const UVS_OFFSET: u32;
 	fn blend_mode(&self) -> u16;
 	fn atlas_index(&self) -> u16;
 	fn uvs(&self) -> [U16Vec2; 4];
 }
 
-pub trait Mesh<'a> {
+pub trait Mesh {
 	type TexturedQuad: TexturedMeshFace<4>;
 	type TexturedTri: TexturedMeshFace<3>;
 	type SolidQuad: SolidFace<4>;
 	type SolidTri: SolidFace<3>;
-	fn vertices(&self) -> &'a [I16Vec3];
-	fn textured_quads(&self) -> &'a [Self::TexturedQuad];
-	fn textured_tris(&self) -> &'a [Self::TexturedTri];
-	fn solid_quads(&self) -> &'a [Self::SolidQuad];
-	fn solid_tris(&self) -> &'a [Self::SolidTri];
+	fn vertices(&self) -> &[I16Vec3];
+	fn textured_quads(&self) -> &[Self::TexturedQuad];
+	fn textured_tris(&self) -> &[Self::TexturedTri];
+	fn solid_quads(&self) -> &[Self::SolidQuad];
+	fn solid_tris(&self) -> &[Self::SolidTri];
 }
 
 pub trait Frame {
@@ -127,8 +127,6 @@ pub trait Level: Sized {
 	type Room: Room;
 	type Entity: Entity;
 	type ObjectTexture: ObjectTexture;
-	type Mesh<'a>: Mesh<'a> where Self: 'a;
-	type Frame<'a>: Frame where Self: 'a;
 	fn models(&self) -> &[Self::Model];
 	fn rooms(&self) -> &[Self::Room];
 	fn entities(&self) -> &[Self::Entity];
@@ -144,11 +142,11 @@ pub trait Level: Sized {
 	fn atlases_16bit(&self) -> Option<&[Atlas16Bit]>;
 	fn atlases_32bit(&self) -> Option<&[Atlas32Bit]>;
 	fn misc_images(&self) -> Option<&[Atlas32Bit]>;
-	fn get_mesh(&self, mesh_offset: u32) -> Self::Mesh<'_>;
+	fn get_mesh(&self, mesh_offset: u32) -> impl Mesh;
 	fn get_mesh_nodes(&self, model: &Self::Model) -> &[tr1::MeshNode];
-	fn get_frame(&self, model: &Self::Model) -> Self::Frame<'_>;
+	fn get_frame(&self, model: &Self::Model) -> impl Frame;
 	fn store(self) -> LevelStore;
-	fn read<R: Read + Seek>(reader: &mut R) -> io::Result<Self>;
+	fn read<R: BufRead + Seek>(reader: &mut R) -> io::Result<Self>;
 }
 
 //impl helpers
@@ -187,7 +185,7 @@ fn to_mat_tr4(rot: tr4::FrameRotation) -> Mat4 {
 	}
 }
 
-fn read<R: Read + Seek, L: Readable>(reader: &mut R) -> io::Result<L> {
+fn read<R: BufRead + Seek, L: Readable>(reader: &mut R) -> io::Result<L> {
 	let mut level = MaybeUninit::uninit();
 	unsafe {
 		L::read(reader, level.as_mut_ptr())?;
@@ -309,7 +307,7 @@ impl TexturedMeshFace<3> for tr1::TexturedTri {
 	fn additive(&self) -> bool { false }
 }
 
-impl<'a> Mesh<'a> for tr1::Mesh<'a> {
+impl<'a> Mesh for tr1::Mesh<'a> {
 	type TexturedQuad = tr1::TexturedQuad;
 	type TexturedTri = tr1::TexturedTri;
 	type SolidQuad = tr1::SolidQuad;
@@ -333,8 +331,6 @@ impl Level for tr1::Level {
 	type Room = tr1::Room;
 	type Entity = tr1::Entity;
 	type ObjectTexture = tr1::ObjectTexture;
-	type Mesh<'a> = tr1::Mesh<'a>;
-	type Frame<'a> = &'a tr1::Frame;
 	fn models(&self) -> &[Self::Model] { &self.models }
 	fn rooms(&self) -> &[Self::Room] { &self.rooms }
 	fn entities(&self) -> &[Self::Entity] { &self.entities }
@@ -351,10 +347,10 @@ impl Level for tr1::Level {
 	fn atlases_32bit(&self) -> Option<&[Atlas32Bit]> { None }
 	fn misc_images(&self) -> Option<&[Atlas32Bit]> { None }
 	fn get_mesh_nodes(&self, model: &Self::Model) -> &[tr1::MeshNode] { self.get_mesh_nodes(model) }
-	fn get_mesh(&self, mesh_offset: u32) -> Self::Mesh<'_> { self.get_mesh(mesh_offset) }
-	fn get_frame(&self, model: &Self::Model) -> Self::Frame<'_> { self.get_frame(model) }
+	fn get_mesh(&self, mesh_offset: u32) -> impl Mesh { self.get_mesh(mesh_offset) }
+	fn get_frame(&self, model: &Self::Model) -> impl Frame { self.get_frame(model) }
 	fn store(self) -> LevelStore { LevelStore::Tr1(self) }
-	fn read<R: Read + Seek>(reader: &mut R) -> io::Result<Self> { read(reader) }
+	fn read<R: BufRead + Seek>(reader: &mut R) -> io::Result<Self> { read(reader) }
 }
 
 //tr2
@@ -419,16 +415,16 @@ impl SolidFace<3> for tr2::SolidTri {
 	fn color_index_32bit(&self) -> Option<u8> { Some(self.color_index_32bit) }
 }
 
-impl<'a> Mesh<'a> for tr2::Mesh<'a> {
+impl<'a> Mesh for tr2::Mesh<'a> {
 	type TexturedQuad = tr1::TexturedQuad;
 	type TexturedTri = tr1::TexturedTri;
 	type SolidQuad = tr2::SolidQuad;
 	type SolidTri = tr2::SolidTri;
-	fn vertices(&self) -> &'a [I16Vec3] { self.vertices }
-	fn textured_quads(&self) -> &'a [Self::TexturedQuad] { self.textured_quads }
-	fn textured_tris(&self) -> &'a [Self::TexturedTri] { self.textured_tris }
-	fn solid_quads(&self) -> &'a [Self::SolidQuad] { self.solid_quads }
-	fn solid_tris(&self) -> &'a [Self::SolidTri] { self.solid_tris }
+	fn vertices(&self) -> &[I16Vec3] { self.vertices }
+	fn textured_quads(&self) -> &[Self::TexturedQuad] { self.textured_quads }
+	fn textured_tris(&self) -> &[Self::TexturedTri] { self.textured_tris }
+	fn solid_quads(&self) -> &[Self::SolidQuad] { self.solid_quads }
+	fn solid_tris(&self) -> &[Self::SolidTri] { self.solid_tris }
 }
 
 impl<'a> Frame for tr2::Frame<'a> {
@@ -443,8 +439,6 @@ impl Level for tr2::Level {
 	type Room = tr2::Room;
 	type Entity = tr2::Entity;
 	type ObjectTexture = tr1::ObjectTexture;
-	type Mesh<'a> = tr2::Mesh<'a>;
-	type Frame<'a> = tr2::Frame<'a>;
 	fn models(&self) -> &[Self::Model] { &self.models }
 	fn rooms(&self) -> &[Self::Room] { &self.rooms }
 	fn entities(&self) -> &[Self::Entity] { &self.entities }
@@ -461,10 +455,10 @@ impl Level for tr2::Level {
 	fn atlases_32bit(&self) -> Option<&[Atlas32Bit]> { None }
 	fn misc_images(&self) -> Option<&[Atlas32Bit]> { None }
 	fn get_mesh_nodes(&self, model: &Self::Model) -> &[tr1::MeshNode] { self.get_mesh_nodes(model) }
-	fn get_mesh(&self, mesh_offset: u32) -> Self::Mesh<'_> { self.get_mesh(mesh_offset) }
-	fn get_frame(&self, model: &Self::Model) -> Self::Frame<'_> { self.get_frame(model) }
+	fn get_mesh(&self, mesh_offset: u32) -> impl Mesh { self.get_mesh(mesh_offset) }
+	fn get_frame(&self, model: &Self::Model) -> impl Frame { self.get_frame(model) }
 	fn store(self) -> LevelStore { LevelStore::Tr2(self) }
-	fn read<R: Read + Seek>(reader: &mut R) -> io::Result<Self> { read(reader) }
+	fn read<R: BufRead + Seek>(reader: &mut R) -> io::Result<Self> { read(reader) }
 }
 
 //tr3
@@ -533,8 +527,6 @@ impl Level for tr3::Level {
 	type Room = tr3::Room;
 	type Entity = tr2::Entity;
 	type ObjectTexture = tr1::ObjectTexture;
-	type Mesh<'a> = tr2::Mesh<'a>;
-	type Frame<'a> = tr2::Frame<'a>;
 	fn models(&self) -> &[Self::Model] { &self.models }
 	fn rooms(&self) -> &[Self::Room] { &self.rooms }
 	fn entities(&self) -> &[Self::Entity] { &self.entities }
@@ -551,10 +543,10 @@ impl Level for tr3::Level {
 	fn atlases_32bit(&self) -> Option<&[Atlas32Bit]> { None }
 	fn misc_images(&self) -> Option<&[Atlas32Bit]> { None }
 	fn get_mesh_nodes(&self, model: &Self::Model) -> &[tr1::MeshNode] { self.get_mesh_nodes(model) }
-	fn get_mesh(&self, mesh_offset: u32) -> Self::Mesh<'_> { self.get_mesh(mesh_offset) }
-	fn get_frame(&self, model: &Self::Model) -> Self::Frame<'_> { self.get_frame(model) }
+	fn get_mesh(&self, mesh_offset: u32) -> impl Mesh { self.get_mesh(mesh_offset) }
+	fn get_frame(&self, model: &Self::Model) -> impl Frame { self.get_frame(model) }
 	fn store(self) -> LevelStore { LevelStore::Tr3(self) }
-	fn read<R: Read + Seek>(reader: &mut R) -> io::Result<Self> { read(reader) }
+	fn read<R: BufRead + Seek>(reader: &mut R) -> io::Result<Self> { read(reader) }
 }
 
 //tr4
@@ -621,16 +613,16 @@ impl TexturedMeshFace<3> for tr4::EffectsTri {
 	fn additive(&self) -> bool { self.flags.additive() }
 }
 
-impl<'a> Mesh<'a> for tr4::Mesh<'a> {
+impl<'a> Mesh for tr4::Mesh<'a> {
 	type TexturedQuad = tr4::EffectsQuad;
 	type TexturedTri = tr4::EffectsTri;
 	type SolidQuad = tr1::SolidQuad;//hacky
 	type SolidTri = tr1::SolidTri;
-	fn vertices(&self) -> &'a [I16Vec3] { self.vertices }
-	fn textured_quads(&self) -> &'a [Self::TexturedQuad] { self.quads }
-	fn textured_tris(&self) -> &'a [Self::TexturedTri] { self.tris }
-	fn solid_quads(&self) -> &'a [Self::SolidQuad] { &[] }
-	fn solid_tris(&self) -> &'a [Self::SolidTri] { &[] }
+	fn vertices(&self) -> &[I16Vec3] { self.vertices }
+	fn textured_quads(&self) -> &[Self::TexturedQuad] { self.quads }
+	fn textured_tris(&self) -> &[Self::TexturedTri] { self.tris }
+	fn solid_quads(&self) -> &[Self::SolidQuad] { &[] }
+	fn solid_tris(&self) -> &[Self::SolidTri] { &[] }
 }
 
 impl<'a> Frame for tr4::Frame<'a> {
@@ -645,8 +637,6 @@ impl Level for tr4::Level {
 	type Room = tr4::Room;
 	type Entity = tr4::Entity;
 	type ObjectTexture = tr4::ObjectTexture;
-	type Mesh<'a> = tr4::Mesh<'a>;
-	type Frame<'a> = tr4::Frame<'a>;
 	fn models(&self) -> &[Self::Model] { &self.level_data.models }
 	fn rooms(&self) -> &[Self::Room] { &self.level_data.rooms }
 	fn entities(&self) -> &[Self::Entity] { &self.level_data.entities }
@@ -663,10 +653,10 @@ impl Level for tr4::Level {
 	fn atlases_32bit(&self) -> Option<&[Atlas32Bit]> { Some(&self.atlases_32bit) }
 	fn misc_images(&self) -> Option<&[Atlas32Bit]> { Some(&self.misc_images[..]) }
 	fn get_mesh_nodes(&self, model: &Self::Model) -> &[tr1::MeshNode] { self.get_mesh_nodes(model) }
-	fn get_mesh(&self, mesh_offset: u32) -> Self::Mesh<'_> { self.get_mesh(mesh_offset) }
-	fn get_frame(&self, model: &Self::Model) -> Self::Frame<'_> { self.get_frame(model) }
+	fn get_mesh(&self, mesh_offset: u32) -> impl Mesh { self.get_mesh(mesh_offset) }
+	fn get_frame(&self, model: &Self::Model) -> impl Frame { self.get_frame(model) }
 	fn store(self) -> LevelStore { LevelStore::Tr4(self) }
-	fn read<R: Read + Seek>(reader: &mut R) -> io::Result<Self> { read(reader) }
+	fn read<R: BufRead + Seek>(reader: &mut R) -> io::Result<Self> { read(reader) }
 }
 
 //tr5
@@ -770,8 +760,6 @@ impl Level for tr5::Level {
 	type Room = tr5::Room;
 	type Entity = tr4::Entity;
 	type ObjectTexture = tr5::ObjectTexture;
-	type Mesh<'a> = tr4::Mesh<'a>;
-	type Frame<'a> = tr4::Frame<'a>;
 	fn models(&self) -> &[Self::Model] { &self.models }
 	fn rooms(&self) -> &[Self::Room] { &self.rooms }
 	fn entities(&self) -> &[Self::Entity] { &self.entities }
@@ -788,8 +776,8 @@ impl Level for tr5::Level {
 	fn atlases_32bit(&self) -> Option<&[Atlas32Bit]> { Some(&self.atlases_32bit) }
 	fn misc_images(&self) -> Option<&[Atlas32Bit]> { Some(&self.misc_images[..]) }
 	fn get_mesh_nodes(&self, model: &Self::Model) -> &[tr1::MeshNode] { self.get_mesh_nodes(model) }
-	fn get_mesh(&self, mesh_offset: u32) -> Self::Mesh<'_> { self.get_mesh(mesh_offset) }
-	fn get_frame(&self, model: &Self::Model) -> Self::Frame<'_> { self.get_frame(model) }
+	fn get_mesh(&self, mesh_offset: u32) -> impl Mesh { self.get_mesh(mesh_offset) }
+	fn get_frame(&self, model: &Self::Model) -> impl Frame { self.get_frame(model) }
 	fn store(self) -> LevelStore { LevelStore::Tr5(self) }
-	fn read<R: Read + Seek>(reader: &mut R) -> io::Result<Self> { read(reader) }
+	fn read<R: BufRead + Seek>(reader: &mut R) -> io::Result<Self> { read(reader) }
 }

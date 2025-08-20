@@ -243,7 +243,7 @@ pub fn derive_readable_impl(input: DeriveInput) -> TokenStream {
 	let (impl_generics, ty_generics, where_clause) = input.generics.split_for_impl();
 	quote! {
 		impl #impl_generics tr_readable::Readable for #type_name #ty_generics #where_clause {
-			unsafe fn read<R: std::io::Read + std::io::Seek>(reader: &mut R, this: *mut Self) -> std::io::Result<()> {
+			unsafe fn read<R: std::io::BufRead + std::io::Seek>(reader: &mut R, this: *mut Self) -> std::io::Result<()> {
 				#body
 				Ok(())
 			}

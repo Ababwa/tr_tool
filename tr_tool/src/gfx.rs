@@ -220,7 +220,7 @@ pub fn buffer_init(device: &Device, contents: &[u8], usage: BufferUsages) -> Buf
 	device.create_buffer_init(&desc)
 }
 
-fn texture_desc(
+const fn texture_desc(
 	size: Extent3d,
 	dimension: TextureDimension,
 	format: TextureFormat,
@@ -336,7 +336,7 @@ pub fn depth_view(device: &Device, size: PhysicalSize<u32>) -> TextureView {
 	texture.create_view(&TextureViewDescriptor::default())
 }
 
-pub fn bind_group_entry(binding: u32, resource: BindingResource) -> BindGroupEntry {
+pub const fn bind_group_entry(binding: u32, resource: BindingResource) -> BindGroupEntry {
 	BindGroupEntry {
 		binding,
 		resource,

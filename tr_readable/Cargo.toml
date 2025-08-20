@@ -4,5 +4,5 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
-compress = { version = "0.2.1", default-features = false, features = ["zlib"] }
+flate2 = { version = "1.1.2", default-features = false, features = ["zlib-rs"] }
 tr_derive = { path = "../tr_derive" }

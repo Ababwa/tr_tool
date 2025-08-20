@@ -17,8 +17,8 @@ use winit::{
 	keyboard::{KeyCode, PhysicalKey}, window::{Icon, Window, WindowAttributes},
 };
 use crate::{
-	gfx, level_parse::LevelData, print_error::{PrintDebug, PrintError}, render_resources::RenderResources,
-	tr_traits::Version, wait::Wait, GEOM_BUFFER_SIZE, WINDOW_ICON_BYTES,
+	gfx, level_parse::LevelData, render_resources::RenderResources, tr_traits::Version, GEOM_BUFFER_SIZE,
+	WINDOW_ICON_BYTES,
 };
 use file_dialog::FileDialog;
 use keys::KeyStates;
@@ -190,7 +190,8 @@ impl Core {
 			force_fallback_adapter: false,
 			compatible_surface: Some(&surface),
 		};
-		let adapter = instance.request_adapter(&req_adapter_options).wait().expect("request adapter");//430ms
+		let adapter_fut = instance.request_adapter(&req_adapter_options);
+		let adapter = pollster::block_on(adapter_fut).expect("request adapter");//430ms
 		let mut required_limits = Limits::downlevel_webgl2_defaults().using_resolution(adapter.limits());
 		required_limits.max_storage_buffers_per_shader_stage = 1;
 		required_limits.max_storage_buffer_binding_size = GEOM_BUFFER_SIZE as u32;
@@ -202,7 +203,8 @@ impl Core {
 			memory_hints: MemoryHints::Performance,
 			trace: Trace::Off,
 		};
-		let (device, queue) = adapter.request_device(&device_desc).wait().expect("request device");//250ms
+		let device_fut = adapter.request_device(&device_desc);
+		let (device, queue) = pollster::block_on(device_fut).expect("request device");//250ms
 		let config_result = surface.get_default_config(&adapter, window_size.width, window_size.height);
 		let mut config = config_result.expect("get default config");
 		config.format = gfx::TEXTURE_FORMAT;
@@ -214,8 +216,12 @@ impl Core {
 		let rr = RenderResources::new(&device);
 		let file_dialog = FileDialog::new();
 		let last_frame = Instant::now();
-		setup_painter_tx.send(()).print_err("stop setup painter");
-		setup_painter.join().print_err_dbg("join setup painter");
+		if let Err(e) = setup_painter_tx.send(()) {
+			eprintln!("error stopping setup painter: {}", e);
+		}
+		if let Err(e) = setup_painter.join() {
+			eprintln!("error joining setup painter: {:?}", e);
+		}
 		window.request_redraw();
 		Self {
 			window,
@@ -432,8 +438,10 @@ impl Core {
 	
 	fn mouse_button(&mut self, state: ElementState, button: MouseButton) -> bool {
 		if let Some(loaded_level) = &mut self.loaded_level {
-			return loaded_level.mouse_button_priority(&self.window, state, button) ||
-				(!self.egui_has_cursor && loaded_level.mouse_button(state, button));
+			return loaded_level.mouse_button_priority(&self.window, state, button) || (
+				!self.egui_has_cursor &&
+				loaded_level.mouse_button(&self.device, &self.queue, state, button)
+			);
 		}
 		false
 	}
@@ -467,6 +475,12 @@ impl Core {
 			&WindowEvent::MouseInput { state, button, .. } => {
 				if self.file_dialog.is_open() || !self.mouse_button(state, button) {
 					self.feed_egui(event);
+				}
+			},
+			&WindowEvent::CursorMoved { position, .. } => {
+				self.feed_egui(event);
+				if let Some(loaded_level) = &mut self.loaded_level {
+					loaded_level.cursor_moved(position);
 				}
 			},
 			_ => self.feed_egui(event),

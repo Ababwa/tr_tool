@@ -1,4 +1,4 @@
-use std::io::{Read, Result, Seek, SeekFrom};
+use std::io::{BufRead, Result, Seek, SeekFrom};
 use bitfield::bitfield;
 use glam::{IVec3, U16Vec2, UVec2, Vec3};
 use tr_readable::{read_slice_get, Readable, ToLen};
@@ -81,8 +81,9 @@ pub struct Layer {
 
 bitfield! {
 	#[repr(C)]
-	#[derive(Clone, Copy, Debug)]
+	#[derive(Clone, Copy)]
 	pub struct EffectsFaceTexture(u16);
+	impl Debug;
 	pub double_sided, _: 15;
 	pub object_texture_index, _: 13, 0;//unknown flag at bit 14
 }
@@ -108,7 +109,7 @@ pub struct LayerFaces {
 	pub tris: Box<[EffectsTri]>,
 }
 
-unsafe fn read_faces<R: Read + Seek>(
+unsafe fn read_faces<R: BufRead + Seek>(
 	reader: &mut R, layer_faces_ptr: *mut Box<[LayerFaces]>, layers: &[Layer], size: &u32, pos: u64,
 ) -> Result<()> {
 	let mut layer_faces = Box::new_uninit_slice(layers.len());

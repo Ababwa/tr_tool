@@ -44,6 +44,7 @@ Defines two ranges:<br>
 Opaque: `[opaque..additive]`<br>
 Additive: `[additive..end]`
 */
+#[derive(Default)]
 pub struct TexturedMeshFaceOffsets {
 	opaque: u32,
 	additive: u32,

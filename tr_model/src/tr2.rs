@@ -28,8 +28,9 @@ pub struct Color32BitRgb {
 
 bitfield! {
 	#[repr(C)]
-	#[derive(Clone, Copy, Debug)]
+	#[derive(Clone, Copy)]
 	pub struct Color16BitArgb(u16);
+	impl Debug;
 	u8;
 	pub a, _: 15;
 	pub r, _: 14, 10;

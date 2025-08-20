@@ -25,8 +25,9 @@ pub mod light_type {
 
 bitfield! {
 	#[repr(C)]
-	#[derive(Clone, Copy, Debug)]
+	#[derive(Clone, Copy)]
 	pub struct Color16BitRgb(u16);
+	impl Debug;
 	u8;
 	pub r, _: 14, 10;
 	pub g, _: 9, 5;
@@ -45,8 +46,9 @@ pub struct RoomVertex {
 
 bitfield! {
 	#[repr(C)]
-	#[derive(Clone, Copy, Debug)]
+	#[derive(Clone, Copy)]
 	pub struct DsFaceTexture(u16);
+	impl Debug;
 	pub double_sided, _: 15;
 	pub object_texture_index, _: 14, 0;
 }

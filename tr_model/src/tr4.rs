@@ -1,4 +1,4 @@
-use std::{io::{Read, Result}, mem, slice};
+use std::{io::{BufRead, Result}, mem, slice};
 use bitfield::bitfield;
 use glam::{I16Vec3, IVec3, U16Vec2, U16Vec3, UVec2, Vec3};
 use tr_readable::{read_into, Readable, ToLen};
@@ -127,8 +127,9 @@ pub struct FlybyCamera {
 
 bitfield! {
 	#[repr(C)]
-	#[derive(Clone, Copy, Debug)]
+	#[derive(Clone, Copy)]
 	pub struct AtlasIndexFaceType(u16);
+	impl Debug;
 	pub tri, _: 15;
 	pub atlas_index, _: 14, 0;
 }
@@ -182,7 +183,7 @@ pub enum SoundMap {
 	Extended(Box<[u16; EXTENDED_SOUND_MAP_LEN]>),
 }
 
-unsafe fn read_sound_map<R: Read>(reader: &mut R, this: *mut SoundMap, demo_data: &Box<[u8]>) -> Result<()> {
+unsafe fn read_sound_map<R: BufRead>(reader: &mut R, this: *mut SoundMap, demo_data: &Box<[u8]>) -> Result<()> {
 	const EXTENDED_DEMO_DATA_LEN: usize = 2048;
 	if demo_data.len() == EXTENDED_DEMO_DATA_LEN {
 		let mut sound_map = Box::new_uninit();
@@ -255,8 +256,9 @@ pub struct Level {
 
 bitfield! {
 	#[repr(C)]
-	#[derive(Clone, Copy, Debug)]
+	#[derive(Clone, Copy)]
 	pub struct FaceEffects(u16);
+	impl Debug;
 	pub additive, _: 0;
 }
 

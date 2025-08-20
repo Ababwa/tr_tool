@@ -1,18 +1,20 @@
-use std::{f32::consts::{FRAC_PI_2, FRAC_PI_4, PI}, ops::Range};
+use std::{f32::consts::{FRAC_PI_2, FRAC_PI_4, PI}, iter, ops::Range};
 use glam::{EulerRot, Mat4, Vec3};
 use tr_model::{tr1, tr2, tr4};
 use wgpu::{
-	BindGroup, Buffer, CommandEncoder, Device, IndexFormat, Queue, RenderPass, RenderPipeline, Texture,
-	TextureView, TextureViewDescriptor,
+	BindGroup, Buffer, BufferDescriptor, BufferUsages, CommandEncoder, CommandEncoderDescriptor, Device,
+	IndexFormat, MapMode, PollType, Queue, RenderPass, RenderPipeline, TexelCopyBufferInfo,
+	TexelCopyBufferLayout, Texture, TextureView, TextureViewDescriptor,
 };
 use winit::{
-	dpi::PhysicalSize, event::{ElementState, MouseButton}, keyboard::KeyCode,
+	dpi::{PhysicalPosition, PhysicalSize}, event::{ElementState, MouseButton}, keyboard::KeyCode,
 	window::{CursorGrabMode, Window},
 };
 use crate::{
 	as_bytes::AsBytes, boxed_slice::Bsf, gfx,
 	level_parse::{BindGroups, LayerOffsets, LevelData, MeshOffsets, RoomRenderData},
-	render_resources::{BindingBuffers, GeomOffsets, PipelineGroup, RenderResources, Viewport},
+	object_data::{self, ObjectData},
+	render_resources::{BindingBuffers, GeomOffsets, PipelineGroup, RenderResources, Viewport}, round_up,
 	tr_traits::{Level, LevelStore},
 };
 use super::{FileDialog, keys::KeyStates, Ui, WindowMaker};
@@ -79,6 +81,7 @@ pub struct LoadedLevel {
 	*/
 	all_room_indices: Box<[usize]>,
 	camera: Camera,
+	mouse_pos: PhysicalPosition<f64>,
 	mouse_control: bool,
 	show_room_mesh: bool,
 	show_static_meshes: bool,
@@ -167,6 +170,7 @@ const DOWN_VEC: Vec3 = Vec3::Y;
 const UP_VEC: Vec3 = Vec3::NEG_Y;
 
 const ALL: &'static str = "All";
+const FLIP_WORD: [&'static str; 2] = ["Flipped", "Original"];
 
 macro_rules! range_getter {
 	($type:ty, $name:ty, $quads:ident, $tris:ident, $get:ident) => {
@@ -534,6 +538,16 @@ fn get_rgba_dispatch(level: &LevelStore, texture: TextureTabTag) -> Box<[Rgba]> 
 	}
 }
 
+fn print_object_data_dispatch(level: &LevelStore, object_data: ObjectData) {
+	match level {
+		LevelStore::Tr1(level) => object_data::print_object_data(level, object_data),
+		LevelStore::Tr2(level) => object_data::print_object_data(level, object_data),
+		LevelStore::Tr3(level) => object_data::print_object_data(level, object_data),
+		LevelStore::Tr4(level) => object_data::print_object_data(level, object_data),
+		LevelStore::Tr5(level) => object_data::print_object_data(level, object_data),
+	}
+}
+
 impl LoadedLevel {
 	pub fn new(
 		window_size: PhysicalSize<u32>,
@@ -580,6 +594,7 @@ impl LoadedLevel {
 			room_index: None,
 			all_room_indices: all_room_indices.into_boxed_slice(),
 			camera,
+			mouse_pos: PhysicalPosition::default(),
 			mouse_control: false,
 			show_room_mesh: true,
 			show_static_meshes: true,
@@ -629,19 +644,27 @@ impl LoadedLevel {
 		queue.write_buffer(camera_transform_buffer, 0, camera_transform.as_bytes());
 	}
 	
-	fn flip_groups_ui(&mut self, ui: Ui) {
-		if !self.level_data.flip_groups.is_empty() {
-			let flip_group_toggles = |ui: Ui| {
-				ui.label("Flip Groups");
-				for flip_group in &mut self.level_data.flip_groups {
-					if ui.toggle_value(&mut flip_group.flipped, flip_group.number.to_string()).changed() {
-						let active_indices = flip_group.active_indices();
-						let dest = &mut self.all_room_indices[flip_group.offset..][..active_indices.len()];
-						dest.copy_from_slice(active_indices);
-					}
-				}
+	fn render_modes_ui(&mut self, rr: &RenderResources, ui: Ui) {
+		let bgs = &self.level_data.bind_groups;
+		let available_texture_modes =
+			bgs.texture_32bit_bg.is_some() as u8 +
+			bgs.texture_16bit_bg.is_some() as u8 +
+			bgs.palette_bg.is_some() as u8;
+		if available_texture_modes > 1 {
+			let texture_mode_combo = egui::ComboBox::from_label("Texture Mode");
+			let texture_mode_combo = texture_mode_combo.selected_text(self.texture_mode.tag.label());
+			let texture_modes = |ui: Ui| texture_modes_ui(ui, rr, &mut self.texture_mode, bgs);
+			texture_mode_combo.show_ui(ui, texture_modes);
+		}
+		let solid_condition = (&mut self.solid_mode, &bgs.solid_32bit_bg, &bgs.palette_bg);
+		if let (Some(solid_mode), Some(solid_32bit_bg), Some(palette_bg)) = solid_condition {
+			let solid_mode_combo = egui::ComboBox::from_label("Solid Color Mode");
+			let solid_mode_combo = solid_mode_combo.selected_text(solid_mode.tag.label());
+			let solid_modes = |ui: Ui| {
+				solid_mode_ui(ui, solid_mode, &rr.solid_24bit_pl, palette_bg, SolidModeTag::Bit24);
+				solid_mode_ui(ui, solid_mode, &rr.solid_32bit_pl, solid_32bit_bg, SolidModeTag::Bit32);
 			};
-			ui.horizontal(flip_group_toggles);
+			solid_mode_combo.show_ui(ui, solid_modes);
 		}
 	}
 	
@@ -667,41 +690,43 @@ impl LoadedLevel {
 		}
 	}
 	
-	fn egui_render_modes(&mut self, rr: &RenderResources, ui: Ui) {
-		let bgs = &self.level_data.bind_groups;
-		let available_texture_modes =
-			bgs.texture_32bit_bg.is_some() as u8 +
-			bgs.texture_16bit_bg.is_some() as u8 +
-			bgs.palette_bg.is_some() as u8;
-		if available_texture_modes > 1 {
-			let texture_mode_combo = egui::ComboBox::from_label("Texture Mode");
-			let texture_mode_combo = texture_mode_combo.selected_text(self.texture_mode.tag.label());
-			let texture_modes = |ui: Ui| texture_modes_ui(ui, rr, &mut self.texture_mode, bgs);
-			texture_mode_combo.show_ui(ui, texture_modes);
-		}
-		let solid_condition = (&mut self.solid_mode, &bgs.solid_32bit_bg, &bgs.palette_bg);
-		if let (Some(solid_mode), Some(solid_32bit_bg), Some(palette_bg)) = solid_condition {
-			let solid_mode_combo = egui::ComboBox::from_label("Solid Color Mode");
-			let solid_mode_combo = solid_mode_combo.selected_text(solid_mode.tag.label());
-			let solid_modes = |ui: Ui| {
-				solid_mode_ui(ui, solid_mode, &rr.solid_24bit_pl, palette_bg, SolidModeTag::Bit24);
-				solid_mode_ui(ui, solid_mode, &rr.solid_32bit_pl, solid_32bit_bg, SolidModeTag::Bit32);
+	fn display_toggles_ui(&mut self, ui: Ui) {
+		ui.checkbox(&mut self.show_room_mesh, "Room Mesh");
+		ui.checkbox(&mut self.show_static_meshes, "Static Meshes");
+		ui.checkbox(&mut self.show_entity_meshes, "Entity Meshes");
+		ui.checkbox(&mut self.show_room_sprites, "Room Sprites");
+		ui.checkbox(&mut self.show_entity_sprites, "Entity Sprites");
+	}
+	
+	fn flip_groups_ui(&mut self, ui: Ui) {
+		if !self.level_data.flip_groups.is_empty() {
+			let flip_group_toggles = |ui: Ui| {
+				ui.label("Flip Groups");
+				for flip_group in &mut self.level_data.flip_groups {
+					if ui.toggle_value(&mut flip_group.flipped, flip_group.number.to_string()).changed() {
+						let active_indices = flip_group.active_indices();
+						let dest = &mut self.all_room_indices[flip_group.offset..][..active_indices.len()];
+						dest.copy_from_slice(active_indices);
+					}
+				}
 			};
-			solid_mode_combo.show_ui(ui, solid_modes);
+			ui.horizontal(flip_group_toggles);
 		}
 	}
 	
 	fn render_options_ui(&mut self, rr: &RenderResources, ui: Ui) {
-		self.egui_render_modes(rr, ui);
+		self.render_modes_ui(rr, ui);
 		self.rooms_ui(ui);
+		self.display_toggles_ui(ui);
 		match self.room_index {
 			None => self.flip_groups_ui(ui),
 			Some(index) => {
 				if let Some(flip_state) = &self.level_data.room_render_data[index].flip_state {
-					let word = if flip_state.original { "Original" } else { "Flipped" };
-					let text = format!("{} of {}", word, flip_state.other_index);
-					if ui.button(text).clicked() {
-						self.room_index = Some(flip_state.other_index);
+					let this = FLIP_WORD[flip_state.original as usize];
+					let other = FLIP_WORD[!flip_state.original as usize];
+					ui.label(format!("Flip Group {} {}", flip_state.group, this));
+					if ui.button(format!("Switch to {}", other)).clicked() {
+						self.room_index = Some(flip_state.other_index as usize);
 					}
 				}
 			},
@@ -883,19 +908,62 @@ impl LoadedLevel {
 		self.mouse_control = on;
 	}
 	
-	pub fn mouse_button_priority(&mut self, window: &Window, state: ElementState, button: MouseButton) -> bool {
+	pub fn mouse_button_priority(&mut self, w: &Window, state: ElementState, button: MouseButton) -> bool {
 		if let (ElementState::Pressed, MouseButton::Right) = (state, button) {
-			self.set_mouse_control(window, !self.mouse_control);
+			self.set_mouse_control(w, !self.mouse_control);
 			return true;
 		}
 		false
 	}
 	
-	pub fn mouse_button(&mut self, state: ElementState, button: MouseButton) -> bool {
+	pub fn mouse_button(
+		&mut self,
+		device: &Device,
+		queue: &Queue,
+		state: ElementState,
+		button: MouseButton,
+	) -> bool {
 		if let (ElementState::Pressed, MouseButton::Left) = (state, button) {
-			// objdata
+			let row_bytes = round_up!(self.interact_texture.width(), 64) * 4;
+			let buffer_desc = BufferDescriptor {
+				label: None,
+				size: row_bytes as u64 * self.interact_texture.height() as u64,
+				usage: BufferUsages::COPY_DST | BufferUsages::MAP_READ,
+				mapped_at_creation: false,
+			};
+			let buffer = device.create_buffer(&buffer_desc);
+			let layout = TexelCopyBufferLayout {
+				offset: 0,
+				bytes_per_row: Some(row_bytes),
+				rows_per_image: None,
+			};
+			let dst = TexelCopyBufferInfo {
+				buffer: &buffer,
+				layout,
+			};
+			let src = self.interact_texture.as_image_copy();
+			let mut encoder = device.create_command_encoder(&CommandEncoderDescriptor::default());
+			encoder.copy_texture_to_buffer(src, dst, self.interact_texture.size());
+			let submission_index = queue.submit(iter::once(encoder.finish()));
+			buffer.map_async(MapMode::Read, .., |r| r.expect("map interact texture"));
+			let poll = PollType::WaitForSubmissionIndex(submission_index);
+			_ = device.poll(poll).expect("poll map interact");
+			let data = &*buffer.get_mapped_range(..);
+			let x = self.mouse_pos.x as usize;
+			let y = self.mouse_pos.y as usize;
+			let offset = y * row_bytes as usize + x * 4;
+			let index_bytes = [data[offset], data[offset + 1], data[offset + 2], data[offset + 3]];
+			let index = u32::from_le_bytes(index_bytes);
+			if index != u32::MAX {
+				let object_data = self.level_data.object_data[index as usize];
+				print_object_data_dispatch(&self.level_data.level, object_data);
+			}
 		}
 		false
+	}
+	
+	pub fn cursor_moved(&mut self, pos: PhysicalPosition<f64>) {
+		self.mouse_pos = pos;
 	}
 	
 	pub fn mouse_motion(&mut self, x: f32, y: f32) {

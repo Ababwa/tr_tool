@@ -4,10 +4,8 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
-bitflags = "2.9.1"
 egui = "0.32.0"
 egui-file-dialog = "0.11.0"
-# egui-file-dialog = { git = "https://github.com/Ababwa/egui-file-dialog" }
 egui-wgpu = "0.32.0"
 egui-winit = "0.32.0"
 glam = { workspace = true }

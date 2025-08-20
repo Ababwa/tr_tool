@@ -131,23 +131,28 @@ pub fn get_flip_groups<R: Room>(
 	let mut flip_group_counts = [0u8; 256];
 	for room_index in 0..rooms.len() {
 		let room = &rooms[room_index];
-		let flip_index = room.flip_room_index() as usize;
-		if flip_index != u16::MAX as usize {
-			assert!(matches!(room_states[room_index], RoomState::Static));
-			assert!(matches!(room_states[flip_index], RoomState::Static));
+		let flip_index = room.flip_room_index();
+		if
+			flip_index != u16::MAX &&
+			matches!(room_states[room_index], RoomState::Static) &&
+			matches!(room_states[flip_index as usize], RoomState::Static)
+		{
 			room_states[room_index] = RoomState::FlipOriginal;
-			room_states[flip_index] = RoomState::FlipFlipped;
+			room_states[flip_index as usize] = RoomState::FlipFlipped;
+			let group = room.flip_group();
 			let orig_state = FlipState {
+				group,
 				original: true,
 				other_index: flip_index,
 			};
 			let flip_state = FlipState {
+				group,
 				original: false,
-				other_index: room_index,
+				other_index: room_index as u16,
 			};
 			room_render_data[room_index].flip_state = Some(orig_state);
-			room_render_data[flip_index].flip_state = Some(flip_state);
-			let flip_group_count = &mut flip_group_counts[room.flip_group() as usize];
+			room_render_data[flip_index as usize].flip_state = Some(flip_state);
+			let flip_group_count = &mut flip_group_counts[group as usize];
 			if *flip_group_count == 0 {
 				num_flip_groups += 1;
 			}

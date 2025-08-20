@@ -59,7 +59,7 @@ impl GeomWriter {
 		let object_textures_size = size_of_val(object_textures);
 		let sprite_textures_size = size_of_val(sprite_textures);
 		let geom_end = counts.vertex_arrays_size + counts.face_arrays_size;
-		let transforms_offset = round_up::<16>(geom_end);
+		let transforms_offset = round_up!(geom_end, 16);
 		let face_array_offsets_offset = transforms_offset + counts.transforms * 64;
 		let object_textures_offset = face_array_offsets_offset + counts.face_arrays * 4;
 		let sprite_textures_offset = object_textures_offset + object_textures_size;
@@ -102,7 +102,7 @@ impl GeomWriter {
 	Returns the offset of the record in 4-byte units.
 	*/
 	pub fn vertex_array<V>(&mut self, vertices: &[V]) -> VertexArrayOffset {
-		let size = VERTEX_ARRAY_HEADER_SIZE + round_up::<4>(size_of_val(vertices));
+		let size = VERTEX_ARRAY_HEADER_SIZE + round_up!(size_of_val(vertices), 4);
 		assert!(self.geom_pos + size <= self.transforms_offset);
 		//Safety: Writes are in bounds after assert.
 		unsafe {
@@ -137,7 +137,7 @@ impl GeomWriter {
 		faces: &[F],
 		vertex_array_offset: VertexArrayOffset,
 	) -> FaceArrayIndex {
-		let size = FACE_ARRAY_HEADER_SIZE + round_up::<4>(size_of_val(faces));
+		let size = FACE_ARRAY_HEADER_SIZE + round_up!(size_of_val(faces), 4);
 		assert!(self.geom_pos + size <= self.transforms_offset);
 		assert!(self.face_array_offsets_pos + 4 <= self.object_textures_offset);
 		//Safety: Writes are in bounds after assert.
