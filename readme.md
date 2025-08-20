@@ -13,12 +13,14 @@ Tool for viewing Tomb Raider level files. Currently reads levels in any of the o
 * Shift to move faster.
 * Control to move slower.
 * R to toggle Render Options window.
+* T to toggle Textures window.
+	* Can save textures as PNG.
 * Click object to print information to command line.
 * Escape to exit.
 
 ## Notes
 
-Creates a file called `dir` to store the path of the last loaded level.
+Creates a file called `state.txt` to store a small amount of persistent state.
 
 ## Command-line usage (optional)
 
